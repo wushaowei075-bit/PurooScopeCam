@@ -1,0 +1,124 @@
+import AVFoundation
+import SwiftUI
+
+struct CameraScreen: View {
+    @EnvironmentObject private var camera: CameraController
+    @EnvironmentObject private var motionMonitor: MotionStabilityMonitor
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        ZStack {
+            CameraPreviewView(camera: camera)
+                .ignoresSafeArea()
+
+            if camera.authorizationStatus != .authorized {
+                Color.black.opacity(0.86)
+                    .ignoresSafeArea()
+            }
+
+            CrosshairView()
+                .stroke(.white.opacity(0.72), lineWidth: 1)
+                .frame(width: 110, height: 110)
+                .allowsHitTesting(false)
+
+            VStack(spacing: 0) {
+                topBar
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+
+                Spacer()
+
+                if let message = camera.status.errorMessage ?? camera.status.lastMessage {
+                    Text(message)
+                        .font(.footnote.weight(.medium))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.black.opacity(0.54), in: Capsule())
+                        .padding(.bottom, 10)
+                }
+
+                ControlPanelView()
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 16)
+            }
+
+            if camera.authorizationStatus != .authorized {
+                permissionPanel
+                    .padding(24)
+            }
+        }
+        .task {
+            camera.requestAccessAndConfigure()
+            motionMonitor.start()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                camera.startSession()
+                motionMonitor.start()
+            case .background:
+                camera.stopSession()
+                motionMonitor.stop()
+            case .inactive:
+                break
+            @unknown default:
+                break
+            }
+        }
+        .onChange(of: motionMonitor.sample) { _, sample in
+            camera.ingestMotionSample(sample)
+        }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 10) {
+            statusPill(
+                title: camera.status.activeStabilizationMode.scopeDisplayName,
+                systemImage: "dot.scope"
+            )
+
+            statusPill(
+                title: camera.status.isRecording ? "REC" : "Ready",
+                systemImage: camera.status.isRecording ? "record.circle.fill" : "camera.viewfinder"
+            )
+            .foregroundStyle(camera.status.isRecording ? .red : .white)
+
+            Spacer()
+
+            ShakeMeterView(sample: motionMonitor.sample)
+                .frame(width: 132)
+        }
+    }
+
+    private var permissionPanel: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "camera.fill")
+                .font(.system(size: 38, weight: .semibold))
+            Text("Camera access needed")
+                .font(.headline)
+            Text("Enable camera permission in Settings, then return to this app.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func statusPill(title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.black.opacity(0.5), in: Capsule())
+    }
+}
+
+#Preview {
+    CameraScreen()
+        .environmentObject(CameraController())
+        .environmentObject(MotionStabilityMonitor())
+}

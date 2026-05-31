@@ -1,0 +1,423 @@
+import AVFoundation
+import Combine
+import Photos
+import UIKit
+
+final class CameraController: NSObject, ObservableObject {
+    let session = AVCaptureSession()
+
+    @Published private(set) var authorizationStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
+    @Published private(set) var status = CaptureStatus()
+    @Published var stabilizationPreference: StabilizationPreference = .strong {
+        didSet { applySelectedStabilizationMode() }
+    }
+    @Published var zoomFactor: CGFloat = 1
+    @Published var exposureBias: Float = 0
+    @Published private(set) var focusLocked = false
+    @Published private(set) var exposureLocked = false
+
+    private let sessionQueue = DispatchQueue(label: "com.puroo.scope.camera.session")
+    private let videoOutputQueue = DispatchQueue(label: "com.puroo.scope.camera.videoOutput")
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let photoOutput = AVCapturePhotoOutput()
+    private let movieOutput = AVCaptureMovieFileOutput()
+    private let stabilizationEngine = FrameStabilizationEngine()
+
+    private var videoDeviceInput: AVCaptureDeviceInput?
+    private var isConfigured = false
+
+    func requestAccessAndConfigure() {
+        let currentStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        publish { $0.authorizationStatus = currentStatus }
+
+        switch currentStatus {
+        case .authorized:
+            configureIfNeeded()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                self?.publish { $0.authorizationStatus = granted ? .authorized : .denied }
+                if granted {
+                    self?.configureIfNeeded()
+                }
+            }
+        case .denied, .restricted:
+            publishStatus(error: "Camera access is not available.")
+        @unknown default:
+            publishStatus(error: "Unknown camera authorization state.")
+        }
+    }
+
+    func startSession() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, !self.session.isRunning else { return }
+            self.session.startRunning()
+            self.publishStatus { $0.isSessionRunning = true }
+        }
+    }
+
+    func stopSession() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.session.isRunning else { return }
+            self.session.stopRunning()
+            self.publishStatus { $0.isSessionRunning = false }
+        }
+    }
+
+    func configurePreviewConnection(_ connection: AVCaptureConnection?) {
+        sessionQueue.async { [weak self] in
+            self?.applyStabilization(to: connection)
+        }
+    }
+
+    func ingestMotionSample(_ sample: StabilitySample) {
+        sessionQueue.async { [weak self] in
+            self?.stabilizationEngine.ingestMotion(sample)
+        }
+    }
+
+    func setZoomFactor(_ value: CGFloat) {
+        let clamped = min(max(value, 1), 6)
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                let deviceMax = min(device.activeFormat.videoMaxZoomFactor, 6)
+                device.videoZoomFactor = min(clamped, deviceMax)
+                device.unlockForConfiguration()
+                self.publish { $0.zoomFactor = min(clamped, deviceMax) }
+            } catch {
+                self.publishStatus(error: "Could not set zoom.")
+            }
+        }
+    }
+
+    func setExposureBias(_ value: Float) {
+        let clamped = min(max(value, -3), 3)
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                device.setExposureTargetBias(clamped, completionHandler: nil)
+                device.unlockForConfiguration()
+                self.publish { $0.exposureBias = clamped }
+            } catch {
+                self.publishStatus(error: "Could not set exposure.")
+            }
+        }
+    }
+
+    func setFocusLocked(_ locked: Bool) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if locked, device.isFocusModeSupported(.locked) {
+                    device.focusMode = .locked
+                } else if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                }
+                device.unlockForConfiguration()
+                self.publish { $0.focusLocked = locked }
+            } catch {
+                self.publishStatus(error: "Could not change focus mode.")
+            }
+        }
+    }
+
+    func setExposureLocked(_ locked: Bool) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if locked, device.isExposureModeSupported(.locked) {
+                    device.exposureMode = .locked
+                } else if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+                device.unlockForConfiguration()
+                self.publish { $0.exposureLocked = locked }
+            } catch {
+                self.publishStatus(error: "Could not change exposure mode.")
+            }
+        }
+    }
+
+    func capturePhoto() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured else { return }
+            let settings = AVCapturePhotoSettings()
+            settings.flashMode = .off
+            self.photoOutput.capturePhoto(with: settings, delegate: self)
+            self.publishStatus(message: "Capturing photo...")
+        }
+    }
+
+    func captureBurst(plan: BurstCapturePlan = .defaultTelescope) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured else { return }
+            self.publishStatus(message: "Capturing burst...")
+
+            for index in 0..<plan.frameCount {
+                self.sessionQueue.asyncAfter(deadline: .now() + plan.frameInterval * Double(index)) { [weak self] in
+                    self?.capturePhoto()
+                }
+            }
+        }
+    }
+
+    func toggleRecording() {
+        status.isRecording ? stopRecording() : startRecording()
+    }
+
+    private func configureIfNeeded() {
+        sessionQueue.async { [weak self] in
+            guard let self, !self.isConfigured else {
+                self?.startSession()
+                return
+            }
+
+            self.session.beginConfiguration()
+            self.session.sessionPreset = .hd1920x1080
+            defer { self.session.commitConfiguration() }
+
+            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+                self.publishStatus(error: "Back camera is not available.")
+                return
+            }
+
+            do {
+                let input = try AVCaptureDeviceInput(device: device)
+                guard self.session.canAddInput(input) else {
+                    self.publishStatus(error: "Could not add camera input.")
+                    return
+                }
+                self.session.addInput(input)
+                self.videoDeviceInput = input
+            } catch {
+                self.publishStatus(error: "Could not create camera input.")
+                return
+            }
+
+            self.configureDeviceDefaults(device)
+            self.configureVideoOutput()
+            self.configurePhotoOutput()
+            self.configureMovieOutput()
+            self.applySelectedStabilizationMode()
+
+            self.isConfigured = true
+            self.startSession()
+        }
+    }
+
+    private func configureDeviceDefaults(_ device: AVCaptureDevice) {
+        do {
+            try device.lockForConfiguration()
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
+            if device.isSmoothAutoFocusSupported {
+                device.isSmoothAutoFocusEnabled = true
+            }
+            if device.isLowLightBoostSupported {
+                device.automaticallyEnablesLowLightBoostWhenAvailable = true
+            }
+            device.unlockForConfiguration()
+        } catch {
+            publishStatus(error: "Could not configure camera defaults.")
+        }
+    }
+
+    private func configureVideoOutput() {
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+        ]
+        videoOutput.setSampleBufferDelegate(self, queue: videoOutputQueue)
+        if session.canAddOutput(videoOutput) {
+            session.addOutput(videoOutput)
+        }
+    }
+
+    private func configurePhotoOutput() {
+        if session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
+        }
+    }
+
+    private func configureMovieOutput() {
+        if session.canAddOutput(movieOutput) {
+            session.addOutput(movieOutput)
+        }
+    }
+
+    private func startRecording() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, !self.movieOutput.isRecording else { return }
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
+                .appendingPathExtension("mov")
+            self.movieOutput.startRecording(to: url, recordingDelegate: self)
+            self.publishStatus { $0.isRecording = true }
+        }
+    }
+
+    private func stopRecording() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.movieOutput.isRecording else { return }
+            self.movieOutput.stopRecording()
+        }
+    }
+
+    private func applySelectedStabilizationMode() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.applyStabilization(to: self.videoOutput.connection(with: .video))
+            self.applyStabilization(to: self.movieOutput.connection(with: .video))
+        }
+    }
+
+    private func applyStabilization(to connection: AVCaptureConnection?) {
+        guard let connection else { return }
+        let selected = bestAvailableMode(for: connection)
+        if connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = selected
+            publishStatus { status in
+                status.activeStabilizationMode = connection.activeVideoStabilizationMode
+            }
+        }
+    }
+
+    private func bestAvailableMode(for connection: AVCaptureConnection) -> AVCaptureVideoStabilizationMode {
+        guard connection.isVideoStabilizationSupported else { return .off }
+        guard let device = videoDeviceInput?.device else { return .auto }
+
+        for mode in stabilizationPreference.requestedModes {
+            if mode == .off || mode == .auto || device.activeFormat.isVideoStabilizationModeSupported(mode) {
+                return mode
+            }
+        }
+        return .auto
+    }
+
+    private func savePhotoData(_ data: Data) {
+        publishStatus { $0.isSaving = true }
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] authorization in
+            guard authorization == .authorized || authorization == .limited else {
+                self?.publishStatus { status in
+                    status.isSaving = false
+                    status.errorMessage = "Photos access was not granted."
+                }
+                return
+            }
+
+            PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                request.addResource(with: .photo, data: data, options: nil)
+            } completionHandler: { success, error in
+                self?.publishStatus { status in
+                    status.isSaving = false
+                    status.lastMessage = success ? "Photo saved." : nil
+                    status.errorMessage = error?.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func saveVideo(at url: URL) {
+        publishStatus { $0.isSaving = true }
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] authorization in
+            guard authorization == .authorized || authorization == .limited else {
+                self?.publishStatus { status in
+                    status.isSaving = false
+                    status.errorMessage = "Photos access was not granted."
+                }
+                return
+            }
+
+            PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                request.addResource(with: .video, fileURL: url, options: nil)
+            } completionHandler: { success, error in
+                try? FileManager.default.removeItem(at: url)
+                self?.publishStatus { status in
+                    status.isSaving = false
+                    status.lastMessage = success ? "Video saved." : nil
+                    status.errorMessage = error?.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func publish(_ update: @escaping (CameraController) -> Void) {
+        DispatchQueue.main.async {
+            update(self)
+        }
+    }
+
+    private func publishStatus(message: String? = nil, error: String? = nil) {
+        publishStatus { status in
+            status.lastMessage = message
+            status.errorMessage = error
+        }
+    }
+
+    private func publishStatus(_ update: @escaping (inout CaptureStatus) -> Void) {
+        DispatchQueue.main.async {
+            update(&self.status)
+        }
+    }
+}
+
+extension CameraController: AVCapturePhotoCaptureDelegate {
+    func photoOutput(
+        _ output: AVCapturePhotoOutput,
+        didFinishProcessingPhoto photo: AVCapturePhoto,
+        error: Error?
+    ) {
+        if let error {
+            publishStatus(error: error.localizedDescription)
+            return
+        }
+
+        guard let data = photo.fileDataRepresentation() else {
+            publishStatus(error: "Photo data was not available.")
+            return
+        }
+
+        savePhotoData(data)
+    }
+}
+
+extension CameraController: AVCaptureFileOutputRecordingDelegate {
+    func fileOutput(
+        _ output: AVCaptureFileOutput,
+        didFinishRecordingTo outputFileURL: URL,
+        from connections: [AVCaptureConnection],
+        error: Error?
+    ) {
+        publishStatus { $0.isRecording = false }
+
+        if let error {
+            publishStatus(error: error.localizedDescription)
+            return
+        }
+
+        saveVideo(at: outputFileURL)
+    }
+}
+
+extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        _ = stabilizationEngine.estimateTransform(for: sampleBuffer)
+    }
+}

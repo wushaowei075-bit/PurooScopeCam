@@ -1,0 +1,28 @@
+workflows:
+  ios-debug-build:
+    name: iOS Debug Build
+    max_build_duration: 60
+    environment:
+      xcode: latest
+      vars:
+        XCODE_PROJECT: "PurooScopeCam.xcodeproj"
+        XCODE_SCHEME: "PurooScopeCam"
+    scripts:
+      - name: Show Xcode version
+        script: xcodebuild -version
+      - name: Resolve package dependencies
+        script: |
+          xcodebuild -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -resolvePackageDependencies
+      - name: Build unsigned simulator app
+        script: |
+          xcodebuild build \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -destination "platform=iOS Simulator,name=iPhone 16,OS=latest" \
+            CODE_SIGNING_ALLOWED=NO
+    artifacts:
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/Products/**/*.app
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Logs/Build/*.xcactivitylog
+
