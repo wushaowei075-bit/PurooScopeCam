@@ -2,6 +2,7 @@ import AVFoundation
 import CoreImage
 import Metal
 import MetalKit
+import QuartzCore
 import SwiftUI
 import UIKit
 
@@ -23,6 +24,7 @@ final class PreviewContainerView: UIView, CameraFrameSink {
     private let metalView: MTKView
     private let renderer: StabilizedMetalPreviewRenderer
     private let visualAnalyzer = PreviewFrameMotionAnalyzer()
+    private let frameClockMapper = PreviewFrameClockMapper()
     private let viewportLock = NSLock()
     private var viewportSize = CGSize.zero
 
@@ -73,8 +75,8 @@ final class PreviewContainerView: UIView, CameraFrameSink {
         return size
     }
 
-    func applyPreviewTransform(_ transform: PreviewRenderTransform) {
-        renderer.setRenderTransform(transform)
+    func applyPreviewTransform(_ transform: PreviewRenderTransform, at timestamp: TimeInterval) {
+        renderer.setRenderTransform(transform, at: timestamp)
     }
 
     func updateStabilizationPreference(_ preference: StabilizationPreference) {
@@ -92,14 +94,43 @@ final class PreviewContainerView: UIView, CameraFrameSink {
         didOutput pixelBuffer: CVPixelBuffer,
         at timestamp: CMTime
     ) {
-        renderer.enqueue(pixelBuffer: pixelBuffer, at: timestamp)
-        visualAnalyzer.enqueue(pixelBuffer: pixelBuffer, at: timestamp)
+        guard let motionTime = frameClockMapper.motionTime(for: timestamp) else { return }
+        renderer.enqueue(pixelBuffer: pixelBuffer, motionTime: motionTime)
+        visualAnalyzer.enqueue(pixelBuffer: pixelBuffer, motionTime: motionTime)
+    }
+}
+
+private final class PreviewFrameClockMapper {
+    private var estimatedOffset: TimeInterval?
+
+    func motionTime(for timestamp: CMTime) -> TimeInterval? {
+        let presentationTime = CMTimeGetSeconds(timestamp)
+        guard presentationTime.isFinite else { return nil }
+
+        let hostTime = CACurrentMediaTime()
+        if abs(presentationTime - hostTime) < 30 {
+            return presentationTime
+        }
+
+        let nextOffset = hostTime - presentationTime
+        if let estimatedOffset, abs(nextOffset - estimatedOffset) < 0.25 {
+            self.estimatedOffset = estimatedOffset * 0.98 + nextOffset * 0.02
+        } else {
+            estimatedOffset = nextOffset
+        }
+
+        return presentationTime + (estimatedOffset ?? nextOffset)
     }
 }
 
 final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     private struct QueuedPreviewFrame {
         var pixelBuffer: CVPixelBuffer
+        var motionTime: TimeInterval
+    }
+
+    private struct TimedRenderTransform {
+        var transform: PreviewRenderTransform
         var timestamp: TimeInterval
     }
 
@@ -110,7 +141,9 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     private var frameQueue: [QueuedPreviewFrame] = []
     private var correctionHistory: [PreviewVisualCorrection] = [.identity]
-    private var renderTransform = PreviewRenderTransform.identity
+    private var renderTransformHistory: [TimedRenderTransform] = [
+        TimedRenderTransform(transform: .identity, timestamp: 0)
+    ]
     private var previewDelayFrames = 0
 
     init(device: MTLDevice) {
@@ -130,15 +163,14 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         super.init()
     }
 
-    func enqueue(pixelBuffer: CVPixelBuffer, at timestamp: CMTime) {
-        let presentationTime = CMTimeGetSeconds(timestamp)
-        guard presentationTime.isFinite else { return }
+    func enqueue(pixelBuffer: CVPixelBuffer, motionTime: TimeInterval) {
+        guard motionTime.isFinite else { return }
 
         stateLock.lock()
         frameQueue.append(
             QueuedPreviewFrame(
                 pixelBuffer: pixelBuffer,
-                timestamp: presentationTime
+                motionTime: motionTime
             )
         )
         let maximumFrameCount = max(previewDelayFrames + 8, 12)
@@ -148,9 +180,15 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         stateLock.unlock()
     }
 
-    func setRenderTransform(_ transform: PreviewRenderTransform) {
+    func setRenderTransform(_ transform: PreviewRenderTransform, at timestamp: TimeInterval) {
         stateLock.lock()
-        renderTransform = transform
+        let resolvedTimestamp = timestamp.isFinite ? timestamp : CACurrentMediaTime()
+        renderTransformHistory.append(
+            TimedRenderTransform(transform: transform, timestamp: resolvedTimestamp)
+        )
+        if renderTransformHistory.count > 180 {
+            renderTransformHistory.removeFirst(renderTransformHistory.count - 180)
+        }
         stateLock.unlock()
     }
 
@@ -182,8 +220,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         stateLock.lock()
         let queuedFrame = nextFrameForDisplay()
-        let transform = renderTransform
-        let correction = queuedFrame.map { correctionForFrame(at: $0.timestamp) } ?? .identity
+        let transform = queuedFrame.map { renderTransformForFrame(at: $0.motionTime) } ?? .identity
+        let correction = queuedFrame.map { correctionForFrame(at: $0.motionTime) } ?? .identity
         stateLock.unlock()
 
         guard let queuedFrame,
@@ -228,6 +266,44 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
             frameQueue.removeFirst(targetIndex)
         }
         return frame
+    }
+
+    private func renderTransformForFrame(at timestamp: TimeInterval) -> PreviewRenderTransform {
+        guard !renderTransformHistory.isEmpty else { return .identity }
+
+        var previousIndex = 0
+        var nextIndex: Int?
+
+        for (index, timedTransform) in renderTransformHistory.enumerated() {
+            if timedTransform.timestamp <= timestamp {
+                previousIndex = index
+            } else {
+                nextIndex = index
+                break
+            }
+        }
+
+        let previous = renderTransformHistory[previousIndex]
+        let selected: PreviewRenderTransform
+        if let nextIndex {
+            let next = renderTransformHistory[nextIndex]
+            let span = max(next.timestamp - previous.timestamp, 0.0001)
+            let amount = CGFloat(min(max((timestamp - previous.timestamp) / span, 0), 1))
+            selected = PreviewRenderTransform(
+                scale: previous.transform.scale + (next.transform.scale - previous.transform.scale) * amount,
+                rotationRadians: previous.transform.rotationRadians + (next.transform.rotationRadians - previous.transform.rotationRadians) * amount,
+                translationX: previous.transform.translationX + (next.transform.translationX - previous.transform.translationX) * amount,
+                translationY: previous.transform.translationY + (next.transform.translationY - previous.transform.translationY) * amount
+            )
+        } else {
+            selected = previous.transform
+        }
+
+        if previousIndex > 4 {
+            renderTransformHistory.removeFirst(previousIndex - 3)
+        }
+
+        return selected
     }
 
     private func correctionForFrame(at timestamp: TimeInterval) -> PreviewVisualCorrection {
@@ -312,13 +388,26 @@ private final class PreviewFrameMotionAnalyzer {
         var confidence: CGFloat
     }
 
+    private struct AnalysisFrame {
+        var luma: [UInt8]
+        var roiMask: [Bool]
+    }
+
+    private struct PatchVector {
+        var dx: CGFloat
+        var dy: CGFloat
+        var confidence: CGFloat
+    }
+
     private let queue = DispatchQueue(label: "com.puroo.scope.preview.visualLock", qos: .userInteractive)
     private let busyLock = NSLock()
     private let gridSize = 80
-    private let searchRadius = 6
+    private let searchRadius = 5
+    private let patchRadius = 3
+    private let anchorStride = 9
     private var isBusy = false
     private var preference: StabilizationPreference = .off
-    private var lastFrame: [UInt8]?
+    private var lastFrame: AnalysisFrame?
     private var lastFrameTimestamp: TimeInterval?
     private var lastAnalysisTimestamp: TimeInterval?
     private var accumulatedX: CGFloat = 0
@@ -334,9 +423,8 @@ private final class PreviewFrameMotionAnalyzer {
         }
     }
 
-    func enqueue(pixelBuffer: CVPixelBuffer, at timestamp: CMTime) {
-        let presentationTime = CMTimeGetSeconds(timestamp)
-        guard presentationTime.isFinite else { return }
+    func enqueue(pixelBuffer: CVPixelBuffer, motionTime: TimeInterval) {
+        guard motionTime.isFinite else { return }
 
         busyLock.lock()
         guard !isBusy else {
@@ -350,7 +438,7 @@ private final class PreviewFrameMotionAnalyzer {
         queue.async { [weak self] in
             guard let self else { return }
             defer { self.markIdle() }
-            self.process(pixelBuffer: retainedPixelBuffer, timestamp: presentationTime)
+            self.process(pixelBuffer: retainedPixelBuffer, timestamp: motionTime)
         }
     }
 
@@ -467,79 +555,164 @@ private final class PreviewFrameMotionAnalyzer {
         emit(correction)
     }
 
-    private func estimateShift(reference: [UInt8], current: [UInt8]) -> VisualShift? {
-        let margin = searchRadius + 8
+    private func estimateShift(reference: AnalysisFrame, current: AnalysisFrame) -> VisualShift? {
+        let texture = textureScore(reference)
+        guard texture > 2.0 else { return nil }
+
+        let vectors = patchVectors(reference: reference, current: current)
+        guard vectors.count >= 5 else { return nil }
+
+        let medianDx = median(vectors.map(\.dx))
+        let medianDy = median(vectors.map(\.dy))
+        let inliers = vectors.filter { vector in
+            let residualX = vector.dx - medianDx
+            let residualY = vector.dy - medianDy
+            return (residualX * residualX + residualY * residualY).squareRoot() <= 1.45
+        }
+        guard inliers.count >= max(4, vectors.count / 3) else { return nil }
+
+        let totalWeight = max(inliers.reduce(CGFloat(0)) { $0 + $1.confidence }, 0.0001)
+        let dx = inliers.reduce(CGFloat(0)) { $0 + $1.dx * $1.confidence } / totalWeight
+        let dy = inliers.reduce(CGFloat(0)) { $0 + $1.dy * $1.confidence } / totalWeight
+        let meanResidual = inliers.reduce(CGFloat(0)) { partial, vector in
+            let residualX = vector.dx - dx
+            let residualY = vector.dy - dy
+            return partial + (residualX * residualX + residualY * residualY).squareRoot()
+        } / CGFloat(max(inliers.count, 1))
+
+        let textureConfidence = clamp((texture - 2.0) / 8.0, min: 0, max: 1)
+        let matchConfidence = clamp(totalWeight / CGFloat(max(inliers.count, 1)), min: 0, max: 1)
+        let coverageConfidence = clamp(CGFloat(inliers.count) / CGFloat(max(vectors.count, 1)), min: 0, max: 1)
+        let consistencyConfidence = clamp((1.6 - meanResidual) / 1.6, min: 0, max: 1)
+        let confidence = clamp(
+            textureConfidence * 0.22 +
+            matchConfidence * 0.34 +
+            coverageConfidence * 0.22 +
+            consistencyConfidence * 0.22,
+            min: 0,
+            max: 1
+        )
+
+        guard confidence > 0.24 else { return nil }
+        return VisualShift(dx: dx, dy: dy, confidence: confidence)
+    }
+
+    private func patchVectors(reference: AnalysisFrame, current: AnalysisFrame) -> [PatchVector] {
+        let margin = searchRadius + patchRadius + 2
         let start = margin
         let end = gridSize - margin
-        let side = searchRadius * 2 + 1
-        let sampleCount = max((end - start) * (end - start), 1)
-        let texture = textureScore(reference, start: start, end: end)
-        guard texture > 2.2 else { return nil }
+        var vectors: [PatchVector] = []
+        vectors.reserveCapacity(48)
 
-        var scores = Array(repeating: Int.max, count: side * side)
-        var bestScore = Int.max
-        var secondScore = Int.max
+        for y in stride(from: start, to: end, by: anchorStride) {
+            for x in stride(from: start, to: end, by: anchorStride) {
+                let index = y * gridSize + x
+                guard reference.roiMask[index],
+                      current.roiMask[index],
+                      patchTexture(reference, centerX: x, centerY: y) > 2.4,
+                      let vector = bestPatchVector(reference: reference, current: current, centerX: x, centerY: y)
+                else {
+                    continue
+                }
+                vectors.append(vector)
+            }
+        }
+
+        return vectors
+    }
+
+    private func bestPatchVector(
+        reference: AnalysisFrame,
+        current: AnalysisFrame,
+        centerX: Int,
+        centerY: Int
+    ) -> PatchVector? {
+        var bestScore = CGFloat.greatestFiniteMagnitude
+        var secondScore = CGFloat.greatestFiniteMagnitude
         var bestDx = 0
         var bestDy = 0
 
         for dy in -searchRadius...searchRadius {
             for dx in -searchRadius...searchRadius {
-                var sad = 0
-                for y in start..<end {
-                    let referenceOffset = y * gridSize + start
-                    let currentOffset = (y + dy) * gridSize + start + dx
-                    for x in 0..<(end - start) {
-                        let delta = Int(reference[referenceOffset + x]) - Int(current[currentOffset + x])
-                        sad += delta < 0 ? -delta : delta
-                    }
+                guard let score = patchMatchScore(
+                    reference: reference,
+                    current: current,
+                    centerX: centerX,
+                    centerY: centerY,
+                    dx: dx,
+                    dy: dy
+                ) else {
+                    continue
                 }
 
-                let index = (dy + searchRadius) * side + dx + searchRadius
-                scores[index] = sad
-                if sad < bestScore {
+                if score < bestScore {
                     secondScore = bestScore
-                    bestScore = sad
+                    bestScore = score
                     bestDx = dx
                     bestDy = dy
-                } else if sad < secondScore {
-                    secondScore = sad
+                } else if score < secondScore {
+                    secondScore = score
                 }
             }
         }
 
-        func storedScore(dx: Int, dy: Int) -> Int {
-            scores[(dy + searchRadius) * side + dx + searchRadius]
-        }
+        guard bestScore.isFinite, bestScore < 29 else { return nil }
 
-        var refinedX = CGFloat(bestDx)
-        var refinedY = CGFloat(bestDy)
-        if bestDx > -searchRadius, bestDx < searchRadius {
-            refinedX += subpixelOffset(
-                lower: storedScore(dx: bestDx - 1, dy: bestDy),
-                center: bestScore,
-                upper: storedScore(dx: bestDx + 1, dy: bestDy)
-            )
+        let uniqueness: CGFloat
+        if secondScore.isFinite {
+            uniqueness = clamp((secondScore - bestScore) / max(bestScore, 1), min: 0, max: 1)
+        } else {
+            uniqueness = 0
         }
-        if bestDy > -searchRadius, bestDy < searchRadius {
-            refinedY += subpixelOffset(
-                lower: storedScore(dx: bestDx, dy: bestDy - 1),
-                center: bestScore,
-                upper: storedScore(dx: bestDx, dy: bestDy + 1)
-            )
-        }
+        let matchConfidence = clamp((29 - bestScore) / 22, min: 0, max: 1)
+        let confidence = clamp(matchConfidence * 0.78 + uniqueness * 0.22, min: 0, max: 1)
+        guard confidence > 0.26 else { return nil }
 
-        let meanSad = CGFloat(bestScore) / CGFloat(sampleCount)
-        let uniqueness = CGFloat(max(secondScore - bestScore, 0)) / CGFloat(max(bestScore, 1))
-        let textureConfidence = clamp((texture - 2.2) / 8.0, min: 0, max: 1)
-        let matchConfidence = clamp((26 - meanSad) / 18, min: 0, max: 1)
-        let uniquenessBoost = clamp(uniqueness * 5, min: 0, max: 0.35)
-        let confidence = clamp(textureConfidence * 0.45 + matchConfidence * 0.45 + uniquenessBoost, min: 0, max: 1)
-
-        guard confidence > 0.22 else { return nil }
-        return VisualShift(dx: refinedX, dy: refinedY, confidence: confidence)
+        return PatchVector(
+            dx: CGFloat(bestDx),
+            dy: CGFloat(bestDy),
+            confidence: confidence
+        )
     }
 
-    private func makeLumaGrid(from pixelBuffer: CVPixelBuffer) -> [UInt8]? {
+    private func patchMatchScore(
+        reference: AnalysisFrame,
+        current: AnalysisFrame,
+        centerX: Int,
+        centerY: Int,
+        dx: Int,
+        dy: Int
+    ) -> CGFloat? {
+        var sad = 0
+        var count = 0
+
+        for patchY in -patchRadius...patchRadius {
+            let referenceY = centerY + patchY
+            let currentY = referenceY + dy
+            guard currentY >= 0, currentY < gridSize else { return nil }
+
+            for patchX in -patchRadius...patchRadius {
+                let referenceX = centerX + patchX
+                let currentX = referenceX + dx
+                guard currentX >= 0, currentX < gridSize else { return nil }
+
+                let referenceIndex = referenceY * gridSize + referenceX
+                let currentIndex = currentY * gridSize + currentX
+                guard reference.roiMask[referenceIndex], current.roiMask[currentIndex] else {
+                    continue
+                }
+
+                let delta = Int(reference.luma[referenceIndex]) - Int(current.luma[currentIndex])
+                sad += delta < 0 ? -delta : delta
+                count += 1
+            }
+        }
+
+        guard count >= 28 else { return nil }
+        return CGFloat(sad) / CGFloat(count)
+    }
+
+    private func makeLumaGrid(from pixelBuffer: CVPixelBuffer) -> AnalysisFrame? {
         guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA,
               CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess
         else {
@@ -553,11 +726,15 @@ private final class PreviewFrameMotionAnalyzer {
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
         let bytes = baseAddress.assumingMemoryBound(to: UInt8.self)
-        let cropSide = CGFloat(min(width, height)) * 0.72
+        let cropSide = CGFloat(min(width, height)) * 0.84
         let cropX = (CGFloat(width) - cropSide) * 0.5
         let cropY = (CGFloat(height) - cropSide) * 0.5
         let step = cropSide / CGFloat(gridSize)
-        var frame = Array(repeating: UInt8(0), count: gridSize * gridSize)
+        var luma = Array(repeating: UInt8(0), count: gridSize * gridSize)
+        var roiMask = Array(repeating: false, count: gridSize * gridSize)
+        let center = (CGFloat(gridSize) - 1) * 0.5
+        let radius = CGFloat(gridSize) * 0.41
+        let radiusSquared = radius * radius
 
         for y in 0..<gridSize {
             let sourceY = clamp(
@@ -575,32 +752,75 @@ private final class PreviewFrameMotionAnalyzer {
                 let blue = Int(bytes[offset])
                 let green = Int(bytes[offset + 1])
                 let red = Int(bytes[offset + 2])
-                frame[y * gridSize + x] = UInt8((77 * red + 150 * green + 29 * blue) >> 8)
+                let index = y * gridSize + x
+                luma[index] = UInt8((77 * red + 150 * green + 29 * blue) >> 8)
+
+                let centeredX = CGFloat(x) - center
+                let centeredY = CGFloat(y) - center
+                roiMask[index] = centeredX * centeredX + centeredY * centeredY <= radiusSquared
             }
         }
 
-        return frame
+        return AnalysisFrame(luma: luma, roiMask: roiMask)
     }
 
-    private func textureScore(_ frame: [UInt8], start: Int, end: Int) -> CGFloat {
+    private func textureScore(_ frame: AnalysisFrame) -> CGFloat {
         var total = 0
         var count = 0
-        for y in start..<(end - 1) {
+        for y in 1..<(gridSize - 1) {
             let row = y * gridSize
             let nextRow = (y + 1) * gridSize
-            for x in start..<(end - 1) {
-                total += abs(Int(frame[row + x]) - Int(frame[row + x + 1]))
-                total += abs(Int(frame[row + x]) - Int(frame[nextRow + x]))
+            for x in 1..<(gridSize - 1) {
+                let index = row + x
+                guard frame.roiMask[index],
+                      frame.roiMask[index + 1],
+                      frame.roiMask[nextRow + x]
+                else {
+                    continue
+                }
+                total += abs(Int(frame.luma[index]) - Int(frame.luma[index + 1]))
+                total += abs(Int(frame.luma[index]) - Int(frame.luma[nextRow + x]))
                 count += 2
             }
         }
         return CGFloat(total) / CGFloat(max(count, 1))
     }
 
-    private func subpixelOffset(lower: Int, center: Int, upper: Int) -> CGFloat {
-        let denominator = CGFloat(lower - 2 * center + upper)
-        guard abs(denominator) > 0.0001 else { return 0 }
-        return clamp(CGFloat(lower - upper) / (2 * denominator), min: -0.5, max: 0.5)
+    private func patchTexture(_ frame: AnalysisFrame, centerX: Int, centerY: Int) -> CGFloat {
+        var total = 0
+        var count = 0
+
+        for patchY in -patchRadius..<patchRadius {
+            let y = centerY + patchY
+            let row = y * gridSize
+            let nextRow = (y + 1) * gridSize
+            for patchX in -patchRadius..<patchRadius {
+                let x = centerX + patchX
+                let index = row + x
+                guard frame.roiMask[index],
+                      frame.roiMask[index + 1],
+                      frame.roiMask[nextRow + x]
+                else {
+                    continue
+                }
+
+                total += abs(Int(frame.luma[index]) - Int(frame.luma[index + 1]))
+                total += abs(Int(frame.luma[index]) - Int(frame.luma[nextRow + x]))
+                count += 2
+            }
+        }
+
+        return CGFloat(total) / CGFloat(max(count, 1))
+    }
+
+    private func median(_ values: [CGFloat]) -> CGFloat {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[middle - 1] + sorted[middle]) * 0.5
+        }
+        return sorted[middle]
     }
 
     private func resetAnalysisState() {
@@ -866,7 +1086,8 @@ struct CameraPreviewView: UIViewRepresentable {
                     rotationRadians: finalRoll,
                     translationX: finalX,
                     translationY: finalY
-                )
+                ),
+                at: timestamp
             )
         }
 
@@ -883,7 +1104,7 @@ struct CameraPreviewView: UIViewRepresentable {
             leadY = 0
             leadRoll = 0
             resetMicroJitterIntegrator()
-            view.applyPreviewTransform(.identity)
+            view.applyPreviewTransform(.identity, at: CACurrentMediaTime())
         }
 
         private func updateMicroJitterIntegrator(

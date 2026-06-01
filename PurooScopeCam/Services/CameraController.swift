@@ -199,7 +199,7 @@ final class CameraController: NSObject, ObservableObject {
             }
 
             self.session.beginConfiguration()
-            self.session.sessionPreset = .hd1920x1080
+            self.session.sessionPreset = .inputPriority
             defer { self.session.commitConfiguration() }
 
             guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
@@ -234,6 +234,7 @@ final class CameraController: NSObject, ObservableObject {
     private func configureDeviceDefaults(_ device: AVCaptureDevice) {
         do {
             try device.lockForConfiguration()
+            configurePreferredVideoFormat(device)
             if device.isFocusModeSupported(.continuousAutoFocus) {
                 device.focusMode = .continuousAutoFocus
             }
@@ -253,6 +254,51 @@ final class CameraController: NSObject, ObservableObject {
         } catch {
             publishStatus(error: "无法配置相机默认参数。")
         }
+    }
+
+    private func configurePreferredVideoFormat(_ device: AVCaptureDevice) {
+        let preferredFrameRates = [60.0, 30.0]
+        let preferredSizes = [
+            CMVideoDimensions(width: 1920, height: 1080),
+            CMVideoDimensions(width: 1280, height: 720)
+        ]
+
+        var bestCandidate: (format: AVCaptureDevice.Format, frameRate: Double, score: Int)?
+
+        for format in device.formats {
+            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            guard dimensions.width <= 1920, dimensions.height <= 1080 else { continue }
+
+            let supportedFrameRate = preferredFrameRates.first { frameRate in
+                format.videoSupportedFrameRateRanges.contains { range in
+                    range.minFrameRate <= frameRate && range.maxFrameRate >= frameRate
+                }
+            }
+            guard let frameRate = supportedFrameRate else { continue }
+
+            let sizeRank = preferredSizes.firstIndex { preferred in
+                preferred.width == dimensions.width && preferred.height == dimensions.height
+            } ?? preferredSizes.count
+            let sizeScore = max(0, 300 - sizeRank * 80)
+            let frameRateScore = Int(frameRate * 10)
+            let stabilizationScore = format.isVideoStabilizationModeSupported(.standard) ? 120 : 0
+            let pixelCountPenalty = Int(dimensions.width * dimensions.height / 100_000)
+            let score = frameRateScore + sizeScore + stabilizationScore - pixelCountPenalty
+
+            if bestCandidate.map({ score > $0.score }) ?? true {
+                bestCandidate = (format: format, frameRate: frameRate, score: score)
+            }
+        }
+
+        guard let bestCandidate else { return }
+
+        device.activeFormat = bestCandidate.format
+        let frameDuration = CMTime(
+            value: 1,
+            timescale: CMTimeScale(bestCandidate.frameRate.rounded())
+        )
+        device.activeVideoMinFrameDuration = frameDuration
+        device.activeVideoMaxFrameDuration = frameDuration
     }
 
     private func configureVideoOutput() {
