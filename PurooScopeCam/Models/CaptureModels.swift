@@ -105,6 +105,28 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         }
     }
 
+    var visualMicroJitterCorrectionGain: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 1.25
+        case .strong:
+            return 1.45
+        }
+    }
+
+    var visualMicroJitterMaximumOffset: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 0.018
+        case .strong:
+            return 0.026
+        }
+    }
+
     var visualAnalysisMinimumInterval: TimeInterval {
         switch self {
         case .off, .auto:

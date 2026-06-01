@@ -409,8 +409,28 @@ private final class PreviewFrameMotionAnalyzer {
 
         let gain = preference.visualHighPassCorrectionGain
         let maximumOffset = preference.visualHighPassMaximumOffset
-        let targetX = clamp(-accumulatedX / CGFloat(gridSize) * gain, min: -maximumOffset, max: maximumOffset)
-        let targetY = clamp(-accumulatedY / CGFloat(gridSize) * gain, min: -maximumOffset, max: maximumOffset)
+        let microGate = microJitterGate(for: shift)
+        let microMaximumOffset = preference.visualMicroJitterMaximumOffset
+        let microX = clamp(
+            -shift.dx / CGFloat(gridSize) * preference.visualMicroJitterCorrectionGain * microGate,
+            min: -microMaximumOffset,
+            max: microMaximumOffset
+        )
+        let microY = clamp(
+            -shift.dy / CGFloat(gridSize) * preference.visualMicroJitterCorrectionGain * microGate,
+            min: -microMaximumOffset,
+            max: microMaximumOffset
+        )
+        let targetX = clamp(
+            -accumulatedX / CGFloat(gridSize) * gain + microX,
+            min: -maximumOffset,
+            max: maximumOffset
+        )
+        let targetY = clamp(
+            -accumulatedY / CGFloat(gridSize) * gain + microY,
+            min: -maximumOffset,
+            max: maximumOffset
+        )
         let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate))
 
         correction = PreviewVisualCorrection(
@@ -420,6 +440,13 @@ private final class PreviewFrameMotionAnalyzer {
             timestamp: timestamp
         )
         emit(correction)
+    }
+
+    private func microJitterGate(for shift: VisualShift) -> CGFloat {
+        let magnitude = (shift.dx * shift.dx + shift.dy * shift.dy).squareRoot()
+        let smallMotion = clamp((CGFloat(2.4) - magnitude) / 1.8, min: 0, max: 1)
+        let confidence = clamp((shift.confidence - 0.28) / 0.42, min: 0, max: 1)
+        return smallMotion * confidence
     }
 
     private func decayCorrection(deltaTime: TimeInterval, timestamp: TimeInterval) {
