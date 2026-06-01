@@ -37,9 +37,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 1500
+            return 850
         case .strong:
-            return 3000
+            return 1450
         }
     }
 
@@ -48,9 +48,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 1
         case .balanced:
-            return 1.65
+            return 1.28
         case .strong:
-            return 2.35
+            return 1.5
         }
     }
 
@@ -59,9 +59,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 0.7
+            return 0.42
         case .strong:
-            return 1.2
+            return 0.72
         }
     }
 
@@ -70,9 +70,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 0.85
+            return 1.35
         case .strong:
-            return 0.28
+            return 0.58
         }
     }
 
@@ -81,9 +81,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 130
+            return 82
         case .strong:
-            return 280
+            return 155
         }
     }
 
@@ -92,9 +92,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 72
+            return 58
         case .strong:
-            return 140
+            return 96
         }
     }
 
@@ -103,9 +103,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return .infinity
         case .balanced:
-            return 0.008
+            return 0.012
         case .strong:
-            return 0.004
+            return 0.007
         }
     }
 
@@ -114,9 +114,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 0.024
+            return 0.014
         case .strong:
-            return 0.052
+            return 0.03
         }
     }
 
@@ -125,9 +125,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 42
+            return 34
         case .strong:
-            return 95
+            return 68
         }
     }
 

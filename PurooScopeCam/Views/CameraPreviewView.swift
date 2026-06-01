@@ -212,7 +212,7 @@ struct CameraPreviewView: UIViewRepresentable {
             targetX = clamp(targetX, min: -maxX, max: maxX)
             targetY = clamp(targetY, min: -maxY, max: maxY)
 
-            let rollLimit = preference == .strong ? CGFloat.pi / 18 : CGFloat.pi / 26
+            let rollLimit = preference == .strong ? CGFloat.pi / 30 : CGFloat.pi / 42
             let clampedRoll = clamp(targetRoll, min: -rollLimit, max: rollLimit)
             let responseRate = preference.previewResponseRate
             let alpha = CGFloat(1 - exp(-dt * responseRate))
@@ -227,8 +227,8 @@ struct CameraPreviewView: UIViewRepresentable {
 
             smoothedX = clamp(smoothedX, min: -maxX, max: maxX)
             smoothedY = clamp(smoothedY, min: -maxY, max: maxY)
-            leadX = clamp(leadX, min: -maxX * 0.42, max: maxX * 0.42)
-            leadY = clamp(leadY, min: -maxY * 0.42, max: maxY * 0.42)
+            leadX = clamp(leadX, min: -maxX * 0.28, max: maxX * 0.28)
+            leadY = clamp(leadY, min: -maxY * 0.28, max: maxY * 0.28)
 
             let finalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
             let finalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
