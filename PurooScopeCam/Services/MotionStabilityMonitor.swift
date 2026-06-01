@@ -3,15 +3,35 @@ import CoreMotion
 import Foundation
 
 final class MotionStabilityMonitor: ObservableObject {
-    @Published private(set) var sample: StabilitySample = .unavailable
+    private(set) var sample: StabilitySample = .unavailable
+    @Published private(set) var displaySample: StabilitySample = .unavailable
+
+    typealias SampleObserver = (StabilitySample) -> Void
 
     private let manager = CMMotionManager()
     private let queue = OperationQueue()
     private var filteredScore = 0.0
+    private var sampleObservers: [UUID: SampleObserver] = [:]
+    private var lastDisplaySampleTime: TimeInterval = 0
 
     init() {
         queue.name = "com.puroo.scope.motion"
         queue.qualityOfService = .userInteractive
+        queue.maxConcurrentOperationCount = 1
+    }
+
+    @discardableResult
+    func addSampleObserver(_ observer: @escaping SampleObserver) -> UUID {
+        let id = UUID()
+        sampleObservers[id] = observer
+        if sample != .unavailable {
+            observer(sample)
+        }
+        return id
+    }
+
+    func removeSampleObserver(_ id: UUID) {
+        sampleObservers.removeValue(forKey: id)
     }
 
     func start() {
@@ -20,11 +40,12 @@ final class MotionStabilityMonitor: ObservableObject {
         guard manager.isDeviceMotionAvailable else {
             DispatchQueue.main.async {
                 self.sample = .unavailable
+                self.displaySample = .unavailable
             }
             return
         }
 
-        manager.deviceMotionUpdateInterval = 1.0 / 120.0
+        manager.deviceMotionUpdateInterval = 1.0 / 240.0
         let availableFrames = CMMotionManager.availableAttitudeReferenceFrames()
         let referenceFrame: CMAttitudeReferenceFrame = availableFrames.contains(.xArbitraryCorrectedZVertical)
             ? .xArbitraryCorrectedZVertical
@@ -67,11 +88,21 @@ final class MotionStabilityMonitor: ObservableObject {
 
             DispatchQueue.main.async {
                 self.sample = next
+                if self.shouldPublishDisplaySample(next) {
+                    self.displaySample = next
+                    self.lastDisplaySampleTime = next.timestamp
+                }
+                let observers = Array(self.sampleObservers.values)
+                observers.forEach { $0(next) }
             }
         }
     }
 
     func stop() {
         manager.stopDeviceMotionUpdates()
+    }
+
+    private func shouldPublishDisplaySample(_ next: StabilitySample) -> Bool {
+        next.band != displaySample.band || next.timestamp - lastDisplaySampleTime >= 1.0 / 20.0
     }
 }

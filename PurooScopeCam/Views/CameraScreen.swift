@@ -10,7 +10,7 @@ struct CameraScreen: View {
         ZStack {
             CameraPreviewView(
                 camera: camera,
-                motionSample: motionMonitor.sample,
+                motionMonitor: motionMonitor,
                 stabilizationPreference: camera.stabilizationPreference,
                 visualState: camera.previewStabilizationState
             )
@@ -72,7 +72,7 @@ struct CameraScreen: View {
                 break
             }
         }
-        .onChange(of: motionMonitor.sample) { _, sample in
+        .onChange(of: motionMonitor.displaySample) { _, sample in
             camera.ingestMotionSample(sample)
         }
     }
@@ -92,7 +92,7 @@ struct CameraScreen: View {
 
             Spacer()
 
-            ShakeMeterView(sample: motionMonitor.sample)
+            ShakeMeterView(sample: motionMonitor.displaySample)
                 .frame(width: 132)
         }
     }

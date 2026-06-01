@@ -76,6 +76,61 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         }
     }
 
+    var gyroVelocityLeadGain: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 130
+        case .strong:
+            return 280
+        }
+    }
+
+    var gyroVelocityResponseRate: Double {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 72
+        case .strong:
+            return 140
+        }
+    }
+
+    var gyroVelocityNoiseFloor: Double {
+        switch self {
+        case .off, .auto:
+            return .infinity
+        case .balanced:
+            return 0.008
+        case .strong:
+            return 0.004
+        }
+    }
+
+    var rollVelocityLeadGain: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 0.024
+        case .strong:
+            return 0.052
+        }
+    }
+
+    var previewResponseRate: Double {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 42
+        case .strong:
+            return 95
+        }
+    }
+
     var requestedModes: [AVCaptureVideoStabilizationMode] {
         switch self {
         case .off:

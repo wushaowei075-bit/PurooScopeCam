@@ -1,4 +1,5 @@
 import AVFoundation
+import QuartzCore
 import SwiftUI
 import UIKit
 
@@ -14,6 +15,7 @@ final class PreviewHostView: UIView {
 
 final class PreviewContainerView: UIView {
     let previewView = PreviewHostView()
+    var didConfigurePreviewConnection = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -33,13 +35,16 @@ final class PreviewContainerView: UIView {
     }
 
     func applyPreviewTransform(_ transform: CGAffineTransform) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         previewView.transform = transform
+        CATransaction.commit()
     }
 }
 
 struct CameraPreviewView: UIViewRepresentable {
     @ObservedObject var camera: CameraController
-    let motionSample: StabilitySample
+    let motionMonitor: MotionStabilityMonitor
     let stabilizationPreference: StabilizationPreference
     let visualState: PreviewStabilizationState
 
@@ -52,20 +57,35 @@ struct CameraPreviewView: UIViewRepresentable {
         view.backgroundColor = .black
         view.previewView.previewLayer.session = camera.session
         view.previewView.previewLayer.videoGravity = .resizeAspectFill
-        camera.configurePreviewConnection(view.previewView.previewLayer.connection)
+        configurePreviewConnectionIfNeeded(for: view)
+        context.coordinator.attach(
+            to: view,
+            motionMonitor: motionMonitor,
+            preference: stabilizationPreference,
+            visualState: visualState
+        )
         return view
     }
 
     func updateUIView(_ view: PreviewContainerView, context: Context) {
         view.previewView.previewLayer.session = camera.session
         view.previewView.previewLayer.videoGravity = .resizeAspectFill
-        camera.configurePreviewConnection(view.previewView.previewLayer.connection)
-        context.coordinator.apply(
-            sample: motionSample,
+        configurePreviewConnectionIfNeeded(for: view)
+        context.coordinator.update(
             preference: stabilizationPreference,
-            visualState: visualState,
-            to: view
+            visualState: visualState
         )
+    }
+
+    static func dismantleUIView(_ uiView: PreviewContainerView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    private func configurePreviewConnectionIfNeeded(for view: PreviewContainerView) {
+        guard !view.didConfigurePreviewConnection else { return }
+        guard view.previewView.previewLayer.connection != nil else { return }
+        camera.configurePreviewConnection(view.previewView.previewLayer.connection)
+        view.didConfigurePreviewConnection = true
     }
 
     final class Coordinator {
@@ -77,8 +97,57 @@ struct CameraPreviewView: UIViewRepresentable {
         private var smoothedX: CGFloat = 0
         private var smoothedY: CGFloat = 0
         private var smoothedRoll: CGFloat = 0
+        private var leadX: CGFloat = 0
+        private var leadY: CGFloat = 0
+        private var leadRoll: CGFloat = 0
+        private weak var motionMonitor: MotionStabilityMonitor?
+        private var motionObserverID: UUID?
+        private var latestPreference: StabilizationPreference = .strong
+        private var latestVisualState: PreviewStabilizationState = .identity
 
-        func apply(
+        func attach(
+            to view: PreviewContainerView,
+            motionMonitor: MotionStabilityMonitor,
+            preference: StabilizationPreference,
+            visualState: PreviewStabilizationState
+        ) {
+            latestPreference = preference
+            latestVisualState = visualState
+
+            if motionObserverID != nil, self.motionMonitor === motionMonitor {
+                return
+            }
+
+            detach()
+            self.motionMonitor = motionMonitor
+            motionObserverID = motionMonitor.addSampleObserver { [weak self, weak view] sample in
+                guard let self, let view else { return }
+                self.apply(
+                    sample: sample,
+                    preference: self.latestPreference,
+                    visualState: self.latestVisualState,
+                    to: view
+                )
+            }
+        }
+
+        func update(
+            preference: StabilizationPreference,
+            visualState: PreviewStabilizationState
+        ) {
+            latestPreference = preference
+            latestVisualState = visualState
+        }
+
+        func detach() {
+            if let motionObserverID {
+                motionMonitor?.removeSampleObserver(motionObserverID)
+            }
+            motionObserverID = nil
+            motionMonitor = nil
+        }
+
+        private func apply(
             sample: StabilitySample,
             preference: StabilizationPreference,
             visualState: PreviewStabilizationState,
@@ -127,10 +196,15 @@ struct CameraPreviewView: UIViewRepresentable {
             let maxX = max(12, view.bounds.width * (scale - 1) * 0.48)
             let maxY = max(12, view.bounds.height * (scale - 1) * 0.48)
             let visualGain = preference.visualStabilizationGain
+            let velocityLeadGain = preference.gyroVelocityLeadGain
+            let velocityFloor = preference.gyroVelocityNoiseFloor
 
             var targetX = -yawDelta * gain
             var targetY = pitchDelta * gain
             let targetRoll = -rollDelta * 0.78
+            let velocityX = -deadzone(sample.rotationY, floor: velocityFloor) * velocityLeadGain
+            let velocityY = deadzone(sample.rotationX, floor: velocityFloor) * velocityLeadGain
+            let velocityRoll = -deadzone(sample.rotationZ, floor: velocityFloor) * preference.rollVelocityLeadGain
 
             targetX += visualState.normalizedX * view.bounds.width * visualGain
             targetY += visualState.normalizedY * view.bounds.height * visualGain
@@ -140,17 +214,26 @@ struct CameraPreviewView: UIViewRepresentable {
 
             let rollLimit = preference == .strong ? CGFloat.pi / 18 : CGFloat.pi / 26
             let clampedRoll = clamp(targetRoll, min: -rollLimit, max: rollLimit)
-            let responseRate = preference == .strong ? 30.0 : 18.0
+            let responseRate = preference.previewResponseRate
             let alpha = CGFloat(1 - exp(-dt * responseRate))
+            let leadAlpha = CGFloat(1 - exp(-dt * preference.gyroVelocityResponseRate))
 
             smoothedX += (targetX - smoothedX) * alpha
             smoothedY += (targetY - smoothedY) * alpha
             smoothedRoll += (clampedRoll - smoothedRoll) * alpha
+            leadX += (velocityX - leadX) * leadAlpha
+            leadY += (velocityY - leadY) * leadAlpha
+            leadRoll += (velocityRoll - leadRoll) * leadAlpha
 
             smoothedX = clamp(smoothedX, min: -maxX, max: maxX)
             smoothedY = clamp(smoothedY, min: -maxY, max: maxY)
+            leadX = clamp(leadX, min: -maxX * 0.42, max: maxX * 0.42)
+            leadY = clamp(leadY, min: -maxY * 0.42, max: maxY * 0.42)
 
-            let angle = Double(smoothedRoll)
+            let finalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
+            let finalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
+            let finalRoll = clamp(smoothedRoll + leadRoll, min: -rollLimit, max: rollLimit)
+            let angle = Double(finalRoll)
             let cosine = CGFloat(cos(angle))
             let sine = CGFloat(sin(angle))
             let transform = CGAffineTransform(
@@ -158,8 +241,8 @@ struct CameraPreviewView: UIViewRepresentable {
                 b: scale * sine,
                 c: -scale * sine,
                 d: scale * cosine,
-                tx: smoothedX,
-                ty: smoothedY
+                tx: finalX,
+                ty: finalY
             )
             view.applyPreviewTransform(transform)
         }
@@ -173,7 +256,16 @@ struct CameraPreviewView: UIViewRepresentable {
             smoothedX = 0
             smoothedY = 0
             smoothedRoll = 0
+            leadX = 0
+            leadY = 0
+            leadRoll = 0
             view.applyPreviewTransform(.identity)
+        }
+
+        private func deadzone(_ value: Double, floor: Double) -> CGFloat {
+            let magnitude = abs(value)
+            guard magnitude > floor else { return 0 }
+            return CGFloat((magnitude - floor) * (value < 0 ? -1 : 1))
         }
 
         private func track(anchor: inout Double, toward value: Double, rate: Double, deltaTime: TimeInterval) {
