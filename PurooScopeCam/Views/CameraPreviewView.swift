@@ -388,7 +388,7 @@ private final class PreviewFrameMotionAnalyzer {
         let gain = preference.visualHighPassCorrectionGain
         let maximumOffset = preference.visualHighPassMaximumOffset
         let targetX = clamp(-accumulatedX / CGFloat(gridSize) * gain, min: -maximumOffset, max: maximumOffset)
-        let targetY = clamp(accumulatedY / CGFloat(gridSize) * gain, min: -maximumOffset, max: maximumOffset)
+        let targetY = clamp(-accumulatedY / CGFloat(gridSize) * gain, min: -maximumOffset, max: maximumOffset)
         let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate))
 
         correction = PreviewVisualCorrection(
@@ -406,7 +406,7 @@ private final class PreviewFrameMotionAnalyzer {
         accumulatedY *= leak
 
         let targetX = -accumulatedX / CGFloat(gridSize) * preference.visualHighPassCorrectionGain
-        let targetY = accumulatedY / CGFloat(gridSize) * preference.visualHighPassCorrectionGain
+        let targetY = -accumulatedY / CGFloat(gridSize) * preference.visualHighPassCorrectionGain
         let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate))
 
         correction = PreviewVisualCorrection(
