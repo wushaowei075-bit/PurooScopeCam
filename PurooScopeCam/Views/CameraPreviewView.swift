@@ -231,18 +231,40 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     }
 
     private func correctionForFrame(at timestamp: TimeInterval) -> PreviewVisualCorrection {
-        var selected = PreviewVisualCorrection.identity
-        var staleCount = 0
+        guard !correctionHistory.isEmpty else { return .identity }
+
+        var previousIndex = 0
+        var nextIndex: Int?
 
         for (index, correction) in correctionHistory.enumerated() {
-            guard correction.timestamp <= timestamp else { break }
-            selected = correction
-            staleCount = index
+            if correction.timestamp <= timestamp {
+                previousIndex = index
+            } else {
+                nextIndex = index
+                break
+            }
         }
 
-        if staleCount > 0 {
-            correctionHistory.removeFirst(staleCount)
+        let previous = correctionHistory[previousIndex]
+        let selected: PreviewVisualCorrection
+        if let nextIndex {
+            let next = correctionHistory[nextIndex]
+            let span = max(next.timestamp - previous.timestamp, 0.0001)
+            let amount = CGFloat(min(max((timestamp - previous.timestamp) / span, 0), 1))
+            selected = PreviewVisualCorrection(
+                normalizedX: previous.normalizedX + (next.normalizedX - previous.normalizedX) * amount,
+                normalizedY: previous.normalizedY + (next.normalizedY - previous.normalizedY) * amount,
+                confidence: previous.confidence + (next.confidence - previous.confidence) * amount,
+                timestamp: timestamp
+            )
+        } else {
+            selected = previous
         }
+
+        if previousIndex > 1 {
+            correctionHistory.removeFirst(previousIndex - 1)
+        }
+
         return selected
     }
 
