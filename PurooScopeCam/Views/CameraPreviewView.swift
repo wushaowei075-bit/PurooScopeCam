@@ -222,6 +222,12 @@ struct CameraPreviewView: UIViewRepresentable {
         private var leadX: CGFloat = 0
         private var leadY: CGFloat = 0
         private var leadRoll: CGFloat = 0
+        private var microPitch: Double = 0
+        private var microRoll: Double = 0
+        private var microYaw: Double = 0
+        private var microPitchBaseline: Double = 0
+        private var microRollBaseline: Double = 0
+        private var microYawBaseline: Double = 0
         private let stateLock = NSLock()
         private weak var camera: CameraController?
         private weak var motionMonitor: MotionStabilityMonitor?
@@ -311,8 +317,12 @@ struct CameraPreviewView: UIViewRepresentable {
             }
 
             let timestamp = sample.timestamp
-            let dt = lastTimestamp.map { min(max(timestamp - $0, 1.0 / 240.0), 1.0 / 30.0) } ?? 1.0 / 120.0
+            let elapsed = lastTimestamp.map { timestamp - $0 } ?? 1.0 / 240.0
+            let dt = min(max(elapsed, 1.0 / 300.0), 1.0 / 60.0)
             lastTimestamp = timestamp
+            if elapsed > 0.08 {
+                resetMicroJitterIntegrator()
+            }
 
             if lastPreference != preference || anchorPitch == nil {
                 lastPreference = preference
@@ -322,6 +332,7 @@ struct CameraPreviewView: UIViewRepresentable {
                 smoothedX = 0
                 smoothedY = 0
                 smoothedRoll = 0
+                resetMicroJitterIntegrator()
             }
 
             guard var pitchAnchor = anchorPitch,
@@ -351,6 +362,11 @@ struct CameraPreviewView: UIViewRepresentable {
             let visualGain = preference.visualStabilizationGain
             let velocityLeadGain = preference.gyroVelocityLeadGain
             let velocityFloor = preference.gyroVelocityNoiseFloor
+            updateMicroJitterIntegrator(sample: sample, preference: preference, deltaTime: dt)
+            let microAngleLimit = preference.gyroMicroJitterAngleLimit
+            let microPitchDelta = clamp(CGFloat(microPitch - microPitchBaseline), min: -microAngleLimit, max: microAngleLimit)
+            let microYawDelta = clamp(CGFloat(microYaw - microYawBaseline), min: -microAngleLimit, max: microAngleLimit)
+            let microRollDelta = clamp(CGFloat(microRoll - microRollBaseline), min: -microAngleLimit, max: microAngleLimit)
 
             var targetX = -yawDelta * gain
             var targetY = pitchDelta * gain
@@ -359,6 +375,10 @@ struct CameraPreviewView: UIViewRepresentable {
             let velocityY = deadzone(sample.rotationX, floor: velocityFloor) * velocityLeadGain
             let velocityRoll = -deadzone(sample.rotationZ, floor: velocityFloor) * preference.rollVelocityLeadGain
 
+            targetX -= microYawDelta * preference.gyroMicroJitterGain
+            targetY += microPitchDelta * preference.gyroMicroJitterGain
+            let microRollTarget = -microRollDelta * preference.gyroMicroRollGain
+
             targetX += visualState.normalizedX * viewportSize.width * visualGain
             targetY += visualState.normalizedY * viewportSize.height * visualGain
 
@@ -366,7 +386,7 @@ struct CameraPreviewView: UIViewRepresentable {
             targetY = clamp(targetY, min: -maxY, max: maxY)
 
             let rollLimit = preference == .strong ? CGFloat.pi / 40 : CGFloat.pi / 58
-            let clampedRoll = clamp(targetRoll, min: -rollLimit, max: rollLimit)
+            let clampedRoll = clamp(targetRoll + microRollTarget, min: -rollLimit, max: rollLimit)
             let responseRate = preference.previewResponseRate
             let alpha = CGFloat(1 - exp(-dt * responseRate))
             let leadAlpha = CGFloat(1 - exp(-dt * preference.gyroVelocityResponseRate))
@@ -409,13 +429,53 @@ struct CameraPreviewView: UIViewRepresentable {
             leadX = 0
             leadY = 0
             leadRoll = 0
+            resetMicroJitterIntegrator()
             view.applyPreviewTransform(.identity)
+        }
+
+        private func updateMicroJitterIntegrator(
+            sample: StabilitySample,
+            preference: StabilizationPreference,
+            deltaTime: TimeInterval
+        ) {
+            let floor = preference.gyroMicroJitterNoiseFloor
+            microPitch += deadzoneDouble(sample.rotationX, floor: floor) * deltaTime
+            microRoll += deadzoneDouble(sample.rotationZ, floor: floor) * deltaTime
+            microYaw += deadzoneDouble(sample.rotationY, floor: floor) * deltaTime
+
+            let followAlpha = 1 - exp(-deltaTime * preference.gyroMicroJitterFollowRate)
+            microPitchBaseline += (microPitch - microPitchBaseline) * followAlpha
+            microRollBaseline += (microRoll - microRollBaseline) * followAlpha
+            microYawBaseline += (microYaw - microYawBaseline) * followAlpha
+
+            let leak = exp(-deltaTime * preference.gyroMicroJitterLeakRate)
+            microPitch *= leak
+            microRoll *= leak
+            microYaw *= leak
+            microPitchBaseline *= leak
+            microRollBaseline *= leak
+            microYawBaseline *= leak
+        }
+
+        private func resetMicroJitterIntegrator() {
+            microPitch = 0
+            microRoll = 0
+            microYaw = 0
+            microPitchBaseline = 0
+            microRollBaseline = 0
+            microYawBaseline = 0
         }
 
         private func deadzone(_ value: Double, floor: Double) -> CGFloat {
             let magnitude = abs(value)
             guard magnitude > floor else { return 0 }
             return CGFloat((magnitude - floor) * (value < 0 ? -1 : 1))
+        }
+
+        private func deadzoneDouble(_ value: Double, floor: Double) -> Double {
+            let magnitude = abs(value)
+            guard magnitude > floor else { return 0 }
+            return (magnitude - floor) * (value < 0 ? -1 : 1)
         }
 
         private func track(anchor: inout Double, toward value: Double, rate: Double, deltaTime: TimeInterval) {

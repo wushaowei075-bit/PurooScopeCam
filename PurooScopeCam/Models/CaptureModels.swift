@@ -77,9 +77,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 55
+            return 34
         case .strong:
-            return 105
+            return 58
         }
     }
 
@@ -88,9 +88,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 44
+            return 80
         case .strong:
-            return 72
+            return 130
         }
     }
 
@@ -124,6 +124,72 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
             return 27
         case .strong:
             return 48
+        }
+    }
+
+    var gyroMicroJitterGain: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 2800
+        case .strong:
+            return 5600
+        }
+    }
+
+    var gyroMicroJitterFollowRate: Double {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 8.5
+        case .strong:
+            return 5.2
+        }
+    }
+
+    var gyroMicroJitterLeakRate: Double {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 1.4
+        case .strong:
+            return 0.9
+        }
+    }
+
+    var gyroMicroJitterNoiseFloor: Double {
+        switch self {
+        case .off, .auto:
+            return .infinity
+        case .balanced:
+            return 0.006
+        case .strong:
+            return 0.0025
+        }
+    }
+
+    var gyroMicroJitterAngleLimit: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 0.008
+        case .strong:
+            return 0.014
+        }
+    }
+
+    var gyroMicroRollGain: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 0.12
+        case .strong:
+            return 0.22
         }
     }
 
