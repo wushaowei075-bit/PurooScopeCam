@@ -636,7 +636,7 @@ struct CameraPreviewView: UIViewRepresentable {
         private weak var camera: CameraController?
         private weak var motionMonitor: MotionStabilityMonitor?
         private var motionObserverID: UUID?
-        private var latestPreference: StabilizationPreference = .strong
+        private var latestPreference: StabilizationPreference = .balanced
         private var latestVisualState: PreviewStabilizationState = .identity
 
         func attach(

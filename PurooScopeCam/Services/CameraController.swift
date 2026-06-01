@@ -16,7 +16,7 @@ final class CameraController: NSObject, ObservableObject {
 
     @Published private(set) var authorizationStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
     @Published private(set) var status = CaptureStatus()
-    @Published var stabilizationPreference: StabilizationPreference = .strong {
+    @Published var stabilizationPreference: StabilizationPreference = .balanced {
         didSet {
             videoOutputQueue.async { [weak self] in
                 self?.stabilizationEngine.reset()
