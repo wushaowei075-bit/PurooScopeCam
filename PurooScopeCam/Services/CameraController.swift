@@ -275,9 +275,7 @@ final class CameraController: NSObject, ObservableObject {
         if connection.isVideoMirroringSupported {
             connection.isVideoMirrored = false
         }
-        if connection.isVideoStabilizationSupported {
-            connection.preferredVideoStabilizationMode = .off
-        }
+        applyPreviewStabilization(to: connection)
     }
 
     private func configurePhotoOutput() {
@@ -313,24 +311,24 @@ final class CameraController: NSObject, ObservableObject {
     private func applySelectedStabilizationMode() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.disablePreviewOutputStabilization()
+            self.applyPreviewStabilization(to: self.videoOutput.connection(with: .video))
             self.applyStabilization(to: self.movieOutput.connection(with: .video))
         }
     }
 
-    private func disablePreviewOutputStabilization() {
-        guard let connection = videoOutput.connection(with: .video),
-              connection.isVideoStabilizationSupported
-        else {
-            return
-        }
-
-        connection.preferredVideoStabilizationMode = .off
-    }
-
     private func applyStabilization(to connection: AVCaptureConnection?) {
         guard let connection else { return }
-        let selected = bestAvailableMode(for: connection)
+        let selected = bestAvailableMode(for: connection, requestedModes: stabilizationPreference.requestedModes)
+        apply(selectedStabilizationMode: selected, to: connection)
+    }
+
+    private func applyPreviewStabilization(to connection: AVCaptureConnection?) {
+        guard let connection else { return }
+        let selected = bestAvailableMode(for: connection, requestedModes: stabilizationPreference.requestedPreviewModes)
+        apply(selectedStabilizationMode: selected, to: connection)
+    }
+
+    private func apply(selectedStabilizationMode selected: AVCaptureVideoStabilizationMode, to connection: AVCaptureConnection) {
         if connection.isVideoStabilizationSupported {
             connection.preferredVideoStabilizationMode = selected
             publishStatus { status in
@@ -339,11 +337,14 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
-    private func bestAvailableMode(for connection: AVCaptureConnection) -> AVCaptureVideoStabilizationMode {
+    private func bestAvailableMode(
+        for connection: AVCaptureConnection,
+        requestedModes: [AVCaptureVideoStabilizationMode]
+    ) -> AVCaptureVideoStabilizationMode {
         guard connection.isVideoStabilizationSupported else { return .off }
         guard let device = videoDeviceInput?.device else { return .auto }
 
-        for mode in stabilizationPreference.requestedModes {
+        for mode in requestedModes {
             if mode == .off || mode == .auto || device.activeFormat.isVideoStabilizationModeSupported(mode) {
                 return mode
             }

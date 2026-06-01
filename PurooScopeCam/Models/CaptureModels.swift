@@ -66,9 +66,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 0.95
+            return 1.08
         case .strong:
-            return 1.18
+            return 1.45
         }
     }
 
@@ -77,9 +77,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 8.0
+            return 7.0
         case .strong:
-            return 5.8
+            return 4.2
         }
     }
 
@@ -88,9 +88,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 34
+            return 42
         case .strong:
-            return 58
+            return 72
         }
     }
 
@@ -99,9 +99,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 0.034
+            return 0.055
         case .strong:
-            return 0.072
+            return 0.13
         }
     }
 
@@ -113,6 +113,17 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
             return 1.0 / 40.0
         case .strong:
             return 1.0 / 55.0
+        }
+    }
+
+    var visualPreviewDelayFrames: Int {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 3
+        case .strong:
+            return 4
         }
     }
 
@@ -262,6 +273,19 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
             } else {
                 return [.cinematicExtended, .cinematic, .standard, .auto]
             }
+        }
+    }
+
+    var requestedPreviewModes: [AVCaptureVideoStabilizationMode] {
+        switch self {
+        case .off:
+            return [.off]
+        case .auto:
+            return [.auto]
+        case .balanced:
+            return [.standard, .auto]
+        case .strong:
+            return [.cinematic, .standard, .auto]
         }
     }
 }

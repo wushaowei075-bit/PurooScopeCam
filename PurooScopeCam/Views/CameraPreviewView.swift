@@ -9,11 +9,13 @@ private struct PreviewVisualCorrection: Equatable {
     var normalizedX: CGFloat
     var normalizedY: CGFloat
     var confidence: CGFloat
+    var timestamp: TimeInterval
 
     static let identity = PreviewVisualCorrection(
         normalizedX: 0,
         normalizedY: 0,
-        confidence: 0
+        confidence: 0,
+        timestamp: 0
     )
 }
 
@@ -77,6 +79,7 @@ final class PreviewContainerView: UIView, CameraFrameSink {
 
     func updateStabilizationPreference(_ preference: StabilizationPreference) {
         visualAnalyzer.setPreference(preference)
+        renderer.setPreviewDelayFrames(preference.visualPreviewDelayFrames)
     }
 
     func stopVisualAnalysis() {
@@ -95,14 +98,20 @@ final class PreviewContainerView: UIView, CameraFrameSink {
 }
 
 final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
+    private struct QueuedPreviewFrame {
+        var pixelBuffer: CVPixelBuffer
+        var timestamp: TimeInterval
+    }
+
     private let commandQueue: MTLCommandQueue
     private let ciContext: CIContext
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     private let stateLock = NSLock()
 
-    private var latestPixelBuffer: CVPixelBuffer?
+    private var frameQueue: [QueuedPreviewFrame] = []
+    private var correctionHistory: [PreviewVisualCorrection] = [.identity]
     private var renderTransform = PreviewRenderTransform.identity
-    private var visualCorrection = PreviewVisualCorrection.identity
+    private var previewDelayFrames = 0
 
     init(device: MTLDevice) {
         guard let commandQueue = device.makeCommandQueue() else {
@@ -121,9 +130,21 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         super.init()
     }
 
-    func enqueue(pixelBuffer: CVPixelBuffer, at _: CMTime) {
+    func enqueue(pixelBuffer: CVPixelBuffer, at timestamp: CMTime) {
+        let presentationTime = CMTimeGetSeconds(timestamp)
+        guard presentationTime.isFinite else { return }
+
         stateLock.lock()
-        latestPixelBuffer = pixelBuffer
+        frameQueue.append(
+            QueuedPreviewFrame(
+                pixelBuffer: pixelBuffer,
+                timestamp: presentationTime
+            )
+        )
+        let maximumFrameCount = max(previewDelayFrames + 8, 12)
+        if frameQueue.count > maximumFrameCount {
+            frameQueue.removeFirst(frameQueue.count - maximumFrameCount)
+        }
         stateLock.unlock()
     }
 
@@ -135,7 +156,24 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     fileprivate func setVisualCorrection(_ correction: PreviewVisualCorrection) {
         stateLock.lock()
-        visualCorrection = correction
+        if correction == .identity {
+            correctionHistory = [.identity]
+        } else {
+            correctionHistory.append(correction)
+            if correctionHistory.count > 36 {
+                correctionHistory.removeFirst(correctionHistory.count - 36)
+            }
+        }
+        stateLock.unlock()
+    }
+
+    func setPreviewDelayFrames(_ frameCount: Int) {
+        stateLock.lock()
+        previewDelayFrames = max(0, min(frameCount, 6))
+        let maximumFrameCount = max(previewDelayFrames + 8, 12)
+        if frameQueue.count > maximumFrameCount {
+            frameQueue.removeFirst(frameQueue.count - maximumFrameCount)
+        }
         stateLock.unlock()
     }
 
@@ -143,19 +181,19 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         stateLock.lock()
-        let pixelBuffer = latestPixelBuffer
+        let queuedFrame = nextFrameForDisplay()
         let transform = renderTransform
-        let correction = visualCorrection
+        let correction = queuedFrame.map { correctionForFrame(at: $0.timestamp) } ?? .identity
         stateLock.unlock()
 
-        guard let pixelBuffer,
+        guard let queuedFrame,
               let drawable = view.currentDrawable,
               let commandBuffer = commandQueue.makeCommandBuffer()
         else {
             return
         }
 
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        let image = CIImage(cvPixelBuffer: queuedFrame.pixelBuffer)
         let drawableSize = view.drawableSize
         guard drawableSize.width > 1, drawableSize.height > 1 else { return }
 
@@ -179,6 +217,33 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         )
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    private func nextFrameForDisplay() -> QueuedPreviewFrame? {
+        guard !frameQueue.isEmpty else { return nil }
+
+        let targetIndex = max(0, frameQueue.count - 1 - previewDelayFrames)
+        let frame = frameQueue[targetIndex]
+        if targetIndex > 0 {
+            frameQueue.removeFirst(targetIndex)
+        }
+        return frame
+    }
+
+    private func correctionForFrame(at timestamp: TimeInterval) -> PreviewVisualCorrection {
+        var selected = PreviewVisualCorrection.identity
+        var staleCount = 0
+
+        for (index, correction) in correctionHistory.enumerated() {
+            guard correction.timestamp <= timestamp else { break }
+            selected = correction
+            staleCount = index
+        }
+
+        if staleCount > 0 {
+            correctionHistory.removeFirst(staleCount)
+        }
+        return selected
     }
 
     private func imageToDrawableTransform(
@@ -304,14 +369,14 @@ private final class PreviewFrameMotionAnalyzer {
 
         let dt = min(max(elapsed, 1.0 / 120.0), 1.0 / 24.0)
         guard let shift = estimateShift(reference: previousFrame, current: currentFrame) else {
-            decayCorrection(deltaTime: dt)
+            decayCorrection(deltaTime: dt, timestamp: timestamp)
             return
         }
 
-        apply(shift: shift, deltaTime: dt)
+        apply(shift: shift, deltaTime: dt, timestamp: timestamp)
     }
 
-    private func apply(shift: VisualShift, deltaTime: TimeInterval) {
+    private func apply(shift: VisualShift, deltaTime: TimeInterval, timestamp: TimeInterval) {
         let leak = CGFloat(exp(-deltaTime * preference.visualHighPassLeakRate))
         accumulatedX = (accumulatedX + shift.dx * shift.confidence) * leak
         accumulatedY = (accumulatedY + shift.dy * shift.confidence) * leak
@@ -329,12 +394,13 @@ private final class PreviewFrameMotionAnalyzer {
         correction = PreviewVisualCorrection(
             normalizedX: correction.normalizedX + (targetX - correction.normalizedX) * response,
             normalizedY: correction.normalizedY + (targetY - correction.normalizedY) * response,
-            confidence: shift.confidence
+            confidence: shift.confidence,
+            timestamp: timestamp
         )
         emit(correction)
     }
 
-    private func decayCorrection(deltaTime: TimeInterval) {
+    private func decayCorrection(deltaTime: TimeInterval, timestamp: TimeInterval) {
         let leak = CGFloat(exp(-deltaTime * preference.visualHighPassLeakRate))
         accumulatedX *= leak
         accumulatedY *= leak
@@ -346,7 +412,8 @@ private final class PreviewFrameMotionAnalyzer {
         correction = PreviewVisualCorrection(
             normalizedX: correction.normalizedX + (targetX - correction.normalizedX) * response,
             normalizedY: correction.normalizedY + (targetY - correction.normalizedY) * response,
-            confidence: max(0, correction.confidence * leak)
+            confidence: max(0, correction.confidence * leak),
+            timestamp: timestamp
         )
         emit(correction)
     }
