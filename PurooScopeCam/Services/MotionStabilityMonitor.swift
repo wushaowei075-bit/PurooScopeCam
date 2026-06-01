@@ -25,7 +25,12 @@ final class MotionStabilityMonitor: ObservableObject {
         }
 
         manager.deviceMotionUpdateInterval = 1.0 / 120.0
-        manager.startDeviceMotionUpdates(to: queue) { [weak self] motion, _ in
+        let availableFrames = CMMotionManager.availableAttitudeReferenceFrames()
+        let referenceFrame: CMAttitudeReferenceFrame = availableFrames.contains(.xArbitraryCorrectedZVertical)
+            ? .xArbitraryCorrectedZVertical
+            : .xArbitraryZVertical
+
+        manager.startDeviceMotionUpdates(using: referenceFrame, to: queue) { [weak self] motion, _ in
             guard let self, let motion else { return }
 
             let rotation = motion.rotationRate
@@ -53,6 +58,9 @@ final class MotionStabilityMonitor: ObservableObject {
                 rotationX: rotation.x,
                 rotationY: rotation.y,
                 rotationZ: rotation.z,
+                pitch: motion.attitude.pitch,
+                roll: motion.attitude.roll,
+                yaw: motion.attitude.yaw,
                 score: self.filteredScore,
                 band: band
             )

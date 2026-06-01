@@ -41,6 +41,7 @@ struct CameraPreviewView: UIViewRepresentable {
     @ObservedObject var camera: CameraController
     let motionSample: StabilitySample
     let stabilizationPreference: StabilizationPreference
+    let visualState: PreviewStabilizationState
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -62,19 +63,25 @@ struct CameraPreviewView: UIViewRepresentable {
         context.coordinator.apply(
             sample: motionSample,
             preference: stabilizationPreference,
+            visualState: visualState,
             to: view
         )
     }
 
     final class Coordinator {
+        private var lastPreference: StabilizationPreference?
         private var lastTimestamp: TimeInterval?
-        private var offsetX: CGFloat = 0
-        private var offsetY: CGFloat = 0
-        private var roll: CGFloat = 0
+        private var anchorPitch: Double?
+        private var anchorRoll: Double?
+        private var anchorYaw: Double?
+        private var smoothedX: CGFloat = 0
+        private var smoothedY: CGFloat = 0
+        private var smoothedRoll: CGFloat = 0
 
         func apply(
             sample: StabilitySample,
             preference: StabilizationPreference,
+            visualState: PreviewStabilizationState,
             to view: PreviewContainerView
         ) {
             guard preference.usesElectronicPreviewStabilization, sample.band != .unavailable else {
@@ -86,33 +93,107 @@ struct CameraPreviewView: UIViewRepresentable {
             let dt = lastTimestamp.map { min(max(timestamp - $0, 1.0 / 240.0), 1.0 / 30.0) } ?? 1.0 / 120.0
             lastTimestamp = timestamp
 
+            if lastPreference != preference || anchorPitch == nil {
+                lastPreference = preference
+                anchorPitch = sample.pitch
+                anchorRoll = sample.roll
+                anchorYaw = sample.yaw
+                smoothedX = 0
+                smoothedY = 0
+                smoothedRoll = 0
+            }
+
+            guard var pitchAnchor = anchorPitch,
+                  var rollAnchor = anchorRoll,
+                  var yawAnchor = anchorYaw
+            else {
+                return
+            }
+
+            let followRate = Double(preference.attitudeFollowRate)
+            track(anchor: &pitchAnchor, toward: sample.pitch, rate: followRate, deltaTime: dt)
+            track(anchor: &rollAnchor, toward: sample.roll, rate: followRate, deltaTime: dt)
+            track(anchor: &yawAnchor, toward: sample.yaw, rate: followRate, deltaTime: dt)
+
+            anchorPitch = pitchAnchor
+            anchorRoll = rollAnchor
+            anchorYaw = yawAnchor
+
+            let pitchDelta = CGFloat(wrappedAngle(sample.pitch - pitchAnchor))
+            let rollDelta = CGFloat(wrappedAngle(sample.roll - rollAnchor))
+            let yawDelta = CGFloat(wrappedAngle(sample.yaw - yawAnchor))
             let gain = preference.previewStabilizationGain
             let scale = preference.previewCropScale
-            let maxX = max(8, view.bounds.width * (scale - 1) * 0.45)
-            let maxY = max(8, view.bounds.height * (scale - 1) * 0.45)
-            let returnRate = preference == .strong ? 1.35 : 2.2
-            let decay = CGFloat(exp(-dt * returnRate))
+            let maxX = max(12, view.bounds.width * (scale - 1) * 0.48)
+            let maxY = max(12, view.bounds.height * (scale - 1) * 0.48)
+            let visualGain = preference.visualStabilizationGain
 
-            offsetX = (offsetX - CGFloat(sample.rotationY) * CGFloat(dt) * gain) * decay
-            offsetY = (offsetY + CGFloat(sample.rotationX) * CGFloat(dt) * gain) * decay
-            roll = (roll - CGFloat(sample.rotationZ) * CGFloat(dt) * 0.34) * decay
+            var targetX = -yawDelta * gain
+            var targetY = pitchDelta * gain
+            let targetRoll = -rollDelta * 0.78
 
-            offsetX = min(max(offsetX, -maxX), maxX)
-            offsetY = min(max(offsetY, -maxY), maxY)
-            roll = min(max(roll, -CGFloat.pi / 36), CGFloat.pi / 36)
+            targetX += visualState.normalizedX * view.bounds.width * visualGain
+            targetY += visualState.normalizedY * view.bounds.height * visualGain
 
-            let transform = CGAffineTransform(translationX: offsetX, y: offsetY)
-                .rotated(by: roll)
-                .scaledBy(x: scale, y: scale)
+            targetX = clamp(targetX, min: -maxX, max: maxX)
+            targetY = clamp(targetY, min: -maxY, max: maxY)
+
+            let rollLimit = preference == .strong ? CGFloat.pi / 18 : CGFloat.pi / 26
+            let clampedRoll = clamp(targetRoll, min: -rollLimit, max: rollLimit)
+            let responseRate = preference == .strong ? 30.0 : 18.0
+            let alpha = CGFloat(1 - exp(-dt * responseRate))
+
+            smoothedX += (targetX - smoothedX) * alpha
+            smoothedY += (targetY - smoothedY) * alpha
+            smoothedRoll += (clampedRoll - smoothedRoll) * alpha
+
+            smoothedX = clamp(smoothedX, min: -maxX, max: maxX)
+            smoothedY = clamp(smoothedY, min: -maxY, max: maxY)
+
+            let angle = Double(smoothedRoll)
+            let cosine = CGFloat(cos(angle))
+            let sine = CGFloat(sin(angle))
+            let transform = CGAffineTransform(
+                a: scale * cosine,
+                b: scale * sine,
+                c: -scale * sine,
+                d: scale * cosine,
+                tx: smoothedX,
+                ty: smoothedY
+            )
             view.applyPreviewTransform(transform)
         }
 
         private func reset(view: PreviewContainerView) {
+            lastPreference = nil
             lastTimestamp = nil
-            offsetX = 0
-            offsetY = 0
-            roll = 0
+            anchorPitch = nil
+            anchorRoll = nil
+            anchorYaw = nil
+            smoothedX = 0
+            smoothedY = 0
+            smoothedRoll = 0
             view.applyPreviewTransform(.identity)
+        }
+
+        private func track(anchor: inout Double, toward value: Double, rate: Double, deltaTime: TimeInterval) {
+            let amount = min(max(rate * deltaTime, 0), 1)
+            anchor = wrappedAngle(anchor + wrappedAngle(value - anchor) * amount)
+        }
+
+        private func wrappedAngle(_ angle: Double) -> Double {
+            var value = angle
+            while value > .pi {
+                value -= .pi * 2
+            }
+            while value < -.pi {
+                value += .pi * 2
+            }
+            return value
+        }
+
+        private func clamp<T: Comparable>(_ value: T, min minimum: T, max maximum: T) -> T {
+            min(max(value, minimum), maximum)
         }
     }
 }

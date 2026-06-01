@@ -9,15 +9,22 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var authorizationStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
     @Published private(set) var status = CaptureStatus()
     @Published var stabilizationPreference: StabilizationPreference = .strong {
-        didSet { applySelectedStabilizationMode() }
+        didSet {
+            videoOutputQueue.async { [weak self] in
+                self?.stabilizationEngine.reset()
+                self?.publishPreviewStabilizationState(.identity)
+            }
+            applySelectedStabilizationMode()
+        }
     }
     @Published var zoomFactor: CGFloat = 1
     @Published var exposureBias: Float = 0
     @Published private(set) var focusLocked = false
     @Published private(set) var exposureLocked = false
+    @Published private(set) var previewStabilizationState: PreviewStabilizationState = .identity
 
     private let sessionQueue = DispatchQueue(label: "com.puroo.scope.camera.session")
-    private let videoOutputQueue = DispatchQueue(label: "com.puroo.scope.camera.videoOutput")
+    private let videoOutputQueue = DispatchQueue(label: "com.puroo.scope.camera.videoOutput", qos: .userInteractive)
     private let videoOutput = AVCaptureVideoDataOutput()
     private let photoOutput = AVCapturePhotoOutput()
     private let movieOutput = AVCaptureMovieFileOutput()
@@ -70,7 +77,7 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     func ingestMotionSample(_ sample: StabilitySample) {
-        sessionQueue.async { [weak self] in
+        videoOutputQueue.async { [weak self] in
             self?.stabilizationEngine.ingestMotion(sample)
         }
     }
@@ -372,6 +379,12 @@ final class CameraController: NSObject, ObservableObject {
             update(&self.status)
         }
     }
+
+    private func publishPreviewStabilizationState(_ state: PreviewStabilizationState) {
+        DispatchQueue.main.async {
+            self.previewStabilizationState = state
+        }
+    }
 }
 
 extension CameraController: AVCapturePhotoCaptureDelegate {
@@ -419,5 +432,11 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         from connection: AVCaptureConnection
     ) {
         _ = stabilizationEngine.estimateTransform(for: sampleBuffer)
+        if let state = stabilizationEngine.estimatePreviewState(
+            for: sampleBuffer,
+            preference: stabilizationPreference
+        ) {
+            publishPreviewStabilizationState(state)
+        }
     }
 }

@@ -1,6 +1,10 @@
 DerivedData/
 build/
 build_artifacts/
+analysis_artifacts/
+node_modules/
+package.json
+package-lock.json
 *.xcuserdata/
 *.xcuserstate
 .DS_Store

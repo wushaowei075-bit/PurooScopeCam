@@ -11,7 +11,8 @@ struct CameraScreen: View {
             CameraPreviewView(
                 camera: camera,
                 motionSample: motionMonitor.sample,
-                stabilizationPreference: camera.stabilizationPreference
+                stabilizationPreference: camera.stabilizationPreference,
+                visualState: camera.previewStabilizationState
             )
                 .ignoresSafeArea()
 
