@@ -8,7 +8,11 @@ struct CameraScreen: View {
 
     var body: some View {
         ZStack {
-            CameraPreviewView(camera: camera)
+            CameraPreviewView(
+                camera: camera,
+                motionSample: motionMonitor.sample,
+                stabilizationPreference: camera.stabilizationPreference
+            )
                 .ignoresSafeArea()
 
             if camera.authorizationStatus != .authorized {
@@ -80,7 +84,7 @@ struct CameraScreen: View {
             )
 
             statusPill(
-                title: camera.status.isRecording ? "REC" : "Ready",
+                title: camera.status.isRecording ? "录制" : "就绪",
                 systemImage: camera.status.isRecording ? "record.circle.fill" : "camera.viewfinder"
             )
             .foregroundStyle(camera.status.isRecording ? .red : .white)
@@ -96,9 +100,9 @@ struct CameraScreen: View {
         VStack(spacing: 14) {
             Image(systemName: "camera.fill")
                 .font(.system(size: 38, weight: .semibold))
-            Text("Camera access needed")
+            Text("需要相机权限")
                 .font(.headline)
-            Text("Enable camera permission in Settings, then return to this app.")
+            Text("请在系统设置中开启相机权限，然后返回应用。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

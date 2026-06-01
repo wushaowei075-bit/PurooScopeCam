@@ -9,7 +9,7 @@ struct ControlPanelView: View {
 
             HStack(spacing: 12) {
                 metricSlider(
-                    title: "Zoom",
+                    title: "变焦",
                     value: Binding(
                         get: { Double(camera.zoomFactor) },
                         set: { camera.setZoomFactor(CGFloat($0)) }
@@ -19,7 +19,7 @@ struct ControlPanelView: View {
                 )
 
                 metricSlider(
-                    title: "EV",
+                    title: "曝光",
                     value: Binding(
                         get: { Double(camera.exposureBias) },
                         set: { camera.setExposureBias(Float($0)) }
@@ -31,7 +31,7 @@ struct ControlPanelView: View {
 
             HStack(spacing: 12) {
                 iconToggle(
-                    title: "Focus",
+                    title: "对焦",
                     systemImage: camera.focusLocked ? "lock.fill" : "viewfinder",
                     isActive: camera.focusLocked
                 ) {
@@ -39,7 +39,7 @@ struct ControlPanelView: View {
                 }
 
                 iconToggle(
-                    title: "AE",
+                    title: "测光",
                     systemImage: camera.exposureLocked ? "lock.fill" : "camera.metering.center.weighted",
                     isActive: camera.exposureLocked
                 ) {
@@ -49,7 +49,7 @@ struct ControlPanelView: View {
                 Button {
                     camera.captureBurst()
                 } label: {
-                    Label("Burst", systemImage: "square.stack.3d.up")
+                    Label("连拍", systemImage: "square.stack.3d.up")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(ScopeButtonStyle())
@@ -57,7 +57,7 @@ struct ControlPanelView: View {
                 Button {
                     camera.toggleRecording()
                 } label: {
-                    Label(camera.status.isRecording ? "Stop" : "Video", systemImage: camera.status.isRecording ? "stop.fill" : "video.fill")
+                    Label(camera.status.isRecording ? "停止" : "录像", systemImage: camera.status.isRecording ? "stop.fill" : "video.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(ScopeButtonStyle(isProminent: camera.status.isRecording))
@@ -70,7 +70,7 @@ struct ControlPanelView: View {
                         .frame(width: 58, height: 58)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Capture photo")
+                .accessibilityLabel("拍照")
             }
             .font(.subheadline.weight(.semibold))
         }
@@ -79,7 +79,7 @@ struct ControlPanelView: View {
     }
 
     private var stabilizationPicker: some View {
-        Picker("Stabilization", selection: $camera.stabilizationPreference) {
+        Picker("防抖", selection: $camera.stabilizationPreference) {
             ForEach(StabilizationPreference.allCases) { preference in
                 Text(preference.title).tag(preference)
             }
@@ -144,4 +144,3 @@ struct ScopeButtonStyle: ButtonStyle {
         .padding()
         .background(Color.gray)
 }
-

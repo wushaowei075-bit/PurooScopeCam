@@ -69,9 +69,9 @@ final class FrameStabilizationEngine {
             return .identity
         }
 
-        let motion = Float(latestMotionSample.angularVelocity)
+        let yaw = Float(latestMotionSample.rotationY)
         let score = Float(latestMotionSample.score)
-        let rotation = -motion * delta * 0.015
+        let rotation = -yaw * delta * 0.04
         let scale = 1 + min(cropMargin, 0.35) * score * 0.04
 
         return StabilizationTransform(

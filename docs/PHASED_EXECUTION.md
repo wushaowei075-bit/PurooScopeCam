@@ -46,6 +46,16 @@ Current scaffold status:
 - `CameraController` forwards motion samples to `FrameStabilizationEngine`.
 - `FrameStabilizationEngine` emits a placeholder gyro-driven transform that
   can be applied by a future Metal/Core Image renderer.
+- `CameraPreviewView` applies gyro-driven electronic preview stabilization for
+  the Balanced and Strong modes by cropping and counter-transforming the live
+  preview layer.
+
+Current limitation:
+
+- The new electronic stabilization is visible in live preview. Recorded video
+  still uses the system `AVCaptureMovieFileOutput` stabilization path. Strong
+  stabilization in recorded files requires a processed frame pipeline with
+  Metal/Core Image and `AVAssetWriter`.
 
 Next implementation tasks:
 

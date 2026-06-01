@@ -41,9 +41,9 @@ final class CameraController: NSObject, ObservableObject {
                 }
             }
         case .denied, .restricted:
-            publishStatus(error: "Camera access is not available.")
+            publishStatus(error: "相机权限不可用。")
         @unknown default:
-            publishStatus(error: "Unknown camera authorization state.")
+            publishStatus(error: "相机权限状态未知。")
         }
     }
 
@@ -86,7 +86,7 @@ final class CameraController: NSObject, ObservableObject {
                 device.unlockForConfiguration()
                 self.publish { $0.zoomFactor = min(clamped, deviceMax) }
             } catch {
-                self.publishStatus(error: "Could not set zoom.")
+                self.publishStatus(error: "无法设置变焦。")
             }
         }
     }
@@ -101,7 +101,7 @@ final class CameraController: NSObject, ObservableObject {
                 device.unlockForConfiguration()
                 self.publish { $0.exposureBias = clamped }
             } catch {
-                self.publishStatus(error: "Could not set exposure.")
+                self.publishStatus(error: "无法设置曝光。")
             }
         }
     }
@@ -119,7 +119,7 @@ final class CameraController: NSObject, ObservableObject {
                 device.unlockForConfiguration()
                 self.publish { $0.focusLocked = locked }
             } catch {
-                self.publishStatus(error: "Could not change focus mode.")
+                self.publishStatus(error: "无法切换对焦模式。")
             }
         }
     }
@@ -137,7 +137,7 @@ final class CameraController: NSObject, ObservableObject {
                 device.unlockForConfiguration()
                 self.publish { $0.exposureLocked = locked }
             } catch {
-                self.publishStatus(error: "Could not change exposure mode.")
+                self.publishStatus(error: "无法切换测光模式。")
             }
         }
     }
@@ -148,14 +148,14 @@ final class CameraController: NSObject, ObservableObject {
             let settings = AVCapturePhotoSettings()
             settings.flashMode = .off
             self.photoOutput.capturePhoto(with: settings, delegate: self)
-            self.publishStatus(message: "Capturing photo...")
+            self.publishStatus(message: "正在拍照...")
         }
     }
 
     func captureBurst(plan: BurstCapturePlan = .defaultTelescope) {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured else { return }
-            self.publishStatus(message: "Capturing burst...")
+            self.publishStatus(message: "正在连拍...")
 
             for index in 0..<plan.frameCount {
                 self.sessionQueue.asyncAfter(deadline: .now() + plan.frameInterval * Double(index)) { [weak self] in
@@ -181,20 +181,20 @@ final class CameraController: NSObject, ObservableObject {
             defer { self.session.commitConfiguration() }
 
             guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
-                self.publishStatus(error: "Back camera is not available.")
+                self.publishStatus(error: "后置相机不可用。")
                 return
             }
 
             do {
                 let input = try AVCaptureDeviceInput(device: device)
                 guard self.session.canAddInput(input) else {
-                    self.publishStatus(error: "Could not add camera input.")
+                    self.publishStatus(error: "无法添加相机输入。")
                     return
                 }
                 self.session.addInput(input)
                 self.videoDeviceInput = input
             } catch {
-                self.publishStatus(error: "Could not create camera input.")
+                self.publishStatus(error: "无法创建相机输入。")
                 return
             }
 
@@ -229,7 +229,7 @@ final class CameraController: NSObject, ObservableObject {
             }
             device.unlockForConfiguration()
         } catch {
-            publishStatus(error: "Could not configure camera defaults.")
+            publishStatus(error: "无法配置相机默认参数。")
         }
     }
 
@@ -311,7 +311,7 @@ final class CameraController: NSObject, ObservableObject {
             guard authorization == .authorized || authorization == .limited else {
                 self?.publishStatus { status in
                     status.isSaving = false
-                    status.errorMessage = "Photos access was not granted."
+                    status.errorMessage = "未获得照片保存权限。"
                 }
                 return
             }
@@ -322,7 +322,7 @@ final class CameraController: NSObject, ObservableObject {
             } completionHandler: { success, error in
                 self?.publishStatus { status in
                     status.isSaving = false
-                    status.lastMessage = success ? "Photo saved." : nil
+                    status.lastMessage = success ? "照片已保存。" : nil
                     status.errorMessage = error?.localizedDescription
                 }
             }
@@ -335,7 +335,7 @@ final class CameraController: NSObject, ObservableObject {
             guard authorization == .authorized || authorization == .limited else {
                 self?.publishStatus { status in
                     status.isSaving = false
-                    status.errorMessage = "Photos access was not granted."
+                    status.errorMessage = "未获得照片保存权限。"
                 }
                 return
             }
@@ -347,7 +347,7 @@ final class CameraController: NSObject, ObservableObject {
                 try? FileManager.default.removeItem(at: url)
                 self?.publishStatus { status in
                     status.isSaving = false
-                    status.lastMessage = success ? "Video saved." : nil
+                    status.lastMessage = success ? "视频已保存。" : nil
                     status.errorMessage = error?.localizedDescription
                 }
             }
@@ -386,7 +386,7 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
         }
 
         guard let data = photo.fileDataRepresentation() else {
-            publishStatus(error: "Photo data was not available.")
+            publishStatus(error: "照片数据不可用。")
             return
         }
 

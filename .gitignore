@@ -1,7 +1,7 @@
 DerivedData/
 build/
+build_artifacts/
 *.xcuserdata/
 *.xcuserstate
 .DS_Store
 *.moved-aside
-

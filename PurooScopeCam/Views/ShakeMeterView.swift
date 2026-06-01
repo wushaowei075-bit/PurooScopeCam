@@ -51,11 +51,10 @@ struct ShakeMeterView: View {
 #Preview {
     VStack {
         ShakeMeterView(sample: .unavailable)
-        ShakeMeterView(sample: StabilitySample(timestamp: 0, angularVelocity: 0.1, score: 0.16, band: .stable))
-        ShakeMeterView(sample: StabilitySample(timestamp: 0, angularVelocity: 0.8, score: 0.4, band: .warning))
-        ShakeMeterView(sample: StabilitySample(timestamp: 0, angularVelocity: 1.8, score: 0.86, band: .heavy))
+        ShakeMeterView(sample: StabilitySample(timestamp: 0, angularVelocity: 0.1, rotationX: 0, rotationY: 0, rotationZ: 0, score: 0.16, band: .stable))
+        ShakeMeterView(sample: StabilitySample(timestamp: 0, angularVelocity: 0.8, rotationX: 0, rotationY: 0, rotationZ: 0, score: 0.4, band: .warning))
+        ShakeMeterView(sample: StabilitySample(timestamp: 0, angularVelocity: 1.8, rotationX: 0, rotationY: 0, rotationZ: 0, score: 0.86, band: .heavy))
     }
     .padding()
     .background(Color.black)
 }
-

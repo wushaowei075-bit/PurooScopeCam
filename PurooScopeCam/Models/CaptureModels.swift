@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreGraphics
 import Foundation
 
 enum StabilizationPreference: String, CaseIterable, Identifiable {
@@ -12,13 +13,44 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .off:
-            return "Off"
+            return "关闭"
         case .auto:
-            return "Auto"
+            return "自动"
         case .balanced:
-            return "Balanced"
+            return "均衡"
         case .strong:
-            return "Strong"
+            return "强力"
+        }
+    }
+
+    var usesElectronicPreviewStabilization: Bool {
+        switch self {
+        case .off, .auto:
+            return false
+        case .balanced, .strong:
+            return true
+        }
+    }
+
+    var previewStabilizationGain: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 260
+        case .strong:
+            return 420
+        }
+    }
+
+    var previewCropScale: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 1
+        case .balanced:
+            return 1.18
+        case .strong:
+            return 1.32
         }
     }
 
@@ -49,13 +81,13 @@ enum StabilityBand: Equatable {
     var title: String {
         switch self {
         case .stable:
-            return "Stable"
+            return "稳定"
         case .warning:
-            return "Shake"
+            return "抖动"
         case .heavy:
-            return "Heavy"
+            return "剧烈"
         case .unavailable:
-            return "No Motion"
+            return "无传感器"
         }
     }
 }
@@ -63,12 +95,18 @@ enum StabilityBand: Equatable {
 struct StabilitySample: Equatable {
     var timestamp: TimeInterval
     var angularVelocity: Double
+    var rotationX: Double
+    var rotationY: Double
+    var rotationZ: Double
     var score: Double
     var band: StabilityBand
 
     static let unavailable = StabilitySample(
         timestamp: 0,
         angularVelocity: 0,
+        rotationX: 0,
+        rotationY: 0,
+        rotationZ: 0,
         score: 0,
         band: .unavailable
     )
@@ -86,22 +124,22 @@ struct CaptureStatus: Equatable {
 extension AVCaptureVideoStabilizationMode {
     var scopeDisplayName: String {
         if #available(iOS 18.0, *), self == .cinematicExtendedEnhanced {
-            return "Enhanced"
+            return "增强"
         }
 
         switch self {
         case .off:
-            return "Off"
+            return "关闭"
         case .standard:
-            return "Standard"
+            return "标准"
         case .cinematic:
-            return "Cinematic"
+            return "电影"
         case .cinematicExtended:
-            return "Extended"
+            return "扩展"
         case .auto:
-            return "Auto"
+            return "自动"
         @unknown default:
-            return "Unknown"
+            return "未知"
         }
     }
 }

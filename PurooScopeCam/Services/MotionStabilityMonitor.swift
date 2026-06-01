@@ -50,6 +50,9 @@ final class MotionStabilityMonitor: ObservableObject {
             let next = StabilitySample(
                 timestamp: motion.timestamp,
                 angularVelocity: magnitude,
+                rotationX: rotation.x,
+                rotationY: rotation.y,
+                rotationZ: rotation.z,
                 score: self.filteredScore,
                 band: band
             )
