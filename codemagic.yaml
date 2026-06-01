@@ -25,4 +25,50 @@ workflows:
     artifacts:
       - $HOME/Library/Developer/Xcode/DerivedData/**/Build/Products/**/*.app
       - $HOME/Library/Developer/Xcode/DerivedData/**/Logs/Build/*.xcactivitylog
+  ios-unsigned-ipa:
+    name: iOS Unsigned IPA
+    max_build_duration: 60
+    environment:
+      xcode: latest
+      vars:
+        XCODE_PROJECT: "PurooScopeCam.xcodeproj"
+        XCODE_SCHEME: "PurooScopeCam"
+    scripts:
+      - name: Show Xcode version
+        script: xcodebuild -version
+      - name: Build unsigned iPhoneOS app
+        script: |
+          set -euo pipefail
+          xcodebuild build \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$CM_BUILD_DIR/build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+      - name: Package unsigned IPA artifact
+        script: |
+          set -euo pipefail
+          IPA_PATH="$CM_BUILD_DIR/build/PurooScopeCam-unsigned.ipa"
+          APP_PATH=$(find "$CM_BUILD_DIR/build/DerivedData/Build/Products/Release-iphoneos" \
+            -maxdepth 1 \
+            -name "*.app" \
+            -type d \
+            | head -n 1)
 
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app product found"
+            exit 1
+          fi
+
+          rm -rf "$CM_BUILD_DIR/build/ipa"
+          mkdir -p "$CM_BUILD_DIR/build/ipa/Payload"
+          ditto "$APP_PATH" "$CM_BUILD_DIR/build/ipa/Payload/$(basename "$APP_PATH")"
+          cd "$CM_BUILD_DIR/build/ipa"
+          zip -qry "$IPA_PATH" Payload
+          ls -lh "$IPA_PATH"
+    artifacts:
+      - build/PurooScopeCam-unsigned.ipa
+      - build/DerivedData/**/Logs/Build/*.xcactivitylog
