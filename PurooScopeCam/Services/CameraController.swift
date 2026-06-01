@@ -275,6 +275,9 @@ final class CameraController: NSObject, ObservableObject {
         if connection.isVideoMirroringSupported {
             connection.isVideoMirrored = false
         }
+        if connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = .off
+        }
     }
 
     private func configurePhotoOutput() {
@@ -310,9 +313,19 @@ final class CameraController: NSObject, ObservableObject {
     private func applySelectedStabilizationMode() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.applyStabilization(to: self.videoOutput.connection(with: .video))
+            self.disablePreviewOutputStabilization()
             self.applyStabilization(to: self.movieOutput.connection(with: .video))
         }
+    }
+
+    private func disablePreviewOutputStabilization() {
+        guard let connection = videoOutput.connection(with: .video),
+              connection.isVideoStabilizationSupported
+        else {
+            return
+        }
+
+        connection.preferredVideoStabilizationMode = .off
     }
 
     private func applyStabilization(to connection: AVCaptureConnection?) {
@@ -460,14 +473,6 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
             previewFrameSink?.cameraController(self, didOutput: pixelBuffer, at: timestamp)
-        }
-
-        _ = stabilizationEngine.estimateTransform(for: sampleBuffer)
-        if let state = stabilizationEngine.estimatePreviewState(
-            for: sampleBuffer,
-            preference: stabilizationPreference
-        ) {
-            publishPreviewStabilizationState(state)
         }
     }
 }

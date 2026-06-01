@@ -10,6 +10,7 @@ final class MotionStabilityMonitor: ObservableObject {
 
     private let manager = CMMotionManager()
     private let queue = OperationQueue()
+    private let observerLock = NSLock()
     private var filteredScore = 0.0
     private var sampleObservers: [UUID: SampleObserver] = [:]
     private var lastDisplaySampleTime: TimeInterval = 0
@@ -23,15 +24,21 @@ final class MotionStabilityMonitor: ObservableObject {
     @discardableResult
     func addSampleObserver(_ observer: @escaping SampleObserver) -> UUID {
         let id = UUID()
+        observerLock.lock()
         sampleObservers[id] = observer
-        if sample != .unavailable {
-            observer(sample)
+        let currentSample = sample
+        observerLock.unlock()
+
+        if currentSample != .unavailable {
+            observer(currentSample)
         }
         return id
     }
 
     func removeSampleObserver(_ id: UUID) {
+        observerLock.lock()
         sampleObservers.removeValue(forKey: id)
+        observerLock.unlock()
     }
 
     func start() {
@@ -86,14 +93,18 @@ final class MotionStabilityMonitor: ObservableObject {
                 band: band
             )
 
+            self.observerLock.lock()
+            self.sample = next
+            let observers = Array(self.sampleObservers.values)
+            self.observerLock.unlock()
+
+            observers.forEach { $0(next) }
+
             DispatchQueue.main.async {
-                self.sample = next
                 if self.shouldPublishDisplaySample(next) {
                     self.displaySample = next
                     self.lastDisplaySampleTime = next.timestamp
                 }
-                let observers = Array(self.sampleObservers.values)
-                observers.forEach { $0(next) }
             }
         }
     }

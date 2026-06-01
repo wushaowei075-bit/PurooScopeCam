@@ -56,12 +56,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualStabilizationGain: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .balanced:
-            return 0.3
-        case .strong:
-            return 0.52
         }
     }
 

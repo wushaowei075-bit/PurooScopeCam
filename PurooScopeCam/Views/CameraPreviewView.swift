@@ -8,6 +8,8 @@ import UIKit
 final class PreviewContainerView: UIView, CameraFrameSink {
     private let metalView: MTKView
     private let renderer: StabilizedMetalPreviewRenderer
+    private let viewportLock = NSLock()
+    private var viewportSize = CGSize.zero
 
     override init(frame: CGRect) {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -40,6 +42,16 @@ final class PreviewContainerView: UIView, CameraFrameSink {
     override func layoutSubviews() {
         super.layoutSubviews()
         metalView.frame = bounds
+        viewportLock.lock()
+        viewportSize = bounds.size
+        viewportLock.unlock()
+    }
+
+    var currentViewportSize: CGSize {
+        viewportLock.lock()
+        let size = viewportSize
+        viewportLock.unlock()
+        return size
     }
 
     func applyPreviewTransform(_ transform: PreviewRenderTransform) {
@@ -210,6 +222,7 @@ struct CameraPreviewView: UIViewRepresentable {
         private var leadX: CGFloat = 0
         private var leadY: CGFloat = 0
         private var leadRoll: CGFloat = 0
+        private let stateLock = NSLock()
         private weak var camera: CameraController?
         private weak var motionMonitor: MotionStabilityMonitor?
         private var motionObserverID: UUID?
@@ -223,8 +236,7 @@ struct CameraPreviewView: UIViewRepresentable {
             preference: StabilizationPreference,
             visualState: PreviewStabilizationState
         ) {
-            latestPreference = preference
-            latestVisualState = visualState
+            setLatest(preference: preference, visualState: visualState)
 
             if self.camera !== camera {
                 self.camera?.setPreviewFrameSink(nil)
@@ -242,10 +254,11 @@ struct CameraPreviewView: UIViewRepresentable {
             self.motionMonitor = motionMonitor
             motionObserverID = motionMonitor.addSampleObserver { [weak self, weak view] sample in
                 guard let self, let view else { return }
+                let latest = self.latest()
                 self.apply(
                     sample: sample,
-                    preference: self.latestPreference,
-                    visualState: self.latestVisualState,
+                    preference: latest.preference,
+                    visualState: latest.visualState,
                     to: view
                 )
             }
@@ -255,8 +268,25 @@ struct CameraPreviewView: UIViewRepresentable {
             preference: StabilizationPreference,
             visualState: PreviewStabilizationState
         ) {
+            setLatest(preference: preference, visualState: visualState)
+        }
+
+        private func setLatest(
+            preference: StabilizationPreference,
+            visualState: PreviewStabilizationState
+        ) {
+            stateLock.lock()
             latestPreference = preference
             latestVisualState = visualState
+            stateLock.unlock()
+        }
+
+        private func latest() -> (preference: StabilizationPreference, visualState: PreviewStabilizationState) {
+            stateLock.lock()
+            let preference = latestPreference
+            let visualState = latestVisualState
+            stateLock.unlock()
+            return (preference, visualState)
         }
 
         func detach() {
@@ -315,8 +345,9 @@ struct CameraPreviewView: UIViewRepresentable {
             let yawDelta = CGFloat(wrappedAngle(sample.yaw - yawAnchor))
             let gain = preference.previewStabilizationGain
             let scale = preference.previewCropScale
-            let maxX = max(12, view.bounds.width * (scale - 1) * 0.38)
-            let maxY = max(12, view.bounds.height * (scale - 1) * 0.38)
+            let viewportSize = view.currentViewportSize
+            let maxX = max(12, viewportSize.width * (scale - 1) * 0.38)
+            let maxY = max(12, viewportSize.height * (scale - 1) * 0.38)
             let visualGain = preference.visualStabilizationGain
             let velocityLeadGain = preference.gyroVelocityLeadGain
             let velocityFloor = preference.gyroVelocityNoiseFloor
@@ -328,8 +359,8 @@ struct CameraPreviewView: UIViewRepresentable {
             let velocityY = deadzone(sample.rotationX, floor: velocityFloor) * velocityLeadGain
             let velocityRoll = -deadzone(sample.rotationZ, floor: velocityFloor) * preference.rollVelocityLeadGain
 
-            targetX += visualState.normalizedX * view.bounds.width * visualGain
-            targetY += visualState.normalizedY * view.bounds.height * visualGain
+            targetX += visualState.normalizedX * viewportSize.width * visualGain
+            targetY += visualState.normalizedY * viewportSize.height * visualGain
 
             targetX = clamp(targetX, min: -maxX, max: maxX)
             targetY = clamp(targetY, min: -maxY, max: maxY)
