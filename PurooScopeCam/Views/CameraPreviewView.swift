@@ -315,15 +315,15 @@ struct CameraPreviewView: UIViewRepresentable {
             let yawDelta = CGFloat(wrappedAngle(sample.yaw - yawAnchor))
             let gain = preference.previewStabilizationGain
             let scale = preference.previewCropScale
-            let maxX = max(12, view.bounds.width * (scale - 1) * 0.48)
-            let maxY = max(12, view.bounds.height * (scale - 1) * 0.48)
+            let maxX = max(12, view.bounds.width * (scale - 1) * 0.38)
+            let maxY = max(12, view.bounds.height * (scale - 1) * 0.38)
             let visualGain = preference.visualStabilizationGain
             let velocityLeadGain = preference.gyroVelocityLeadGain
             let velocityFloor = preference.gyroVelocityNoiseFloor
 
             var targetX = -yawDelta * gain
             var targetY = pitchDelta * gain
-            let targetRoll = -rollDelta * 0.78
+            let targetRoll = -rollDelta * 0.45
             let velocityX = -deadzone(sample.rotationY, floor: velocityFloor) * velocityLeadGain
             let velocityY = deadzone(sample.rotationX, floor: velocityFloor) * velocityLeadGain
             let velocityRoll = -deadzone(sample.rotationZ, floor: velocityFloor) * preference.rollVelocityLeadGain
@@ -334,7 +334,7 @@ struct CameraPreviewView: UIViewRepresentable {
             targetX = clamp(targetX, min: -maxX, max: maxX)
             targetY = clamp(targetY, min: -maxY, max: maxY)
 
-            let rollLimit = preference == .strong ? CGFloat.pi / 30 : CGFloat.pi / 42
+            let rollLimit = preference == .strong ? CGFloat.pi / 40 : CGFloat.pi / 58
             let clampedRoll = clamp(targetRoll, min: -rollLimit, max: rollLimit)
             let responseRate = preference.previewResponseRate
             let alpha = CGFloat(1 - exp(-dt * responseRate))
@@ -349,8 +349,8 @@ struct CameraPreviewView: UIViewRepresentable {
 
             smoothedX = clamp(smoothedX, min: -maxX, max: maxX)
             smoothedY = clamp(smoothedY, min: -maxY, max: maxY)
-            leadX = clamp(leadX, min: -maxX * 0.28, max: maxX * 0.28)
-            leadY = clamp(leadY, min: -maxY * 0.28, max: maxY * 0.28)
+            leadX = clamp(leadX, min: -maxX * 0.18, max: maxX * 0.18)
+            leadY = clamp(leadY, min: -maxY * 0.18, max: maxY * 0.18)
 
             let finalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
             let finalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
