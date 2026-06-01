@@ -61,6 +61,61 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         }
     }
 
+    var visualHighPassCorrectionGain: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 0.95
+        case .strong:
+            return 1.18
+        }
+    }
+
+    var visualHighPassLeakRate: Double {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 8.0
+        case .strong:
+            return 5.8
+        }
+    }
+
+    var visualHighPassResponseRate: Double {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 34
+        case .strong:
+            return 58
+        }
+    }
+
+    var visualHighPassMaximumOffset: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 0.034
+        case .strong:
+            return 0.072
+        }
+    }
+
+    var visualAnalysisMinimumInterval: TimeInterval {
+        switch self {
+        case .off, .auto:
+            return .infinity
+        case .balanced:
+            return 1.0 / 40.0
+        case .strong:
+            return 1.0 / 55.0
+        }
+    }
+
     var attitudeFollowRate: CGFloat {
         switch self {
         case .off, .auto:

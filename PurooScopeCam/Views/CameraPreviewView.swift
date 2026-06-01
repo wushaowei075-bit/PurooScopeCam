@@ -5,9 +5,22 @@ import MetalKit
 import SwiftUI
 import UIKit
 
+private struct PreviewVisualCorrection: Equatable {
+    var normalizedX: CGFloat
+    var normalizedY: CGFloat
+    var confidence: CGFloat
+
+    static let identity = PreviewVisualCorrection(
+        normalizedX: 0,
+        normalizedY: 0,
+        confidence: 0
+    )
+}
+
 final class PreviewContainerView: UIView, CameraFrameSink {
     private let metalView: MTKView
     private let renderer: StabilizedMetalPreviewRenderer
+    private let visualAnalyzer = PreviewFrameMotionAnalyzer()
     private let viewportLock = NSLock()
     private var viewportSize = CGSize.zero
 
@@ -31,6 +44,10 @@ final class PreviewContainerView: UIView, CameraFrameSink {
         metalView.enableSetNeedsDisplay = false
         metalView.preferredFramesPerSecond = min(UIScreen.main.maximumFramesPerSecond, 120)
         metalView.delegate = renderer
+
+        visualAnalyzer.onCorrection = { [weak self] correction in
+            self?.renderer.setVisualCorrection(correction)
+        }
 
         addSubview(metalView)
     }
@@ -58,12 +75,22 @@ final class PreviewContainerView: UIView, CameraFrameSink {
         renderer.setRenderTransform(transform)
     }
 
+    func updateStabilizationPreference(_ preference: StabilizationPreference) {
+        visualAnalyzer.setPreference(preference)
+    }
+
+    func stopVisualAnalysis() {
+        visualAnalyzer.setPreference(.off)
+        renderer.setVisualCorrection(.identity)
+    }
+
     func cameraController(
         _ controller: CameraController,
         didOutput pixelBuffer: CVPixelBuffer,
         at timestamp: CMTime
     ) {
         renderer.enqueue(pixelBuffer: pixelBuffer, at: timestamp)
+        visualAnalyzer.enqueue(pixelBuffer: pixelBuffer, at: timestamp)
     }
 }
 
@@ -75,6 +102,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     private var latestPixelBuffer: CVPixelBuffer?
     private var renderTransform = PreviewRenderTransform.identity
+    private var visualCorrection = PreviewVisualCorrection.identity
 
     init(device: MTLDevice) {
         guard let commandQueue = device.makeCommandQueue() else {
@@ -105,12 +133,19 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         stateLock.unlock()
     }
 
+    fileprivate func setVisualCorrection(_ correction: PreviewVisualCorrection) {
+        stateLock.lock()
+        visualCorrection = correction
+        stateLock.unlock()
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
         stateLock.lock()
         let pixelBuffer = latestPixelBuffer
         let transform = renderTransform
+        let correction = visualCorrection
         stateLock.unlock()
 
         guard let pixelBuffer,
@@ -130,7 +165,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 imageExtent: image.extent,
                 drawableSize: drawableSize,
                 viewBounds: view.bounds,
-                previewTransform: transform
+                previewTransform: transform,
+                visualCorrection: correction
             )
         )
 
@@ -149,7 +185,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         imageExtent: CGRect,
         drawableSize: CGSize,
         viewBounds: CGRect,
-        previewTransform: PreviewRenderTransform
+        previewTransform: PreviewRenderTransform,
+        visualCorrection: PreviewVisualCorrection
     ) -> CGAffineTransform {
         let imageWidth = max(imageExtent.width, 1)
         let imageHeight = max(imageExtent.height, 1)
@@ -161,8 +198,10 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
         let pointToPixelX = drawableSize.width / max(viewBounds.width, 1)
         let pointToPixelY = drawableSize.height / max(viewBounds.height, 1)
-        let outputCenterX = drawableSize.width * 0.5 + previewTransform.translationX * pointToPixelX
-        let outputCenterY = drawableSize.height * 0.5 - previewTransform.translationY * pointToPixelY
+        let correctedX = previewTransform.translationX + visualCorrection.normalizedX * viewBounds.width
+        let correctedY = previewTransform.translationY + visualCorrection.normalizedY * viewBounds.height
+        let outputCenterX = drawableSize.width * 0.5 + correctedX * pointToPixelX
+        let outputCenterY = drawableSize.height * 0.5 - correctedY * pointToPixelY
         let inputCenterX = imageExtent.midX
         let inputCenterY = imageExtent.midY
 
@@ -174,6 +213,301 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         let ty = outputCenterY - b * inputCenterX - d * inputCenterY
 
         return CGAffineTransform(a: a, b: b, c: c, d: d, tx: tx, ty: ty)
+    }
+}
+
+private final class PreviewFrameMotionAnalyzer {
+    var onCorrection: ((PreviewVisualCorrection) -> Void)?
+
+    private struct VisualShift {
+        var dx: CGFloat
+        var dy: CGFloat
+        var confidence: CGFloat
+    }
+
+    private let queue = DispatchQueue(label: "com.puroo.scope.preview.visualLock", qos: .userInteractive)
+    private let busyLock = NSLock()
+    private let gridSize = 80
+    private let searchRadius = 6
+    private var isBusy = false
+    private var preference: StabilizationPreference = .off
+    private var lastFrame: [UInt8]?
+    private var lastFrameTimestamp: TimeInterval?
+    private var lastAnalysisTimestamp: TimeInterval?
+    private var accumulatedX: CGFloat = 0
+    private var accumulatedY: CGFloat = 0
+    private var correction = PreviewVisualCorrection.identity
+
+    func setPreference(_ nextPreference: StabilizationPreference) {
+        queue.async { [weak self] in
+            guard let self, self.preference != nextPreference else { return }
+            self.preference = nextPreference
+            self.resetAnalysisState()
+            self.emit(.identity)
+        }
+    }
+
+    func enqueue(pixelBuffer: CVPixelBuffer, at timestamp: CMTime) {
+        let presentationTime = CMTimeGetSeconds(timestamp)
+        guard presentationTime.isFinite else { return }
+
+        busyLock.lock()
+        guard !isBusy else {
+            busyLock.unlock()
+            return
+        }
+        isBusy = true
+        busyLock.unlock()
+
+        let retainedPixelBuffer = pixelBuffer
+        queue.async { [weak self] in
+            guard let self else { return }
+            defer { self.markIdle() }
+            self.process(pixelBuffer: retainedPixelBuffer, timestamp: presentationTime)
+        }
+    }
+
+    private func process(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) {
+        guard preference.usesElectronicPreviewStabilization else {
+            resetAnalysisState()
+            emit(.identity)
+            return
+        }
+
+        if let lastAnalysisTimestamp,
+           timestamp - lastAnalysisTimestamp < preference.visualAnalysisMinimumInterval {
+            return
+        }
+        lastAnalysisTimestamp = timestamp
+
+        guard let currentFrame = makeLumaGrid(from: pixelBuffer) else { return }
+
+        guard let previousFrame = lastFrame,
+              let previousTimestamp = lastFrameTimestamp
+        else {
+            lastFrame = currentFrame
+            lastFrameTimestamp = timestamp
+            return
+        }
+
+        lastFrame = currentFrame
+        lastFrameTimestamp = timestamp
+
+        let elapsed = timestamp - previousTimestamp
+        if elapsed > 0.18 {
+            accumulatedX = 0
+            accumulatedY = 0
+            correction = .identity
+            emit(correction)
+            return
+        }
+
+        let dt = min(max(elapsed, 1.0 / 120.0), 1.0 / 24.0)
+        guard let shift = estimateShift(reference: previousFrame, current: currentFrame) else {
+            decayCorrection(deltaTime: dt)
+            return
+        }
+
+        apply(shift: shift, deltaTime: dt)
+    }
+
+    private func apply(shift: VisualShift, deltaTime: TimeInterval) {
+        let leak = CGFloat(exp(-deltaTime * preference.visualHighPassLeakRate))
+        accumulatedX = (accumulatedX + shift.dx * shift.confidence) * leak
+        accumulatedY = (accumulatedY + shift.dy * shift.confidence) * leak
+
+        let maximumGridOffset = CGFloat(gridSize) * preference.visualHighPassMaximumOffset
+        accumulatedX = clamp(accumulatedX, min: -maximumGridOffset, max: maximumGridOffset)
+        accumulatedY = clamp(accumulatedY, min: -maximumGridOffset, max: maximumGridOffset)
+
+        let gain = preference.visualHighPassCorrectionGain
+        let maximumOffset = preference.visualHighPassMaximumOffset
+        let targetX = clamp(-accumulatedX / CGFloat(gridSize) * gain, min: -maximumOffset, max: maximumOffset)
+        let targetY = clamp(accumulatedY / CGFloat(gridSize) * gain, min: -maximumOffset, max: maximumOffset)
+        let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate))
+
+        correction = PreviewVisualCorrection(
+            normalizedX: correction.normalizedX + (targetX - correction.normalizedX) * response,
+            normalizedY: correction.normalizedY + (targetY - correction.normalizedY) * response,
+            confidence: shift.confidence
+        )
+        emit(correction)
+    }
+
+    private func decayCorrection(deltaTime: TimeInterval) {
+        let leak = CGFloat(exp(-deltaTime * preference.visualHighPassLeakRate))
+        accumulatedX *= leak
+        accumulatedY *= leak
+
+        let targetX = -accumulatedX / CGFloat(gridSize) * preference.visualHighPassCorrectionGain
+        let targetY = accumulatedY / CGFloat(gridSize) * preference.visualHighPassCorrectionGain
+        let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate))
+
+        correction = PreviewVisualCorrection(
+            normalizedX: correction.normalizedX + (targetX - correction.normalizedX) * response,
+            normalizedY: correction.normalizedY + (targetY - correction.normalizedY) * response,
+            confidence: max(0, correction.confidence * leak)
+        )
+        emit(correction)
+    }
+
+    private func estimateShift(reference: [UInt8], current: [UInt8]) -> VisualShift? {
+        let margin = searchRadius + 8
+        let start = margin
+        let end = gridSize - margin
+        let side = searchRadius * 2 + 1
+        let sampleCount = max((end - start) * (end - start), 1)
+        let texture = textureScore(reference, start: start, end: end)
+        guard texture > 2.2 else { return nil }
+
+        var scores = Array(repeating: Int.max, count: side * side)
+        var bestScore = Int.max
+        var secondScore = Int.max
+        var bestDx = 0
+        var bestDy = 0
+
+        for dy in -searchRadius...searchRadius {
+            for dx in -searchRadius...searchRadius {
+                var sad = 0
+                for y in start..<end {
+                    let referenceOffset = y * gridSize + start
+                    let currentOffset = (y + dy) * gridSize + start + dx
+                    for x in 0..<(end - start) {
+                        let delta = Int(reference[referenceOffset + x]) - Int(current[currentOffset + x])
+                        sad += delta < 0 ? -delta : delta
+                    }
+                }
+
+                let index = (dy + searchRadius) * side + dx + searchRadius
+                scores[index] = sad
+                if sad < bestScore {
+                    secondScore = bestScore
+                    bestScore = sad
+                    bestDx = dx
+                    bestDy = dy
+                } else if sad < secondScore {
+                    secondScore = sad
+                }
+            }
+        }
+
+        func storedScore(dx: Int, dy: Int) -> Int {
+            scores[(dy + searchRadius) * side + dx + searchRadius]
+        }
+
+        var refinedX = CGFloat(bestDx)
+        var refinedY = CGFloat(bestDy)
+        if bestDx > -searchRadius, bestDx < searchRadius {
+            refinedX += subpixelOffset(
+                lower: storedScore(dx: bestDx - 1, dy: bestDy),
+                center: bestScore,
+                upper: storedScore(dx: bestDx + 1, dy: bestDy)
+            )
+        }
+        if bestDy > -searchRadius, bestDy < searchRadius {
+            refinedY += subpixelOffset(
+                lower: storedScore(dx: bestDx, dy: bestDy - 1),
+                center: bestScore,
+                upper: storedScore(dx: bestDx, dy: bestDy + 1)
+            )
+        }
+
+        let meanSad = CGFloat(bestScore) / CGFloat(sampleCount)
+        let uniqueness = CGFloat(max(secondScore - bestScore, 0)) / CGFloat(max(bestScore, 1))
+        let textureConfidence = clamp((texture - 2.2) / 8.0, min: 0, max: 1)
+        let matchConfidence = clamp((26 - meanSad) / 18, min: 0, max: 1)
+        let uniquenessBoost = clamp(uniqueness * 5, min: 0, max: 0.35)
+        let confidence = clamp(textureConfidence * 0.45 + matchConfidence * 0.45 + uniquenessBoost, min: 0, max: 1)
+
+        guard confidence > 0.22 else { return nil }
+        return VisualShift(dx: refinedX, dy: refinedY, confidence: confidence)
+    }
+
+    private func makeLumaGrid(from pixelBuffer: CVPixelBuffer) -> [UInt8]? {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA,
+              CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess
+        else {
+            return nil
+        }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let bytes = baseAddress.assumingMemoryBound(to: UInt8.self)
+        let cropSide = CGFloat(min(width, height)) * 0.72
+        let cropX = (CGFloat(width) - cropSide) * 0.5
+        let cropY = (CGFloat(height) - cropSide) * 0.5
+        let step = cropSide / CGFloat(gridSize)
+        var frame = Array(repeating: UInt8(0), count: gridSize * gridSize)
+
+        for y in 0..<gridSize {
+            let sourceY = clamp(
+                Int(cropY + (CGFloat(y) + 0.5) * step),
+                min: 0,
+                max: max(height - 1, 0)
+            )
+            for x in 0..<gridSize {
+                let sourceX = clamp(
+                    Int(cropX + (CGFloat(x) + 0.5) * step),
+                    min: 0,
+                    max: max(width - 1, 0)
+                )
+                let offset = sourceY * bytesPerRow + sourceX * 4
+                let blue = Int(bytes[offset])
+                let green = Int(bytes[offset + 1])
+                let red = Int(bytes[offset + 2])
+                frame[y * gridSize + x] = UInt8((77 * red + 150 * green + 29 * blue) >> 8)
+            }
+        }
+
+        return frame
+    }
+
+    private func textureScore(_ frame: [UInt8], start: Int, end: Int) -> CGFloat {
+        var total = 0
+        var count = 0
+        for y in start..<(end - 1) {
+            let row = y * gridSize
+            let nextRow = (y + 1) * gridSize
+            for x in start..<(end - 1) {
+                total += abs(Int(frame[row + x]) - Int(frame[row + x + 1]))
+                total += abs(Int(frame[row + x]) - Int(frame[nextRow + x]))
+                count += 2
+            }
+        }
+        return CGFloat(total) / CGFloat(max(count, 1))
+    }
+
+    private func subpixelOffset(lower: Int, center: Int, upper: Int) -> CGFloat {
+        let denominator = CGFloat(lower - 2 * center + upper)
+        guard abs(denominator) > 0.0001 else { return 0 }
+        return clamp(CGFloat(lower - upper) / (2 * denominator), min: -0.5, max: 0.5)
+    }
+
+    private func resetAnalysisState() {
+        lastFrame = nil
+        lastFrameTimestamp = nil
+        lastAnalysisTimestamp = nil
+        accumulatedX = 0
+        accumulatedY = 0
+        correction = .identity
+    }
+
+    private func emit(_ correction: PreviewVisualCorrection) {
+        onCorrection?(correction)
+    }
+
+    private func markIdle() {
+        busyLock.lock()
+        isBusy = false
+        busyLock.unlock()
+    }
+
+    private func clamp<T: Comparable>(_ value: T, min minimum: T, max maximum: T) -> T {
+        min(max(value, minimum), maximum)
     }
 }
 
@@ -189,6 +523,7 @@ struct CameraPreviewView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
+        view.updateStabilizationPreference(stabilizationPreference)
         context.coordinator.attach(
             to: view,
             camera: camera,
@@ -200,6 +535,7 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PreviewContainerView, context: Context) {
+        view.updateStabilizationPreference(stabilizationPreference)
         context.coordinator.update(
             preference: stabilizationPreference,
             visualState: visualState
@@ -207,6 +543,7 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: PreviewContainerView, coordinator: Coordinator) {
+        uiView.stopVisualAnalysis()
         coordinator.detach()
     }
 
