@@ -3,6 +3,14 @@ import Combine
 import Photos
 import UIKit
 
+protocol CameraFrameSink: AnyObject {
+    func cameraController(
+        _ controller: CameraController,
+        didOutput pixelBuffer: CVPixelBuffer,
+        at timestamp: CMTime
+    )
+}
+
 final class CameraController: NSObject, ObservableObject {
     let session = AVCaptureSession()
 
@@ -31,6 +39,7 @@ final class CameraController: NSObject, ObservableObject {
     private let stabilizationEngine = FrameStabilizationEngine()
 
     private var videoDeviceInput: AVCaptureDeviceInput?
+    private weak var previewFrameSink: CameraFrameSink?
     private var isConfigured = false
 
     func requestAccessAndConfigure() {
@@ -73,6 +82,12 @@ final class CameraController: NSObject, ObservableObject {
     func configurePreviewConnection(_ connection: AVCaptureConnection?) {
         sessionQueue.async { [weak self] in
             self?.applyStabilization(to: connection)
+        }
+    }
+
+    func setPreviewFrameSink(_ sink: CameraFrameSink?) {
+        videoOutputQueue.async { [weak self] in
+            self?.previewFrameSink = sink
         }
     }
 
@@ -248,6 +263,17 @@ final class CameraController: NSObject, ObservableObject {
         videoOutput.setSampleBufferDelegate(self, queue: videoOutputQueue)
         if session.canAddOutput(videoOutput) {
             session.addOutput(videoOutput)
+            configureVideoOutputConnection()
+        }
+    }
+
+    private func configureVideoOutputConnection() {
+        guard let connection = videoOutput.connection(with: .video) else { return }
+        if connection.isVideoOrientationSupported {
+            connection.videoOrientation = .portrait
+        }
+        if connection.isVideoMirroringSupported {
+            connection.isVideoMirrored = false
         }
     }
 
@@ -431,6 +457,11 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            previewFrameSink?.cameraController(self, didOutput: pixelBuffer, at: timestamp)
+        }
+
         _ = stabilizationEngine.estimateTransform(for: sampleBuffer)
         if let state = stabilizationEngine.estimatePreviewState(
             for: sampleBuffer,

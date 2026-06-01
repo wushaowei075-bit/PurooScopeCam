@@ -1,27 +1,36 @@
 import AVFoundation
-import QuartzCore
+import CoreImage
+import Metal
+import MetalKit
 import SwiftUI
 import UIKit
 
-final class PreviewHostView: UIView {
-    override class var layerClass: AnyClass {
-        AVCaptureVideoPreviewLayer.self
-    }
-
-    var previewLayer: AVCaptureVideoPreviewLayer {
-        layer as! AVCaptureVideoPreviewLayer
-    }
-}
-
-final class PreviewContainerView: UIView {
-    let previewView = PreviewHostView()
-    var didConfigurePreviewConnection = false
+final class PreviewContainerView: UIView, CameraFrameSink {
+    private let metalView: MTKView
+    private let renderer: StabilizedMetalPreviewRenderer
 
     override init(frame: CGRect) {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            fatalError("Metal is required for stabilized preview rendering")
+        }
+
+        metalView = MTKView(frame: .zero, device: device)
+        renderer = StabilizedMetalPreviewRenderer(device: device)
         super.init(frame: frame)
-        clipsToBounds = true
+
         backgroundColor = .black
-        addSubview(previewView)
+        clipsToBounds = true
+
+        metalView.backgroundColor = .black
+        metalView.clearColor = MTLClearColorMake(0, 0, 0, 1)
+        metalView.colorPixelFormat = .bgra8Unorm
+        metalView.framebufferOnly = false
+        metalView.isPaused = false
+        metalView.enableSetNeedsDisplay = false
+        metalView.preferredFramesPerSecond = min(UIScreen.main.maximumFramesPerSecond, 120)
+        metalView.delegate = renderer
+
+        addSubview(metalView)
     }
 
     required init?(coder: NSCoder) {
@@ -30,15 +39,129 @@ final class PreviewContainerView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        previewView.bounds = bounds
-        previewView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        metalView.frame = bounds
     }
 
-    func applyPreviewTransform(_ transform: CGAffineTransform) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        previewView.transform = transform
-        CATransaction.commit()
+    func applyPreviewTransform(_ transform: PreviewRenderTransform) {
+        renderer.setRenderTransform(transform)
+    }
+
+    func cameraController(
+        _ controller: CameraController,
+        didOutput pixelBuffer: CVPixelBuffer,
+        at timestamp: CMTime
+    ) {
+        renderer.enqueue(pixelBuffer: pixelBuffer, at: timestamp)
+    }
+}
+
+final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
+    private let commandQueue: MTLCommandQueue
+    private let ciContext: CIContext
+    private let colorSpace = CGColorSpaceCreateDeviceRGB()
+    private let stateLock = NSLock()
+
+    private var latestPixelBuffer: CVPixelBuffer?
+    private var renderTransform = PreviewRenderTransform.identity
+
+    init(device: MTLDevice) {
+        guard let commandQueue = device.makeCommandQueue() else {
+            fatalError("Unable to create Metal command queue")
+        }
+
+        self.commandQueue = commandQueue
+        ciContext = CIContext(
+            mtlDevice: device,
+            options: [
+                .cacheIntermediates: false,
+                .workingColorSpace: colorSpace,
+                .outputColorSpace: colorSpace
+            ]
+        )
+        super.init()
+    }
+
+    func enqueue(pixelBuffer: CVPixelBuffer, at _: CMTime) {
+        stateLock.lock()
+        latestPixelBuffer = pixelBuffer
+        stateLock.unlock()
+    }
+
+    func setRenderTransform(_ transform: PreviewRenderTransform) {
+        stateLock.lock()
+        renderTransform = transform
+        stateLock.unlock()
+    }
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    func draw(in view: MTKView) {
+        stateLock.lock()
+        let pixelBuffer = latestPixelBuffer
+        let transform = renderTransform
+        stateLock.unlock()
+
+        guard let pixelBuffer,
+              let drawable = view.currentDrawable,
+              let commandBuffer = commandQueue.makeCommandBuffer()
+        else {
+            return
+        }
+
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        let drawableSize = view.drawableSize
+        guard drawableSize.width > 1, drawableSize.height > 1 else { return }
+
+        let renderBounds = CGRect(origin: .zero, size: drawableSize)
+        let fitted = image.transformed(
+            by: imageToDrawableTransform(
+                imageExtent: image.extent,
+                drawableSize: drawableSize,
+                viewBounds: view.bounds,
+                previewTransform: transform
+            )
+        )
+
+        ciContext.render(
+            fitted,
+            to: drawable.texture,
+            commandBuffer: commandBuffer,
+            bounds: renderBounds,
+            colorSpace: colorSpace
+        )
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+
+    private func imageToDrawableTransform(
+        imageExtent: CGRect,
+        drawableSize: CGSize,
+        viewBounds: CGRect,
+        previewTransform: PreviewRenderTransform
+    ) -> CGAffineTransform {
+        let imageWidth = max(imageExtent.width, 1)
+        let imageHeight = max(imageExtent.height, 1)
+        let baseScale = max(drawableSize.width / imageWidth, drawableSize.height / imageHeight)
+        let stabilizedScale = baseScale * previewTransform.scale
+        let rotation = previewTransform.rotationRadians
+        let cosine = cos(rotation)
+        let sine = sin(rotation)
+
+        let pointToPixelX = drawableSize.width / max(viewBounds.width, 1)
+        let pointToPixelY = drawableSize.height / max(viewBounds.height, 1)
+        let outputCenterX = drawableSize.width * 0.5 + previewTransform.translationX * pointToPixelX
+        let outputCenterY = drawableSize.height * 0.5 - previewTransform.translationY * pointToPixelY
+        let inputCenterX = imageExtent.midX
+        let inputCenterY = imageExtent.midY
+
+        let a = stabilizedScale * cosine
+        let b = stabilizedScale * sine
+        let c = -stabilizedScale * sine
+        let d = stabilizedScale * cosine
+        let tx = outputCenterX - a * inputCenterX - c * inputCenterY
+        let ty = outputCenterY - b * inputCenterX - d * inputCenterY
+
+        return CGAffineTransform(a: a, b: b, c: c, d: d, tx: tx, ty: ty)
     }
 }
 
@@ -54,12 +177,9 @@ struct CameraPreviewView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
-        view.backgroundColor = .black
-        view.previewView.previewLayer.session = camera.session
-        view.previewView.previewLayer.videoGravity = .resizeAspectFill
-        configurePreviewConnectionIfNeeded(for: view)
         context.coordinator.attach(
             to: view,
+            camera: camera,
             motionMonitor: motionMonitor,
             preference: stabilizationPreference,
             visualState: visualState
@@ -68,9 +188,6 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PreviewContainerView, context: Context) {
-        view.previewView.previewLayer.session = camera.session
-        view.previewView.previewLayer.videoGravity = .resizeAspectFill
-        configurePreviewConnectionIfNeeded(for: view)
         context.coordinator.update(
             preference: stabilizationPreference,
             visualState: visualState
@@ -79,13 +196,6 @@ struct CameraPreviewView: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: PreviewContainerView, coordinator: Coordinator) {
         coordinator.detach()
-    }
-
-    private func configurePreviewConnectionIfNeeded(for view: PreviewContainerView) {
-        guard !view.didConfigurePreviewConnection else { return }
-        guard view.previewView.previewLayer.connection != nil else { return }
-        camera.configurePreviewConnection(view.previewView.previewLayer.connection)
-        view.didConfigurePreviewConnection = true
     }
 
     final class Coordinator {
@@ -100,6 +210,7 @@ struct CameraPreviewView: UIViewRepresentable {
         private var leadX: CGFloat = 0
         private var leadY: CGFloat = 0
         private var leadRoll: CGFloat = 0
+        private weak var camera: CameraController?
         private weak var motionMonitor: MotionStabilityMonitor?
         private var motionObserverID: UUID?
         private var latestPreference: StabilizationPreference = .strong
@@ -107,6 +218,7 @@ struct CameraPreviewView: UIViewRepresentable {
 
         func attach(
             to view: PreviewContainerView,
+            camera: CameraController,
             motionMonitor: MotionStabilityMonitor,
             preference: StabilizationPreference,
             visualState: PreviewStabilizationState
@@ -114,11 +226,19 @@ struct CameraPreviewView: UIViewRepresentable {
             latestPreference = preference
             latestVisualState = visualState
 
+            if self.camera !== camera {
+                self.camera?.setPreviewFrameSink(nil)
+                self.camera = camera
+                camera.setPreviewFrameSink(view)
+            }
+
             if motionObserverID != nil, self.motionMonitor === motionMonitor {
                 return
             }
 
-            detach()
+            if let motionObserverID {
+                self.motionMonitor?.removeSampleObserver(motionObserverID)
+            }
             self.motionMonitor = motionMonitor
             motionObserverID = motionMonitor.addSampleObserver { [weak self, weak view] sample in
                 guard let self, let view else { return }
@@ -143,8 +263,10 @@ struct CameraPreviewView: UIViewRepresentable {
             if let motionObserverID {
                 motionMonitor?.removeSampleObserver(motionObserverID)
             }
+            camera?.setPreviewFrameSink(nil)
             motionObserverID = nil
             motionMonitor = nil
+            camera = nil
         }
 
         private func apply(
@@ -233,18 +355,15 @@ struct CameraPreviewView: UIViewRepresentable {
             let finalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
             let finalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
             let finalRoll = clamp(smoothedRoll + leadRoll, min: -rollLimit, max: rollLimit)
-            let angle = Double(finalRoll)
-            let cosine = CGFloat(cos(angle))
-            let sine = CGFloat(sin(angle))
-            let transform = CGAffineTransform(
-                a: scale * cosine,
-                b: scale * sine,
-                c: -scale * sine,
-                d: scale * cosine,
-                tx: finalX,
-                ty: finalY
+
+            view.applyPreviewTransform(
+                PreviewRenderTransform(
+                    scale: scale,
+                    rotationRadians: finalRoll,
+                    translationX: finalX,
+                    translationY: finalY
+                )
             )
-            view.applyPreviewTransform(transform)
         }
 
         private func reset(view: PreviewContainerView) {
