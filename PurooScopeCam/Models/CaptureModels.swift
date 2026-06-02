@@ -189,6 +189,17 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         }
     }
 
+    var visualCorrectionMaximumStep: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 0.0055
+        case .strong:
+            return 0.007
+        }
+    }
+
     var visualAnalysisMinimumInterval: TimeInterval {
         switch self {
         case .off, .auto:
@@ -272,6 +283,28 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
             return 20
         case .strong:
             return 24
+        }
+    }
+
+    var previewSpikeMaximumTranslationStep: CGFloat {
+        switch self {
+        case .off, .auto:
+            return .infinity
+        case .balanced:
+            return 2.8
+        case .strong:
+            return 3.6
+        }
+    }
+
+    var previewSpikeMaximumRollStep: CGFloat {
+        switch self {
+        case .off, .auto:
+            return .infinity
+        case .balanced:
+            return 0.0035
+        case .strong:
+            return 0.0045
         }
     }
 
