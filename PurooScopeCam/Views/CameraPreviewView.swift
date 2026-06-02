@@ -853,6 +853,7 @@ private final class PreviewFrameMotionAnalyzer {
     private var accumulatedX: CGFloat = 0
     private var accumulatedY: CGFloat = 0
     private var correction = PreviewVisualCorrection.identity
+    private var recentShifts: [VisualShift] = []
 
     func setPreference(_ nextPreference: StabilizationPreference) {
         queue.async { [weak self] in
@@ -913,17 +914,19 @@ private final class PreviewFrameMotionAnalyzer {
             accumulatedX = 0
             accumulatedY = 0
             correction = .identity
+            recentShifts.removeAll(keepingCapacity: true)
             emit(correction)
             return
         }
 
         let dt = min(max(elapsed, 1.0 / 120.0), 1.0 / 24.0)
         guard let shift = estimateShift(reference: previousFrame, current: currentFrame) else {
+            recentShifts.removeAll(keepingCapacity: true)
             decayCorrection(deltaTime: dt, timestamp: timestamp)
             return
         }
 
-        apply(shift: shift, deltaTime: dt, timestamp: timestamp)
+        apply(shift: filteredShift(shift), deltaTime: dt, timestamp: timestamp)
     }
 
     private func apply(shift: VisualShift, deltaTime: TimeInterval, timestamp: TimeInterval) {
@@ -964,18 +967,8 @@ private final class PreviewFrameMotionAnalyzer {
         let nextY = correction.normalizedY + (targetY - correction.normalizedY) * response
 
         correction = PreviewVisualCorrection(
-            normalizedX: limitedOutlierStep(
-                from: correction.normalizedX,
-                to: nextX,
-                maximumStep: preference.visualCorrectionMaximumStep,
-                outlierThreshold: preference.visualCorrectionOutlierThreshold
-            ),
-            normalizedY: limitedOutlierStep(
-                from: correction.normalizedY,
-                to: nextY,
-                maximumStep: preference.visualCorrectionMaximumStep,
-                outlierThreshold: preference.visualCorrectionOutlierThreshold
-            ),
+            normalizedX: nextX,
+            normalizedY: nextY,
             confidence: shift.confidence,
             timestamp: timestamp
         )
@@ -1001,22 +994,33 @@ private final class PreviewFrameMotionAnalyzer {
         let nextY = correction.normalizedY + (targetY - correction.normalizedY) * response
 
         correction = PreviewVisualCorrection(
-            normalizedX: limitedOutlierStep(
-                from: correction.normalizedX,
-                to: nextX,
-                maximumStep: preference.visualCorrectionMaximumStep,
-                outlierThreshold: preference.visualCorrectionOutlierThreshold
-            ),
-            normalizedY: limitedOutlierStep(
-                from: correction.normalizedY,
-                to: nextY,
-                maximumStep: preference.visualCorrectionMaximumStep,
-                outlierThreshold: preference.visualCorrectionOutlierThreshold
-            ),
+            normalizedX: nextX,
+            normalizedY: nextY,
             confidence: max(0, correction.confidence * leak),
             timestamp: timestamp
         )
         emit(correction)
+    }
+
+    private func filteredShift(_ shift: VisualShift) -> VisualShift {
+        recentShifts.append(shift)
+        if recentShifts.count > 3 {
+            recentShifts.removeFirst(recentShifts.count - 3)
+        }
+        guard recentShifts.count == 3 else { return shift }
+
+        let medianDx = median(recentShifts.map(\.dx))
+        let medianDy = median(recentShifts.map(\.dy))
+        let deviationX = shift.dx - medianDx
+        let deviationY = shift.dy - medianDy
+        let deviation = (deviationX * deviationX + deviationY * deviationY).squareRoot()
+        guard deviation > visualShiftMedianDeviationLimit else { return shift }
+
+        return VisualShift(
+            dx: medianDx,
+            dy: medianDy,
+            confidence: min(shift.confidence, median(recentShifts.map(\.confidence)) * 0.85)
+        )
     }
 
     private func estimateShift(reference: AnalysisFrame, current: AnalysisFrame) -> VisualShift? {
@@ -1028,12 +1032,14 @@ private final class PreviewFrameMotionAnalyzer {
 
         let medianDx = median(vectors.map(\.dx))
         let medianDy = median(vectors.map(\.dy))
+        let inlierRadius = visualShiftInlierRadius
         let inliers = vectors.filter { vector in
             let residualX = vector.dx - medianDx
             let residualY = vector.dy - medianDy
-            return (residualX * residualX + residualY * residualY).squareRoot() <= 1.45
+            return (residualX * residualX + residualY * residualY).squareRoot() <= inlierRadius
         }
-        guard inliers.count >= max(4, vectors.count / 3) else { return nil }
+        let minimumInliers = max(5, Int((CGFloat(vectors.count) * visualShiftMinimumInlierRatio).rounded(.up)))
+        guard inliers.count >= minimumInliers else { return nil }
 
         let totalWeight = max(inliers.reduce(CGFloat(0)) { $0 + $1.confidence }, 0.0001)
         let dx = inliers.reduce(CGFloat(0)) { $0 + $1.dx * $1.confidence } / totalWeight
@@ -1043,6 +1049,7 @@ private final class PreviewFrameMotionAnalyzer {
             let residualY = vector.dy - dy
             return partial + (residualX * residualX + residualY * residualY).squareRoot()
         } / CGFloat(max(inliers.count, 1))
+        guard meanResidual <= visualShiftMaximumMeanResidual else { return nil }
 
         let textureConfidence = clamp((texture - 2.0) / 8.0, min: 0, max: 1)
         let matchConfidence = clamp(totalWeight / CGFloat(max(inliers.count, 1)), min: 0, max: 1)
@@ -1057,7 +1064,7 @@ private final class PreviewFrameMotionAnalyzer {
             max: 1
         )
 
-        guard confidence > 0.20 else { return nil }
+        guard confidence > 0.24 else { return nil }
         return VisualShift(dx: dx, dy: dy, confidence: confidence)
     }
 
@@ -1277,6 +1284,50 @@ private final class PreviewFrameMotionAnalyzer {
         return CGFloat(total) / CGFloat(max(count, 1))
     }
 
+    private var visualShiftInlierRadius: CGFloat {
+        switch preference {
+        case .strong:
+            return 1.20
+        case .balanced:
+            return 1.25
+        case .off, .auto:
+            return 1.45
+        }
+    }
+
+    private var visualShiftMinimumInlierRatio: CGFloat {
+        switch preference {
+        case .strong:
+            return 0.48
+        case .balanced:
+            return 0.44
+        case .off, .auto:
+            return 0.34
+        }
+    }
+
+    private var visualShiftMaximumMeanResidual: CGFloat {
+        switch preference {
+        case .strong:
+            return 0.88
+        case .balanced:
+            return 0.96
+        case .off, .auto:
+            return 1.6
+        }
+    }
+
+    private var visualShiftMedianDeviationLimit: CGFloat {
+        switch preference {
+        case .strong:
+            return 1.8
+        case .balanced:
+            return 2.1
+        case .off, .auto:
+            return .greatestFiniteMagnitude
+        }
+    }
+
     private func median(_ values: [CGFloat]) -> CGFloat {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
@@ -1287,23 +1338,6 @@ private final class PreviewFrameMotionAnalyzer {
         return sorted[middle]
     }
 
-    private func limitedOutlierStep(
-        from current: CGFloat,
-        to target: CGFloat,
-        maximumStep: CGFloat,
-        outlierThreshold: CGFloat
-    ) -> CGFloat {
-        guard maximumStep.isFinite,
-              maximumStep > 0,
-              outlierThreshold > 0
-        else {
-            return target
-        }
-        let delta = target - current
-        guard abs(delta) > outlierThreshold else { return target }
-        return current + clamp(delta, min: -maximumStep, max: maximumStep)
-    }
-
     private func resetAnalysisState() {
         lastFrame = nil
         lastFrameTimestamp = nil
@@ -1311,6 +1345,7 @@ private final class PreviewFrameMotionAnalyzer {
         accumulatedX = 0
         accumulatedY = 0
         correction = .identity
+        recentShifts.removeAll(keepingCapacity: true)
     }
 
     private func emit(_ correction: PreviewVisualCorrection) {

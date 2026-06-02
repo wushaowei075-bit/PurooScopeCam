@@ -189,28 +189,6 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         }
     }
 
-    var visualCorrectionMaximumStep: CGFloat {
-        switch self {
-        case .off, .auto:
-            return 0
-        case .balanced:
-            return 0.0065
-        case .strong:
-            return 0.008
-        }
-    }
-
-    var visualCorrectionOutlierThreshold: CGFloat {
-        switch self {
-        case .off, .auto:
-            return 0
-        case .balanced:
-            return 0.014
-        case .strong:
-            return 0.018
-        }
-    }
-
     var visualAnalysisMinimumInterval: TimeInterval {
         switch self {
         case .off, .auto:
