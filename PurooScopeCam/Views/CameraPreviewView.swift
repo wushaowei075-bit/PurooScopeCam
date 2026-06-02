@@ -964,15 +964,17 @@ private final class PreviewFrameMotionAnalyzer {
         let nextY = correction.normalizedY + (targetY - correction.normalizedY) * response
 
         correction = PreviewVisualCorrection(
-            normalizedX: limitedStep(
+            normalizedX: limitedOutlierStep(
                 from: correction.normalizedX,
                 to: nextX,
-                maximumStep: preference.visualCorrectionMaximumStep
+                maximumStep: preference.visualCorrectionMaximumStep,
+                outlierThreshold: preference.visualCorrectionOutlierThreshold
             ),
-            normalizedY: limitedStep(
+            normalizedY: limitedOutlierStep(
                 from: correction.normalizedY,
                 to: nextY,
-                maximumStep: preference.visualCorrectionMaximumStep
+                maximumStep: preference.visualCorrectionMaximumStep,
+                outlierThreshold: preference.visualCorrectionOutlierThreshold
             ),
             confidence: shift.confidence,
             timestamp: timestamp
@@ -999,15 +1001,17 @@ private final class PreviewFrameMotionAnalyzer {
         let nextY = correction.normalizedY + (targetY - correction.normalizedY) * response
 
         correction = PreviewVisualCorrection(
-            normalizedX: limitedStep(
+            normalizedX: limitedOutlierStep(
                 from: correction.normalizedX,
                 to: nextX,
-                maximumStep: preference.visualCorrectionMaximumStep
+                maximumStep: preference.visualCorrectionMaximumStep,
+                outlierThreshold: preference.visualCorrectionOutlierThreshold
             ),
-            normalizedY: limitedStep(
+            normalizedY: limitedOutlierStep(
                 from: correction.normalizedY,
                 to: nextY,
-                maximumStep: preference.visualCorrectionMaximumStep
+                maximumStep: preference.visualCorrectionMaximumStep,
+                outlierThreshold: preference.visualCorrectionOutlierThreshold
             ),
             confidence: max(0, correction.confidence * leak),
             timestamp: timestamp
@@ -1283,9 +1287,20 @@ private final class PreviewFrameMotionAnalyzer {
         return sorted[middle]
     }
 
-    private func limitedStep(from current: CGFloat, to target: CGFloat, maximumStep: CGFloat) -> CGFloat {
-        guard maximumStep.isFinite, maximumStep > 0 else { return target }
+    private func limitedOutlierStep(
+        from current: CGFloat,
+        to target: CGFloat,
+        maximumStep: CGFloat,
+        outlierThreshold: CGFloat
+    ) -> CGFloat {
+        guard maximumStep.isFinite,
+              maximumStep > 0,
+              outlierThreshold > 0
+        else {
+            return target
+        }
         let delta = target - current
+        guard abs(delta) > outlierThreshold else { return target }
         return current + clamp(delta, min: -maximumStep, max: maximumStep)
     }
 
@@ -1361,9 +1376,6 @@ struct CameraPreviewView: UIViewRepresentable {
         private var leadX: CGFloat = 0
         private var leadY: CGFloat = 0
         private var leadRoll: CGFloat = 0
-        private var outputX: CGFloat = 0
-        private var outputY: CGFloat = 0
-        private var outputRoll: CGFloat = 0
         private var microPitch: Double = 0
         private var microRoll: Double = 0
         private var microYaw: Double = 0
@@ -1474,9 +1486,6 @@ struct CameraPreviewView: UIViewRepresentable {
                 smoothedX = 0
                 smoothedY = 0
                 smoothedRoll = 0
-                outputX = 0
-                outputY = 0
-                outputRoll = 0
                 resetMicroJitterIntegrator()
             }
 
@@ -1548,43 +1557,16 @@ struct CameraPreviewView: UIViewRepresentable {
             leadX = clamp(leadX, min: -maxX * 0.18, max: maxX * 0.18)
             leadY = clamp(leadY, min: -maxY * 0.18, max: maxY * 0.18)
 
-            let rawFinalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
-            let rawFinalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
-            let rawFinalRoll = clamp(smoothedRoll + leadRoll, min: -rollLimit, max: rollLimit)
-            outputX = clamp(
-                limitedStep(
-                    from: outputX,
-                    to: rawFinalX,
-                    maximumStep: preference.previewSpikeMaximumTranslationStep
-                ),
-                min: -maxX,
-                max: maxX
-            )
-            outputY = clamp(
-                limitedStep(
-                    from: outputY,
-                    to: rawFinalY,
-                    maximumStep: preference.previewSpikeMaximumTranslationStep
-                ),
-                min: -maxY,
-                max: maxY
-            )
-            outputRoll = clamp(
-                limitedStep(
-                    from: outputRoll,
-                    to: rawFinalRoll,
-                    maximumStep: preference.previewSpikeMaximumRollStep
-                ),
-                min: -rollLimit,
-                max: rollLimit
-            )
+            let finalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
+            let finalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
+            let finalRoll = clamp(smoothedRoll + leadRoll, min: -rollLimit, max: rollLimit)
 
             view.applyPreviewTransform(
                 PreviewRenderTransform(
                     scale: scale,
-                    rotationRadians: outputRoll,
-                    translationX: outputX,
-                    translationY: outputY
+                    rotationRadians: finalRoll,
+                    translationX: finalX,
+                    translationY: finalY
                 ),
                 at: timestamp
             )
@@ -1602,9 +1584,6 @@ struct CameraPreviewView: UIViewRepresentable {
             leadX = 0
             leadY = 0
             leadRoll = 0
-            outputX = 0
-            outputY = 0
-            outputRoll = 0
             resetMicroJitterIntegrator()
             view.applyPreviewTransform(.identity, at: CACurrentMediaTime())
         }
@@ -1652,12 +1631,6 @@ struct CameraPreviewView: UIViewRepresentable {
             let magnitude = abs(value)
             guard magnitude > floor else { return 0 }
             return (magnitude - floor) * (value < 0 ? -1 : 1)
-        }
-
-        private func limitedStep(from current: CGFloat, to target: CGFloat, maximumStep: CGFloat) -> CGFloat {
-            guard maximumStep.isFinite, maximumStep > 0 else { return target }
-            let delta = target - current
-            return current + clamp(delta, min: -maximumStep, max: maximumStep)
         }
 
         private func track(anchor: inout Double, toward value: Double, rate: Double, deltaTime: TimeInterval) {
