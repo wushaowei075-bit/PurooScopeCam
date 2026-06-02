@@ -11,6 +11,16 @@ protocol CameraFrameSink: AnyObject {
     )
 }
 
+protocol StabilizedRecordingFrameSink: AnyObject {
+    var isStabilizedRecording: Bool { get }
+
+    func startStabilizedRecording(
+        to outputURL: URL,
+        completion: @escaping (Result<URL, Error>) -> Void
+    )
+    func stopStabilizedRecording()
+}
+
 final class CameraController: NSObject, ObservableObject {
     let session = AVCaptureSession()
 
@@ -40,6 +50,7 @@ final class CameraController: NSObject, ObservableObject {
 
     private var videoDeviceInput: AVCaptureDeviceInput?
     private weak var previewFrameSink: CameraFrameSink?
+    private weak var previewRecordingSink: StabilizedRecordingFrameSink?
     private var isConfigured = false
 
     func requestAccessAndConfigure() {
@@ -88,6 +99,7 @@ final class CameraController: NSObject, ObservableObject {
     func setPreviewFrameSink(_ sink: CameraFrameSink?) {
         videoOutputQueue.async { [weak self] in
             self?.previewFrameSink = sink
+            self?.previewRecordingSink = sink as? StabilizedRecordingFrameSink
         }
     }
 
@@ -338,10 +350,30 @@ final class CameraController: NSObject, ObservableObject {
 
     private func startRecording() {
         sessionQueue.async { [weak self] in
-            guard let self, self.isConfigured, !self.movieOutput.isRecording else { return }
+            guard let self, self.isConfigured else { return }
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
                 .appendingPathExtension("mov")
+
+            if let previewRecordingSink = self.previewRecordingSink {
+                guard !previewRecordingSink.isStabilizedRecording else { return }
+                previewRecordingSink.startStabilizedRecording(to: url) { [weak self] result in
+                    guard let self else { return }
+                    self.publishStatus { $0.isRecording = false }
+
+                    switch result {
+                    case .success(let outputURL):
+                        self.saveVideo(at: outputURL)
+                    case .failure(let error):
+                        try? FileManager.default.removeItem(at: url)
+                        self.publishStatus(error: error.localizedDescription)
+                    }
+                }
+                self.publishStatus { $0.isRecording = true }
+                return
+            }
+
+            guard !self.movieOutput.isRecording else { return }
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
             self.publishStatus { $0.isRecording = true }
         }
@@ -349,7 +381,14 @@ final class CameraController: NSObject, ObservableObject {
 
     private func stopRecording() {
         sessionQueue.async { [weak self] in
-            guard let self, self.movieOutput.isRecording else { return }
+            guard let self else { return }
+            if let previewRecordingSink = self.previewRecordingSink,
+               previewRecordingSink.isStabilizedRecording {
+                previewRecordingSink.stopStabilizedRecording()
+                return
+            }
+
+            guard self.movieOutput.isRecording else { return }
             self.movieOutput.stopRecording()
         }
     }

@@ -20,7 +20,7 @@ private struct PreviewVisualCorrection: Equatable {
     )
 }
 
-final class PreviewContainerView: UIView, CameraFrameSink {
+final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFrameSink {
     private let metalView: MTKView
     private let renderer: StabilizedMetalPreviewRenderer
     private let visualAnalyzer = PreviewFrameMotionAnalyzer()
@@ -89,6 +89,21 @@ final class PreviewContainerView: UIView, CameraFrameSink {
         renderer.setVisualCorrection(.identity)
     }
 
+    var isStabilizedRecording: Bool {
+        renderer.isRecording
+    }
+
+    func startStabilizedRecording(
+        to outputURL: URL,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        renderer.startRecording(to: outputURL, completion: completion)
+    }
+
+    func stopStabilizedRecording() {
+        renderer.stopRecording()
+    }
+
     func cameraController(
         _ controller: CameraController,
         didOutput pixelBuffer: CVPixelBuffer,
@@ -137,6 +152,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     private let ciContext: CIContext
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
+    private let recorder = StabilizedPreviewRecorder()
     private let stateLock = NSLock()
 
     private var frameQueue: [QueuedPreviewFrame] = []
@@ -215,6 +231,21 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         stateLock.unlock()
     }
 
+    var isRecording: Bool {
+        recorder.isRecording
+    }
+
+    func startRecording(
+        to outputURL: URL,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        recorder.startRecording(to: outputURL, completion: completion)
+    }
+
+    func stopRecording() {
+        recorder.stopRecording()
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
@@ -244,6 +275,14 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 previewTransform: transform,
                 visualCorrection: correction
             )
+        )
+
+        recorder.append(
+            stabilizedImage: fitted,
+            timestamp: queuedFrame.motionTime,
+            outputSize: drawableSize,
+            ciContext: ciContext,
+            colorSpace: colorSpace
         )
 
         ciContext.render(
@@ -376,6 +415,280 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         let ty = outputCenterY - b * inputCenterX - d * inputCenterY
 
         return CGAffineTransform(a: a, b: b, c: c, d: d, tx: tx, ty: ty)
+    }
+}
+
+private final class StabilizedPreviewRecorder {
+    private enum RecordingState: Equatable {
+        case idle
+        case waitingForFirstFrame
+        case recording
+        case finishing
+    }
+
+    private let lock = NSLock()
+    private var state: RecordingState = .idle
+    private var outputURL: URL?
+    private var completion: ((Result<URL, Error>) -> Void)?
+    private var writer: AVAssetWriter?
+    private var input: AVAssetWriterInput?
+    private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
+    private var startTimestamp: TimeInterval?
+    private var outputWidth = 0
+    private var outputHeight = 0
+
+    var isRecording: Bool {
+        lock.lock()
+        let active = state == .waitingForFirstFrame || state == .recording
+        lock.unlock()
+        return active
+    }
+
+    func startRecording(
+        to outputURL: URL,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        lock.lock()
+        guard state == .idle else {
+            lock.unlock()
+            completion(.failure(StabilizedPreviewRecorderError.alreadyRecording))
+            return
+        }
+
+        try? FileManager.default.removeItem(at: outputURL)
+        self.outputURL = outputURL
+        self.completion = completion
+        startTimestamp = nil
+        writer = nil
+        input = nil
+        adaptor = nil
+        state = .waitingForFirstFrame
+        lock.unlock()
+    }
+
+    func stopRecording() {
+        lock.lock()
+        switch state {
+        case .idle:
+            lock.unlock()
+        case .waitingForFirstFrame:
+            finishLocked(result: .failure(StabilizedPreviewRecorderError.noFramesWritten))
+        case .recording:
+            finishWriterLocked()
+        case .finishing:
+            lock.unlock()
+        }
+    }
+
+    func append(
+        stabilizedImage: CIImage,
+        timestamp: TimeInterval,
+        outputSize: CGSize,
+        ciContext: CIContext,
+        colorSpace: CGColorSpace
+    ) {
+        lock.lock()
+        guard state == .waitingForFirstFrame || state == .recording,
+              timestamp.isFinite
+        else {
+            lock.unlock()
+            return
+        }
+
+        if state == .waitingForFirstFrame {
+            do {
+                try startWriterLocked(outputSize: outputSize, firstTimestamp: timestamp)
+            } catch {
+                finishLocked(result: .failure(error))
+                return
+            }
+        }
+
+        guard state == .recording,
+              let writer,
+              let input,
+              let adaptor,
+              let pixelBufferPool = adaptor.pixelBufferPool,
+              input.isReadyForMoreMediaData
+        else {
+            lock.unlock()
+            return
+        }
+
+        guard writer.status == .writing else {
+            let error = writer.error ?? StabilizedPreviewRecorderError.writerFailed
+            finishLocked(result: .failure(error))
+            return
+        }
+
+        var pixelBuffer: CVPixelBuffer?
+        let createResult = CVPixelBufferPoolCreatePixelBuffer(
+            nil,
+            pixelBufferPool,
+            &pixelBuffer
+        )
+        guard createResult == kCVReturnSuccess, let pixelBuffer else {
+            finishLocked(result: .failure(StabilizedPreviewRecorderError.pixelBufferUnavailable))
+            return
+        }
+
+        ciContext.render(
+            stabilizedImage,
+            to: pixelBuffer,
+            bounds: CGRect(
+                x: 0,
+                y: 0,
+                width: outputWidth,
+                height: outputHeight
+            ),
+            colorSpace: colorSpace
+        )
+
+        let relativeTime = max(timestamp - (startTimestamp ?? timestamp), 0)
+        let presentationTime = CMTime(seconds: relativeTime, preferredTimescale: 600)
+        if !adaptor.append(pixelBuffer, withPresentationTime: presentationTime) {
+            let error = writer.error ?? StabilizedPreviewRecorderError.appendFailed
+            finishLocked(result: .failure(error))
+            return
+        }
+
+        lock.unlock()
+    }
+
+    private func startWriterLocked(outputSize: CGSize, firstTimestamp: TimeInterval) throws {
+        guard let outputURL else {
+            throw StabilizedPreviewRecorderError.outputURLMissing
+        }
+
+        outputWidth = max(2, Int(outputSize.width.rounded(.down)))
+        outputHeight = max(2, Int(outputSize.height.rounded(.down)))
+        guard outputWidth > 2, outputHeight > 2 else {
+            throw StabilizedPreviewRecorderError.invalidOutputSize
+        }
+
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+        let bitrate = max(outputWidth * outputHeight * 8, 6_000_000)
+        let outputSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: outputWidth,
+            AVVideoHeightKey: outputHeight,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: bitrate,
+                AVVideoExpectedSourceFrameRateKey: 60
+            ]
+        ]
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
+        input.expectsMediaDataInRealTime = true
+
+        let sourceAttributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: outputWidth,
+            kCVPixelBufferHeightKey as String: outputHeight,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: sourceAttributes
+        )
+
+        guard writer.canAdd(input) else {
+            throw StabilizedPreviewRecorderError.inputUnavailable
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw writer.error ?? StabilizedPreviewRecorderError.writerFailed
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        self.writer = writer
+        self.input = input
+        self.adaptor = adaptor
+        startTimestamp = firstTimestamp
+        state = .recording
+    }
+
+    private func finishWriterLocked() {
+        guard let writer,
+              let input,
+              let outputURL
+        else {
+            finishLocked(result: .failure(StabilizedPreviewRecorderError.writerMissing))
+            return
+        }
+
+        state = .finishing
+        input.markAsFinished()
+        let completion = self.completion
+        resetWriterReferencesLocked(keepState: .finishing)
+        lock.unlock()
+
+        writer.finishWriting {
+            let result: Result<URL, Error>
+            if writer.status == .completed {
+                result = .success(outputURL)
+            } else {
+                result = .failure(writer.error ?? StabilizedPreviewRecorderError.writerFailed)
+            }
+
+            self.lock.lock()
+            self.state = .idle
+            self.lock.unlock()
+            completion?(result)
+        }
+    }
+
+    private func finishLocked(result: Result<URL, Error>) {
+        let completion = self.completion
+        resetWriterReferencesLocked(keepState: .idle)
+        lock.unlock()
+        completion?(result)
+    }
+
+    private func resetWriterReferencesLocked(keepState nextState: RecordingState) {
+        state = nextState
+        outputURL = nil
+        completion = nil
+        writer = nil
+        input = nil
+        adaptor = nil
+        startTimestamp = nil
+        outputWidth = 0
+        outputHeight = 0
+    }
+}
+
+private enum StabilizedPreviewRecorderError: LocalizedError {
+    case alreadyRecording
+    case noFramesWritten
+    case outputURLMissing
+    case invalidOutputSize
+    case inputUnavailable
+    case writerMissing
+    case writerFailed
+    case pixelBufferUnavailable
+    case appendFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .alreadyRecording:
+            return "稳定预览录像已经在进行中。"
+        case .noFramesWritten:
+            return "录像还没有写入稳定预览帧。"
+        case .outputURLMissing:
+            return "录像输出路径不可用。"
+        case .invalidOutputSize:
+            return "稳定预览录像尺寸不可用。"
+        case .inputUnavailable:
+            return "无法创建稳定预览录像输入。"
+        case .writerMissing:
+            return "稳定预览录像写入器不可用。"
+        case .writerFailed:
+            return "稳定预览录像写入失败。"
+        case .pixelBufferUnavailable:
+            return "无法创建稳定预览录像帧缓冲。"
+        case .appendFailed:
+            return "稳定预览录像帧写入失败。"
+        }
     }
 }
 
