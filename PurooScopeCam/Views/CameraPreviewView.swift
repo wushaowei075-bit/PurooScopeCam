@@ -46,7 +46,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         metalView.framebufferOnly = false
         metalView.isPaused = false
         metalView.enableSetNeedsDisplay = false
-        metalView.preferredFramesPerSecond = min(UIScreen.main.maximumFramesPerSecond, 120)
+        metalView.preferredFramesPerSecond = min(UIScreen.main.maximumFramesPerSecond, 60)
         metalView.delegate = renderer
 
         visualAnalyzer.onCorrection = { [weak self] correction in
@@ -112,6 +112,20 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         guard let motionTime = frameClockMapper.motionTime(for: timestamp) else { return }
         renderer.enqueue(pixelBuffer: pixelBuffer, motionTime: motionTime)
         visualAnalyzer.enqueue(pixelBuffer: pixelBuffer, motionTime: motionTime)
+    }
+
+    func cameraController(
+        _ controller: CameraController,
+        didUpdateTargetFrameRate frameRate: Int
+    ) {
+        let clampedFrameRate = max(24, min(frameRate, 60))
+        renderer.setTargetFrameRate(clampedFrameRate)
+        DispatchQueue.main.async { [weak self] in
+            self?.metalView.preferredFramesPerSecond = min(
+                UIScreen.main.maximumFramesPerSecond,
+                clampedFrameRate
+            )
+        }
     }
 }
 
@@ -244,6 +258,10 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func stopRecording() {
         recorder.stopRecording()
+    }
+
+    func setTargetFrameRate(_ frameRate: Int) {
+        recorder.setTargetFrameRate(frameRate)
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -427,6 +445,7 @@ private final class StabilizedPreviewRecorder {
     }
 
     private let lock = NSLock()
+    private let recordingQueue = DispatchQueue(label: "com.puroo.scope.preview.recording", qos: .userInitiated)
     private var state: RecordingState = .idle
     private var outputURL: URL?
     private var completion: ((Result<URL, Error>) -> Void)?
@@ -437,6 +456,8 @@ private final class StabilizedPreviewRecorder {
     private var lastPresentationTime: CMTime?
     private var outputWidth = 0
     private var outputHeight = 0
+    private var targetFrameRate = 60
+    private var pendingAppendCount = 0
 
     var isRecording: Bool {
         lock.lock()
@@ -463,11 +484,24 @@ private final class StabilizedPreviewRecorder {
         writer = nil
         input = nil
         adaptor = nil
+        pendingAppendCount = 0
         state = .waitingForFirstFrame
         lock.unlock()
     }
 
     func stopRecording() {
+        recordingQueue.async { [weak self] in
+            self?.stopRecordingOnQueue()
+        }
+    }
+
+    func setTargetFrameRate(_ frameRate: Int) {
+        lock.lock()
+        targetFrameRate = max(24, min(frameRate, 60))
+        lock.unlock()
+    }
+
+    private func stopRecordingOnQueue() {
         lock.lock()
         switch state {
         case .idle:
@@ -482,6 +516,37 @@ private final class StabilizedPreviewRecorder {
     }
 
     func append(
+        stabilizedImage: CIImage,
+        timestamp: TimeInterval,
+        outputSize: CGSize,
+        ciContext: CIContext,
+        colorSpace: CGColorSpace
+    ) {
+        lock.lock()
+        guard state == .waitingForFirstFrame || state == .recording,
+              timestamp.isFinite,
+              pendingAppendCount < 3
+        else {
+            lock.unlock()
+            return
+        }
+        pendingAppendCount += 1
+        lock.unlock()
+
+        recordingQueue.async { [weak self] in
+            guard let self else { return }
+            defer { self.decrementPendingAppendCount() }
+            self.appendOnRecordingQueue(
+                stabilizedImage: stabilizedImage,
+                timestamp: timestamp,
+                outputSize: outputSize,
+                ciContext: ciContext,
+                colorSpace: colorSpace
+            )
+        }
+    }
+
+    private func appendOnRecordingQueue(
         stabilizedImage: CIImage,
         timestamp: TimeInterval,
         outputSize: CGSize,
@@ -521,6 +586,10 @@ private final class StabilizedPreviewRecorder {
             finishLocked(result: .failure(error))
             return
         }
+        let currentOutputWidth = outputWidth
+        let currentOutputHeight = outputHeight
+        let recordingStartTimestamp = startTimestamp ?? timestamp
+        lock.unlock()
 
         var pixelBuffer: CVPixelBuffer?
         let createResult = CVPixelBufferPoolCreatePixelBuffer(
@@ -529,12 +598,13 @@ private final class StabilizedPreviewRecorder {
             &pixelBuffer
         )
         guard createResult == kCVReturnSuccess, let pixelBuffer else {
+            lock.lock()
             finishLocked(result: .failure(StabilizedPreviewRecorderError.pixelBufferUnavailable))
             return
         }
 
-        let scaleX = CGFloat(outputWidth) / max(outputSize.width, 1)
-        let scaleY = CGFloat(outputHeight) / max(outputSize.height, 1)
+        let scaleX = CGFloat(currentOutputWidth) / max(outputSize.width, 1)
+        let scaleY = CGFloat(currentOutputHeight) / max(outputSize.height, 1)
         let recordingImage = stabilizedImage.transformed(
             by: CGAffineTransform(scaleX: scaleX, y: scaleY)
         )
@@ -545,13 +615,21 @@ private final class StabilizedPreviewRecorder {
             bounds: CGRect(
                 x: 0,
                 y: 0,
-                width: outputWidth,
-                height: outputHeight
+                width: currentOutputWidth,
+                height: currentOutputHeight
             ),
             colorSpace: colorSpace
         )
 
-        let relativeTime = max(timestamp - (startTimestamp ?? timestamp), 0)
+        lock.lock()
+        guard state == .recording,
+              writer.status == .writing
+        else {
+            lock.unlock()
+            return
+        }
+
+        let relativeTime = max(timestamp - recordingStartTimestamp, 0)
         let presentationTime = CMTime(seconds: relativeTime, preferredTimescale: 600)
         if let lastPresentationTime,
            CMTimeCompare(presentationTime, lastPresentationTime) <= 0 {
@@ -569,6 +647,12 @@ private final class StabilizedPreviewRecorder {
         lock.unlock()
     }
 
+    private func decrementPendingAppendCount() {
+        lock.lock()
+        pendingAppendCount = max(0, pendingAppendCount - 1)
+        lock.unlock()
+    }
+
     private func startWriterLocked(outputSize: CGSize, firstTimestamp: TimeInterval) throws {
         guard let outputURL else {
             throw StabilizedPreviewRecorderError.outputURLMissing
@@ -582,7 +666,8 @@ private final class StabilizedPreviewRecorder {
         }
 
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
-        let bitrate = min(max(outputWidth * outputHeight * 5, 4_000_000), 12_000_000)
+        let expectedFrameRate = targetFrameRate
+        let bitrate = min(max(outputWidth * outputHeight * expectedFrameRate / 12, 4_000_000), 12_000_000)
         let outputSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: outputWidth,
@@ -590,7 +675,7 @@ private final class StabilizedPreviewRecorder {
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: bitrate,
                 AVVideoMaxKeyFrameIntervalKey: 60,
-                AVVideoExpectedSourceFrameRateKey: 60
+                AVVideoExpectedSourceFrameRateKey: expectedFrameRate
             ]
         ]
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)

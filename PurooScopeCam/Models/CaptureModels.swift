@@ -2,6 +2,68 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 
+struct CaptureQualityOption: Identifiable, Hashable {
+    static let automatic = CaptureQualityOption(
+        id: "auto",
+        width: 0,
+        height: 0,
+        frameRate: 0,
+        isAutomatic: true
+    )
+
+    let id: String
+    let width: Int32
+    let height: Int32
+    let frameRate: Int
+    let isAutomatic: Bool
+
+    init(width: Int32, height: Int32, frameRate: Int) {
+        self.id = "\(width)x\(height)@\(frameRate)"
+        self.width = width
+        self.height = height
+        self.frameRate = frameRate
+        self.isAutomatic = false
+    }
+
+    private init(
+        id: String,
+        width: Int32,
+        height: Int32,
+        frameRate: Int,
+        isAutomatic: Bool
+    ) {
+        self.id = id
+        self.width = width
+        self.height = height
+        self.frameRate = frameRate
+        self.isAutomatic = isAutomatic
+    }
+
+    var title: String {
+        if isAutomatic {
+            return "自动"
+        }
+
+        return "\(verticalPixels)p \(frameRate)fps"
+    }
+
+    var shortTitle: String {
+        if isAutomatic {
+            return "自动画质"
+        }
+
+        return "\(verticalPixels)p/\(frameRate)"
+    }
+
+    var verticalPixels: Int32 {
+        max(width, height)
+    }
+
+    var horizontalPixels: Int32 {
+        min(width, height)
+    }
+}
+
 enum StabilizationPreference: String, CaseIterable, Identifiable {
     case off
     case auto

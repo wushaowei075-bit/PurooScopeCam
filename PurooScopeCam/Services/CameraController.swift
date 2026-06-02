@@ -9,6 +9,18 @@ protocol CameraFrameSink: AnyObject {
         didOutput pixelBuffer: CVPixelBuffer,
         at timestamp: CMTime
     )
+
+    func cameraController(
+        _ controller: CameraController,
+        didUpdateTargetFrameRate frameRate: Int
+    )
+}
+
+extension CameraFrameSink {
+    func cameraController(
+        _ controller: CameraController,
+        didUpdateTargetFrameRate frameRate: Int
+    ) {}
 }
 
 protocol StabilizedRecordingFrameSink: AnyObject {
@@ -37,6 +49,14 @@ final class CameraController: NSObject, ObservableObject {
     }
     @Published var zoomFactor: CGFloat = 1
     @Published var exposureBias: Float = 0
+    @Published var captureQualityPreference: CaptureQualityOption = .automatic {
+        didSet {
+            guard captureQualityPreference != oldValue else { return }
+            applySelectedCaptureQuality()
+        }
+    }
+    @Published private(set) var captureQualityOptions: [CaptureQualityOption] = [.automatic]
+    @Published private(set) var activeCaptureQuality: CaptureQualityOption = .automatic
     @Published private(set) var focusLocked = false
     @Published private(set) var exposureLocked = false
     @Published private(set) var previewStabilizationState: PreviewStabilizationState = .identity
@@ -52,6 +72,12 @@ final class CameraController: NSObject, ObservableObject {
     private weak var previewFrameSink: CameraFrameSink?
     private weak var previewRecordingSink: StabilizedRecordingFrameSink?
     private var isConfigured = false
+    private var targetFrameRate = 60
+
+    private struct CaptureQualityApplication {
+        var options: [CaptureQualityOption]
+        var selected: CaptureQualityOption
+    }
 
     func requestAccessAndConfigure() {
         let currentStatus = AVCaptureDevice.authorizationStatus(for: .video)
@@ -98,8 +124,10 @@ final class CameraController: NSObject, ObservableObject {
 
     func setPreviewFrameSink(_ sink: CameraFrameSink?) {
         videoOutputQueue.async { [weak self] in
-            self?.previewFrameSink = sink
-            self?.previewRecordingSink = sink as? StabilizedRecordingFrameSink
+            guard let self else { return }
+            self.previewFrameSink = sink
+            self.previewRecordingSink = sink as? StabilizedRecordingFrameSink
+            sink?.cameraController(self, didUpdateTargetFrameRate: self.targetFrameRate)
         }
     }
 
@@ -246,7 +274,8 @@ final class CameraController: NSObject, ObservableObject {
     private func configureDeviceDefaults(_ device: AVCaptureDevice) {
         do {
             try device.lockForConfiguration()
-            configurePreferredVideoFormat(device)
+            defer { device.unlockForConfiguration() }
+            let qualityApplication = configureCaptureQuality(device)
             if device.isFocusModeSupported(.continuousAutoFocus) {
                 device.focusMode = .continuousAutoFocus
             }
@@ -262,7 +291,7 @@ final class CameraController: NSObject, ObservableObject {
             if device.isLowLightBoostSupported {
                 device.automaticallyEnablesLowLightBoostWhenAvailable = true
             }
-            device.unlockForConfiguration()
+            publishCaptureQuality(qualityApplication)
         } catch {
             publishStatus(error: "无法配置相机默认参数。")
         }
@@ -313,8 +342,140 @@ final class CameraController: NSObject, ObservableObject {
         device.activeVideoMaxFrameDuration = frameDuration
     }
 
+    private func configureCaptureQuality(_ device: AVCaptureDevice) -> CaptureQualityApplication {
+        let options = supportedCaptureQualityOptions(for: device)
+        let selected = selectedCaptureQuality(from: options)
+
+        if let format = preferredFormat(for: selected, on: device) {
+            device.activeFormat = format
+            let frameDuration = CMTime(
+                value: 1,
+                timescale: CMTimeScale(selected.frameRate)
+            )
+            device.activeVideoMinFrameDuration = frameDuration
+            device.activeVideoMaxFrameDuration = frameDuration
+            targetFrameRate = selected.frameRate
+        } else {
+            targetFrameRate = currentFrameRate(for: device)
+        }
+
+        return CaptureQualityApplication(options: options, selected: selected)
+    }
+
+    private func supportedCaptureQualityOptions(for device: AVCaptureDevice) -> [CaptureQualityOption] {
+        let targets = [
+            CaptureQualityOption(width: 1920, height: 1080, frameRate: 60),
+            CaptureQualityOption(width: 1920, height: 1080, frameRate: 30),
+            CaptureQualityOption(width: 1280, height: 720, frameRate: 60),
+            CaptureQualityOption(width: 1280, height: 720, frameRate: 30)
+        ]
+
+        let supportedTargets = targets.filter { preferredFormat(for: $0, on: device) != nil }
+        return supportedTargets.isEmpty ? [.automatic] : [.automatic] + supportedTargets
+    }
+
+    private func selectedCaptureQuality(from options: [CaptureQualityOption]) -> CaptureQualityOption {
+        let explicitOptions = options.filter { !$0.isAutomatic }
+        guard let automaticSelection = explicitOptions.first else {
+            return .automatic
+        }
+
+        if captureQualityPreference.isAutomatic {
+            return automaticSelection
+        }
+
+        return explicitOptions.first { $0 == captureQualityPreference } ?? automaticSelection
+    }
+
+    private func preferredFormat(
+        for option: CaptureQualityOption,
+        on device: AVCaptureDevice
+    ) -> AVCaptureDevice.Format? {
+        guard !option.isAutomatic else { return nil }
+
+        let matchingFormats = device.formats.filter { format in
+            formatMatches(option, format: format) &&
+                format.videoSupportedFrameRateRanges.contains { range in
+                    range.minFrameRate <= Double(option.frameRate) &&
+                        range.maxFrameRate >= Double(option.frameRate)
+                }
+        }
+
+        return matchingFormats.max { lhs, rhs in
+            formatScore(lhs, for: option) < formatScore(rhs, for: option)
+        }
+    }
+
+    private func formatMatches(
+        _ option: CaptureQualityOption,
+        format: AVCaptureDevice.Format
+    ) -> Bool {
+        let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+        return max(dimensions.width, dimensions.height) == max(option.width, option.height) &&
+            min(dimensions.width, dimensions.height) == min(option.width, option.height)
+    }
+
+    private func formatScore(
+        _ format: AVCaptureDevice.Format,
+        for option: CaptureQualityOption
+    ) -> Int {
+        let stabilizationScore = format.isVideoStabilizationModeSupported(.standard) ? 100 : 0
+        let cinematicScore = format.isVideoStabilizationModeSupported(.cinematic) ? 40 : 0
+        return stabilizationScore + cinematicScore + option.frameRate
+    }
+
+    private func currentFrameRate(for device: AVCaptureDevice) -> Int {
+        let frameDuration = device.activeVideoMinFrameDuration
+        let duration = CMTimeGetSeconds(frameDuration)
+        if duration.isFinite, duration > 0 {
+            return max(24, min(Int(duration == 0 ? 30 : (1.0 / duration).rounded()), 60))
+        }
+
+        let maximumFrameRate = device.activeFormat.videoSupportedFrameRateRanges
+            .map(\.maxFrameRate)
+            .max() ?? 30
+        return max(24, min(Int(maximumFrameRate.rounded()), 60))
+    }
+
+    private func applySelectedCaptureQuality() {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            guard !self.status.isRecording else {
+                self.publishStatus(error: "录制中不能切换画质。")
+                return
+            }
+
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                let qualityApplication = self.configureCaptureQuality(device)
+                self.publishCaptureQuality(qualityApplication)
+                self.applySelectedStabilizationMode()
+            } catch {
+                self.publishStatus(error: "无法切换画质。")
+            }
+        }
+    }
+
+    private func publishCaptureQuality(_ qualityApplication: CaptureQualityApplication) {
+        let options = qualityApplication.options
+        let selected = qualityApplication.selected
+        publish {
+            $0.captureQualityOptions = options
+            $0.activeCaptureQuality = selected
+        }
+        notifyPreviewFrameRate(targetFrameRate)
+    }
+
+    private func notifyPreviewFrameRate(_ frameRate: Int) {
+        videoOutputQueue.async { [weak self] in
+            guard let self else { return }
+            self.previewFrameSink?.cameraController(self, didUpdateTargetFrameRate: frameRate)
+        }
+    }
+
     private func configureVideoOutput() {
-        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.alwaysDiscardsLateVideoFrames = false
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ]

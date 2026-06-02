@@ -6,6 +6,7 @@ struct ControlPanelView: View {
     var body: some View {
         VStack(spacing: 12) {
             stabilizationPicker
+            qualityPicker
 
             HStack(spacing: 12) {
                 metricSlider(
@@ -85,6 +86,32 @@ struct ControlPanelView: View {
             }
         }
         .pickerStyle(.segmented)
+    }
+
+    private var qualityPicker: some View {
+        HStack(spacing: 10) {
+            Label("画质", systemImage: "rectangle.badge.checkmark")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.86))
+
+            Picker("画质", selection: $camera.captureQualityPreference) {
+                ForEach(camera.captureQualityOptions) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(camera.status.isRecording || camera.captureQualityOptions.count <= 1)
+
+            Spacer(minLength: 0)
+
+            Text(camera.activeCaptureQuality.shortTitle)
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.white.opacity(0.78))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 38)
+        .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func metricSlider(
