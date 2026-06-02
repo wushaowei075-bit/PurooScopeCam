@@ -560,9 +560,9 @@ private final class StabilizedPreviewRecorder {
             throw StabilizedPreviewRecorderError.outputURLMissing
         }
 
-        outputWidth = max(2, Int(outputSize.width.rounded(.down)))
-        outputHeight = max(2, Int(outputSize.height.rounded(.down)))
-        guard outputWidth > 2, outputHeight > 2 else {
+        outputWidth = compatibleVideoDimension(outputSize.width)
+        outputHeight = compatibleVideoDimension(outputSize.height)
+        guard outputWidth >= 16, outputHeight >= 16 else {
             throw StabilizedPreviewRecorderError.invalidOutputSize
         }
 
@@ -605,6 +605,11 @@ private final class StabilizedPreviewRecorder {
         self.adaptor = adaptor
         startTimestamp = firstTimestamp
         state = .recording
+    }
+
+    private func compatibleVideoDimension(_ value: CGFloat) -> Int {
+        let rounded = max(16, Int(value.rounded(.down)))
+        return rounded.isMultiple(of: 2) ? rounded : rounded - 1
     }
 
     private func finishWriterLocked() {

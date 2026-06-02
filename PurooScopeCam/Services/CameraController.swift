@@ -366,7 +366,7 @@ final class CameraController: NSObject, ObservableObject {
                         self.saveVideo(at: outputURL)
                     case .failure(let error):
                         try? FileManager.default.removeItem(at: url)
-                        self.publishStatus(error: error.localizedDescription)
+                        self.publishStatus(error: self.recordingErrorMessage(for: error))
                     }
                 }
                 self.publishStatus { $0.isRecording = true }
@@ -503,6 +503,15 @@ final class CameraController: NSObject, ObservableObject {
         DispatchQueue.main.async {
             update(&self.status)
         }
+    }
+
+    private func recordingErrorMessage(for error: Error) -> String {
+        let nsError = error as NSError
+        let detail = nsError.localizedDescription
+        if detail == "The operation could not be completed" || detail == "The operation couldn’t be completed." {
+            return "稳定预览录像失败：\(nsError.domain) code \(nsError.code)"
+        }
+        return "稳定预览录像失败：\(detail) (\(nsError.domain) code \(nsError.code))"
     }
 
     private func publishPreviewStabilizationState(_ state: PreviewStabilizationState) {
