@@ -836,10 +836,10 @@ private final class PreviewFrameMotionAnalyzer {
 
     private let queue = DispatchQueue(label: "com.puroo.scope.preview.visualLock", qos: .userInteractive)
     private let busyLock = NSLock()
-    private let gridSize = 80
-    private let searchRadius = 5
+    private let gridSize = 96
+    private let searchRadius = 6
     private let patchRadius = 3
-    private let anchorStride = 9
+    private let anchorStride = 8
     private var isBusy = false
     private var preference: StabilizationPreference = .off
     private var lastFrame: AnalysisFrame?
@@ -967,8 +967,8 @@ private final class PreviewFrameMotionAnalyzer {
 
     private func microJitterGate(for shift: VisualShift) -> CGFloat {
         let magnitude = (shift.dx * shift.dx + shift.dy * shift.dy).squareRoot()
-        let smallMotion = clamp((CGFloat(2.4) - magnitude) / 1.8, min: 0, max: 1)
-        let confidence = clamp((shift.confidence - 0.28) / 0.42, min: 0, max: 1)
+        let smallMotion = clamp((CGFloat(3.1) - magnitude) / 2.4, min: 0, max: 1)
+        let confidence = clamp((shift.confidence - 0.20) / 0.38, min: 0, max: 1)
         return smallMotion * confidence
     }
 
@@ -1028,7 +1028,7 @@ private final class PreviewFrameMotionAnalyzer {
             max: 1
         )
 
-        guard confidence > 0.24 else { return nil }
+        guard confidence > 0.20 else { return nil }
         return VisualShift(dx: dx, dy: dy, confidence: confidence)
     }
 
@@ -1044,7 +1044,7 @@ private final class PreviewFrameMotionAnalyzer {
                 let index = y * gridSize + x
                 guard reference.roiMask[index],
                       current.roiMask[index],
-                      patchTexture(reference, centerX: x, centerY: y) > 2.4,
+                      patchTexture(reference, centerX: x, centerY: y) > 2.0,
                       let vector = bestPatchVector(reference: reference, current: current, centerX: x, centerY: y)
                 else {
                     continue
@@ -1091,7 +1091,7 @@ private final class PreviewFrameMotionAnalyzer {
             }
         }
 
-        guard bestScore.isFinite, bestScore < 29 else { return nil }
+        guard bestScore.isFinite, bestScore < 33 else { return nil }
 
         let uniqueness: CGFloat
         if secondScore.isFinite {
@@ -1099,9 +1099,9 @@ private final class PreviewFrameMotionAnalyzer {
         } else {
             uniqueness = 0
         }
-        let matchConfidence = clamp((29 - bestScore) / 22, min: 0, max: 1)
+        let matchConfidence = clamp((33 - bestScore) / 25, min: 0, max: 1)
         let confidence = clamp(matchConfidence * 0.78 + uniqueness * 0.22, min: 0, max: 1)
-        guard confidence > 0.26 else { return nil }
+        guard confidence > 0.20 else { return nil }
 
         return PatchVector(
             dx: CGFloat(bestDx),
