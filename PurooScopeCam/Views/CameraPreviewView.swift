@@ -452,8 +452,9 @@ private final class StabilizedPreviewRecorder {
     private var writer: AVAssetWriter?
     private var input: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
-    private var startTimestamp: TimeInterval?
     private var lastPresentationTime: CMTime?
+    private var writtenFrameCount: Int64 = 0
+    private var recordingFrameRate = 60
     private var outputWidth = 0
     private var outputHeight = 0
     private var targetFrameRate = 60
@@ -480,10 +481,11 @@ private final class StabilizedPreviewRecorder {
         try? FileManager.default.removeItem(at: outputURL)
         self.outputURL = outputURL
         self.completion = completion
-        startTimestamp = nil
         writer = nil
         input = nil
         adaptor = nil
+        writtenFrameCount = 0
+        recordingFrameRate = targetFrameRate
         pendingAppendCount = 0
         state = .waitingForFirstFrame
         lock.unlock()
@@ -563,7 +565,7 @@ private final class StabilizedPreviewRecorder {
 
         if state == .waitingForFirstFrame {
             do {
-                try startWriterLocked(outputSize: outputSize, firstTimestamp: timestamp)
+                try startWriterLocked(outputSize: outputSize)
             } catch {
                 finishLocked(result: .failure(error))
                 return
@@ -588,7 +590,6 @@ private final class StabilizedPreviewRecorder {
         }
         let currentOutputWidth = outputWidth
         let currentOutputHeight = outputHeight
-        let recordingStartTimestamp = startTimestamp ?? timestamp
         lock.unlock()
 
         var pixelBuffer: CVPixelBuffer?
@@ -629,8 +630,10 @@ private final class StabilizedPreviewRecorder {
             return
         }
 
-        let relativeTime = max(timestamp - recordingStartTimestamp, 0)
-        let presentationTime = CMTime(seconds: relativeTime, preferredTimescale: 600)
+        let presentationTime = CMTime(
+            value: CMTimeValue(writtenFrameCount),
+            timescale: CMTimeScale(max(recordingFrameRate, 1))
+        )
         if let lastPresentationTime,
            CMTimeCompare(presentationTime, lastPresentationTime) <= 0 {
             lock.unlock()
@@ -643,6 +646,7 @@ private final class StabilizedPreviewRecorder {
             return
         }
         lastPresentationTime = presentationTime
+        writtenFrameCount += 1
 
         lock.unlock()
     }
@@ -653,7 +657,7 @@ private final class StabilizedPreviewRecorder {
         lock.unlock()
     }
 
-    private func startWriterLocked(outputSize: CGSize, firstTimestamp: TimeInterval) throws {
+    private func startWriterLocked(outputSize: CGSize) throws {
         guard let outputURL else {
             throw StabilizedPreviewRecorderError.outputURLMissing
         }
@@ -666,7 +670,7 @@ private final class StabilizedPreviewRecorder {
         }
 
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
-        let expectedFrameRate = targetFrameRate
+        let expectedFrameRate = max(24, min(targetFrameRate, 60))
         let bitrate = min(max(outputWidth * outputHeight * expectedFrameRate / 12, 4_000_000), 12_000_000)
         let outputSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -674,7 +678,7 @@ private final class StabilizedPreviewRecorder {
             AVVideoHeightKey: outputHeight,
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: bitrate,
-                AVVideoMaxKeyFrameIntervalKey: 60,
+                AVVideoMaxKeyFrameIntervalKey: expectedFrameRate,
                 AVVideoExpectedSourceFrameRateKey: expectedFrameRate
             ]
         ]
@@ -707,7 +711,8 @@ private final class StabilizedPreviewRecorder {
         self.writer = writer
         self.input = input
         self.adaptor = adaptor
-        startTimestamp = firstTimestamp
+        recordingFrameRate = expectedFrameRate
+        writtenFrameCount = 0
         lastPresentationTime = nil
         state = .recording
     }
@@ -772,8 +777,8 @@ private final class StabilizedPreviewRecorder {
         writer = nil
         input = nil
         adaptor = nil
-        startTimestamp = nil
         lastPresentationTime = nil
+        writtenFrameCount = 0
         outputWidth = 0
         outputHeight = 0
     }
@@ -836,8 +841,8 @@ private final class PreviewFrameMotionAnalyzer {
 
     private let queue = DispatchQueue(label: "com.puroo.scope.preview.visualLock", qos: .userInteractive)
     private let busyLock = NSLock()
-    private let gridSize = 96
-    private let searchRadius = 6
+    private let gridSize = 88
+    private let searchRadius = 5
     private let patchRadius = 3
     private let anchorStride = 8
     private var isBusy = false
