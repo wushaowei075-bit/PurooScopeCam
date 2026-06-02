@@ -351,11 +351,10 @@ final class CameraController: NSObject, ObservableObject {
     private func startRecording() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured else { return }
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
-                .appendingPathExtension("mov")
-
             if let previewRecordingSink = self.previewRecordingSink {
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
+                    .appendingPathExtension("mp4")
                 guard !previewRecordingSink.isStabilizedRecording else { return }
                 previewRecordingSink.startStabilizedRecording(to: url) { [weak self] result in
                     guard let self else { return }
@@ -373,6 +372,9 @@ final class CameraController: NSObject, ObservableObject {
                 return
             }
 
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
+                .appendingPathExtension("mov")
             guard !self.movieOutput.isRecording else { return }
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
             self.publishStatus { $0.isRecording = true }
@@ -507,11 +509,25 @@ final class CameraController: NSObject, ObservableObject {
 
     private func recordingErrorMessage(for error: Error) -> String {
         let nsError = error as NSError
-        let detail = nsError.localizedDescription
+        let detail = detailedRecordingDescription(for: nsError)
         if detail == "The operation could not be completed" || detail == "The operation couldn’t be completed." {
             return "稳定预览录像失败：\(nsError.domain) code \(nsError.code)"
         }
         return "稳定预览录像失败：\(detail) (\(nsError.domain) code \(nsError.code))"
+    }
+
+    private func detailedRecordingDescription(for error: NSError) -> String {
+        var parts = [error.localizedDescription]
+        if let reason = error.localizedFailureReason, !reason.isEmpty {
+            parts.append("reason \(reason)")
+        }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("underlying \(underlying.domain) code \(underlying.code)")
+            if !underlying.localizedDescription.isEmpty {
+                parts.append(underlying.localizedDescription)
+            }
+        }
+        return parts.joined(separator: "; ")
     }
 
     private func publishPreviewStabilizationState(_ state: PreviewStabilizationState) {

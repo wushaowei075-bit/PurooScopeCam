@@ -434,6 +434,7 @@ private final class StabilizedPreviewRecorder {
     private var input: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var startTimestamp: TimeInterval?
+    private var lastPresentationTime: CMTime?
     private var outputWidth = 0
     private var outputHeight = 0
 
@@ -532,8 +533,14 @@ private final class StabilizedPreviewRecorder {
             return
         }
 
+        let scaleX = CGFloat(outputWidth) / max(outputSize.width, 1)
+        let scaleY = CGFloat(outputHeight) / max(outputSize.height, 1)
+        let recordingImage = stabilizedImage.transformed(
+            by: CGAffineTransform(scaleX: scaleX, y: scaleY)
+        )
+
         ciContext.render(
-            stabilizedImage,
+            recordingImage,
             to: pixelBuffer,
             bounds: CGRect(
                 x: 0,
@@ -546,11 +553,18 @@ private final class StabilizedPreviewRecorder {
 
         let relativeTime = max(timestamp - (startTimestamp ?? timestamp), 0)
         let presentationTime = CMTime(seconds: relativeTime, preferredTimescale: 600)
+        if let lastPresentationTime,
+           CMTimeCompare(presentationTime, lastPresentationTime) <= 0 {
+            lock.unlock()
+            return
+        }
+
         if !adaptor.append(pixelBuffer, withPresentationTime: presentationTime) {
             let error = writer.error ?? StabilizedPreviewRecorderError.appendFailed
             finishLocked(result: .failure(error))
             return
         }
+        lastPresentationTime = presentationTime
 
         lock.unlock()
     }
@@ -560,20 +574,22 @@ private final class StabilizedPreviewRecorder {
             throw StabilizedPreviewRecorderError.outputURLMissing
         }
 
-        outputWidth = compatibleVideoDimension(outputSize.width)
-        outputHeight = compatibleVideoDimension(outputSize.height)
+        let recordingSize = compatibleRecordingSize(for: outputSize)
+        outputWidth = recordingSize.width
+        outputHeight = recordingSize.height
         guard outputWidth >= 16, outputHeight >= 16 else {
             throw StabilizedPreviewRecorderError.invalidOutputSize
         }
 
-        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-        let bitrate = max(outputWidth * outputHeight * 8, 6_000_000)
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+        let bitrate = min(max(outputWidth * outputHeight * 5, 4_000_000), 12_000_000)
         let outputSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: outputWidth,
             AVVideoHeightKey: outputHeight,
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: bitrate,
+                AVVideoMaxKeyFrameIntervalKey: 60,
                 AVVideoExpectedSourceFrameRateKey: 60
             ]
         ]
@@ -584,6 +600,9 @@ private final class StabilizedPreviewRecorder {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: outputWidth,
             kCVPixelBufferHeightKey as String: outputHeight,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ]
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
@@ -604,12 +623,24 @@ private final class StabilizedPreviewRecorder {
         self.input = input
         self.adaptor = adaptor
         startTimestamp = firstTimestamp
+        lastPresentationTime = nil
         state = .recording
+    }
+
+    private func compatibleRecordingSize(for drawableSize: CGSize) -> (width: Int, height: Int) {
+        let sourceWidth = max(drawableSize.width, 1)
+        let sourceHeight = max(drawableSize.height, 1)
+        let maxWidth: CGFloat = 1080
+        let maxHeight: CGFloat = 1920
+        let scale = min(maxWidth / sourceWidth, maxHeight / sourceHeight, 1)
+        let width = compatibleVideoDimension(sourceWidth * scale)
+        let height = compatibleVideoDimension(sourceHeight * scale)
+        return (width, height)
     }
 
     private func compatibleVideoDimension(_ value: CGFloat) -> Int {
         let rounded = max(16, Int(value.rounded(.down)))
-        return rounded.isMultiple(of: 2) ? rounded : rounded - 1
+        return max(16, rounded - (rounded % 16))
     }
 
     private func finishWriterLocked() {
@@ -657,6 +688,7 @@ private final class StabilizedPreviewRecorder {
         input = nil
         adaptor = nil
         startTimestamp = nil
+        lastPresentationTime = nil
         outputWidth = 0
         outputHeight = 0
     }
