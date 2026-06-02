@@ -297,51 +297,6 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
-    private func configurePreferredVideoFormat(_ device: AVCaptureDevice) {
-        let preferredFrameRates = [60.0, 30.0]
-        let preferredSizes = [
-            CMVideoDimensions(width: 1920, height: 1080),
-            CMVideoDimensions(width: 1280, height: 720)
-        ]
-
-        var bestCandidate: (format: AVCaptureDevice.Format, frameRate: Double, score: Int)?
-
-        for format in device.formats {
-            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            guard dimensions.width <= 1920, dimensions.height <= 1080 else { continue }
-
-            let supportedFrameRate = preferredFrameRates.first { frameRate in
-                format.videoSupportedFrameRateRanges.contains { range in
-                    range.minFrameRate <= frameRate && range.maxFrameRate >= frameRate
-                }
-            }
-            guard let frameRate = supportedFrameRate else { continue }
-
-            let sizeRank = preferredSizes.firstIndex { preferred in
-                preferred.width == dimensions.width && preferred.height == dimensions.height
-            } ?? preferredSizes.count
-            let sizeScore = max(0, 300 - sizeRank * 80)
-            let frameRateScore = Int(frameRate * 10)
-            let stabilizationScore = format.isVideoStabilizationModeSupported(.standard) ? 120 : 0
-            let pixelCountPenalty = Int(dimensions.width * dimensions.height / 100_000)
-            let score = frameRateScore + sizeScore + stabilizationScore - pixelCountPenalty
-
-            if bestCandidate.map({ score > $0.score }) ?? true {
-                bestCandidate = (format: format, frameRate: frameRate, score: score)
-            }
-        }
-
-        guard let bestCandidate else { return }
-
-        device.activeFormat = bestCandidate.format
-        let frameDuration = CMTime(
-            value: 1,
-            timescale: CMTimeScale(bestCandidate.frameRate.rounded())
-        )
-        device.activeVideoMinFrameDuration = frameDuration
-        device.activeVideoMaxFrameDuration = frameDuration
-    }
-
     private func configureCaptureQuality(_ device: AVCaptureDevice) -> CaptureQualityApplication {
         let options = supportedCaptureQualityOptions(for: device)
         let selected = selectedCaptureQuality(from: options)
@@ -428,7 +383,7 @@ final class CameraController: NSObject, ObservableObject {
         let frameDuration = device.activeVideoMinFrameDuration
         let duration = CMTimeGetSeconds(frameDuration)
         if duration.isFinite, duration > 0 {
-            return max(24, min(Int(duration == 0 ? 30 : (1.0 / duration).rounded()), 60))
+            return max(24, min(Int((1.0 / duration).rounded()), 60))
         }
 
         let maximumFrameRate = device.activeFormat.videoSupportedFrameRateRanges
