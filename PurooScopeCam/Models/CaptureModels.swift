@@ -339,13 +339,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return [.auto]
         case .balanced:
-            return [.cinematicExtended, .cinematic, .standard, .auto]
+            return [.standard, .auto]
         case .strong:
-            if #available(iOS 18.0, *) {
-                return [.cinematicExtendedEnhanced, .cinematicExtended, .cinematic, .standard, .auto]
-            } else {
-                return [.cinematicExtended, .cinematic, .standard, .auto]
-            }
+            return [.standard, .auto]
         }
     }
 
@@ -356,13 +352,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return [.standard, .auto, .off]
         case .balanced:
-            return [.cinematicExtended, .cinematic, .standard, .auto, .off]
+            return [.standard, .auto, .off]
         case .strong:
-            if #available(iOS 18.0, *) {
-                return [.cinematicExtendedEnhanced, .cinematicExtended, .cinematic, .standard, .auto, .off]
-            } else {
-                return [.cinematicExtended, .cinematic, .standard, .auto, .off]
-            }
+            return [.standard, .auto, .off]
         }
     }
 }
