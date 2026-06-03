@@ -135,9 +135,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 0.68
+            return 0.50
         case .strong:
-            return 0.76
+            return 0.56
         }
     }
 
@@ -146,9 +146,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 8.0
+            return 6.0
         case .strong:
-            return 8.5
+            return 6.5
         }
     }
 
@@ -157,9 +157,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 54
+            return 22
         case .strong:
-            return 58
+            return 24
         }
     }
 
@@ -168,31 +168,39 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 0.045
+            return 0.038
         case .strong:
-            return 0.068
+            return 0.052
         }
     }
 
     var visualMicroJitterCorrectionGain: CGFloat {
-        switch self {
-        case .off, .auto:
-            return 0
-        case .balanced:
-            return 0.28
-        case .strong:
-            return 0.34
-        }
+        return 0
     }
 
     var visualMicroJitterMaximumOffset: CGFloat {
+        return 0
+    }
+
+    var visualShiftDeadZone: CGFloat {
+        switch self {
+        case .off, .auto:
+            return .infinity
+        case .balanced:
+            return 0.42
+        case .strong:
+            return 0.38
+        }
+    }
+
+    var visualCorrectionMaximumStep: CGFloat {
         switch self {
         case .off, .auto:
             return 0
         case .balanced:
-            return 0.006
+            return 0.0012
         case .strong:
-            return 0.008
+            return 0.0015
         }
     }
 

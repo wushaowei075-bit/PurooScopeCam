@@ -1108,7 +1108,7 @@ private final class PreviewFrameMotionAnalyzer {
             return
         }
 
-        apply(shift: filteredShift(shift), deltaTime: dt, timestamp: timestamp)
+        apply(shift: deadzoned(filteredShift(shift)), deltaTime: dt, timestamp: timestamp)
     }
 
     private func apply(shift: VisualShift, deltaTime: TimeInterval, timestamp: TimeInterval) {
@@ -1122,31 +1122,30 @@ private final class PreviewFrameMotionAnalyzer {
 
         let gain = preference.visualHighPassCorrectionGain
         let maximumOffset = preference.visualHighPassMaximumOffset
-        let microGate = microJitterGate(for: shift)
-        let microMaximumOffset = preference.visualMicroJitterMaximumOffset
-        let microX = clamp(
-            -shift.dx / CGFloat(gridSize) * preference.visualMicroJitterCorrectionGain * microGate,
-            min: -microMaximumOffset,
-            max: microMaximumOffset
-        )
-        let microY = clamp(
-            -shift.dy / CGFloat(gridSize) * preference.visualMicroJitterCorrectionGain * microGate,
-            min: -microMaximumOffset,
-            max: microMaximumOffset
-        )
         let targetX = clamp(
-            -accumulatedX / CGFloat(gridSize) * gain + microX,
+            -accumulatedX / CGFloat(gridSize) * gain,
             min: -maximumOffset,
             max: maximumOffset
         )
         let targetY = clamp(
-            -accumulatedY / CGFloat(gridSize) * gain + microY,
+            -accumulatedY / CGFloat(gridSize) * gain,
             min: -maximumOffset,
             max: maximumOffset
         )
         let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate))
-        let nextX = correction.normalizedX + (targetX - correction.normalizedX) * response
-        let nextY = correction.normalizedY + (targetY - correction.normalizedY) * response
+        let stepLimit = correctionStepLimit(deltaTime: deltaTime)
+        let nextX = limitedCorrection(
+            current: correction.normalizedX,
+            target: targetX,
+            response: response,
+            maximumStep: stepLimit
+        )
+        let nextY = limitedCorrection(
+            current: correction.normalizedY,
+            target: targetY,
+            response: response,
+            maximumStep: stepLimit
+        )
 
         correction = PreviewVisualCorrection(
             normalizedX: nextX,
@@ -1155,6 +1154,21 @@ private final class PreviewFrameMotionAnalyzer {
             timestamp: timestamp
         )
         emit(correction)
+    }
+
+    private func deadzoned(_ shift: VisualShift) -> VisualShift {
+        let magnitude = (shift.dx * shift.dx + shift.dy * shift.dy).squareRoot()
+        let deadZone = preference.visualShiftDeadZone
+        guard magnitude > deadZone else {
+            return VisualShift(dx: 0, dy: 0, confidence: shift.confidence * 0.35)
+        }
+
+        let scale = (magnitude - deadZone) / magnitude
+        return VisualShift(
+            dx: shift.dx * scale,
+            dy: shift.dy * scale,
+            confidence: shift.confidence
+        )
     }
 
     private func microJitterGate(for shift: VisualShift) -> CGFloat {
@@ -1172,8 +1186,19 @@ private final class PreviewFrameMotionAnalyzer {
         let targetX = -accumulatedX / CGFloat(gridSize) * preference.visualHighPassCorrectionGain
         let targetY = -accumulatedY / CGFloat(gridSize) * preference.visualHighPassCorrectionGain
         let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate))
-        let nextX = correction.normalizedX + (targetX - correction.normalizedX) * response
-        let nextY = correction.normalizedY + (targetY - correction.normalizedY) * response
+        let stepLimit = correctionStepLimit(deltaTime: deltaTime)
+        let nextX = limitedCorrection(
+            current: correction.normalizedX,
+            target: targetX,
+            response: response,
+            maximumStep: stepLimit
+        )
+        let nextY = limitedCorrection(
+            current: correction.normalizedY,
+            target: targetY,
+            response: response,
+            maximumStep: stepLimit
+        )
 
         correction = PreviewVisualCorrection(
             normalizedX: nextX,
@@ -1182,6 +1207,21 @@ private final class PreviewFrameMotionAnalyzer {
             timestamp: timestamp
         )
         emit(correction)
+    }
+
+    private func correctionStepLimit(deltaTime: TimeInterval) -> CGFloat {
+        let scale = clamp(CGFloat(deltaTime / (1.0 / 60.0)), min: 0.5, max: 2.5)
+        return preference.visualCorrectionMaximumStep * scale
+    }
+
+    private func limitedCorrection(
+        current: CGFloat,
+        target: CGFloat,
+        response: CGFloat,
+        maximumStep: CGFloat
+    ) -> CGFloat {
+        let requestedStep = (target - current) * response
+        return current + clamp(requestedStep, min: -maximumStep, max: maximumStep)
     }
 
     private func filteredShift(_ shift: VisualShift) -> VisualShift {
