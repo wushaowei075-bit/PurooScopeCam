@@ -87,10 +87,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var usesElectronicPreviewStabilization: Bool {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced, .strong:
             return false
-        case .balanced, .strong:
-            return true
         }
     }
 
@@ -197,12 +195,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualPreviewDelayFrames: Int {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .balanced:
-            return 1
-        case .strong:
-            return 1
         }
     }
 
@@ -360,11 +354,15 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return [.off]
         case .auto:
-            return [.standard, .off]
+            return [.standard, .auto, .off]
         case .balanced:
-            return [.standard, .off]
+            return [.cinematicExtended, .cinematic, .standard, .auto, .off]
         case .strong:
-            return [.standard, .off]
+            if #available(iOS 18.0, *) {
+                return [.cinematicExtendedEnhanced, .cinematicExtended, .cinematic, .standard, .auto, .off]
+            } else {
+                return [.cinematicExtended, .cinematic, .standard, .auto, .off]
+            }
         }
     }
 }
