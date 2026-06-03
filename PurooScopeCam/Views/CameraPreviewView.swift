@@ -36,6 +36,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var viewportSize = CGSize.zero
     private var stabilizationPreference: StabilizationPreference = .off
     private var latestCropCorrection = PreviewVisualCorrection.identity
+    private var latestMotionCorrection = PreviewVisualCorrection.identity
     private var overviewImageAspectRatio: CGFloat = 1
     private var lastOverviewUpdateTime: TimeInterval = 0
 
@@ -104,7 +105,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         DispatchQueue.main.async { [weak self] in
             self?.overviewContainer.isHidden = !preference.usesCropWindowStabilization
             self?.layoutOverview()
-            self?.updateCropWindowOverlay(self?.latestCropCorrection ?? .identity)
+            self?.layoutCropWindow(correction: self?.combinedCropCorrection() ?? .identity)
         }
     }
 
@@ -112,6 +113,8 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         visualAnalyzer.setPreference(.off)
         renderer.setVisualCorrection(.identity)
         renderer.setCropWindowScale(1)
+        latestCropCorrection = .identity
+        latestMotionCorrection = .identity
         overviewContainer.isHidden = true
     }
 
@@ -196,15 +199,32 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             height: height
         )
         overviewImageView.frame = overviewContainer.bounds
-        layoutCropWindow(correction: latestCropCorrection)
+        layoutCropWindow(correction: combinedCropCorrection())
     }
 
     private func updateCropWindowOverlay(_ correction: PreviewVisualCorrection) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.latestCropCorrection = correction
-            self.layoutCropWindow(correction: correction)
+            self.layoutCropWindow(correction: self.combinedCropCorrection())
         }
+    }
+
+    fileprivate func updateMotionCropCorrection(_ correction: PreviewVisualCorrection) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.latestMotionCorrection = correction
+            self.layoutCropWindow(correction: self.combinedCropCorrection())
+        }
+    }
+
+    private func combinedCropCorrection() -> PreviewVisualCorrection {
+        PreviewVisualCorrection(
+            normalizedX: latestCropCorrection.normalizedX + latestMotionCorrection.normalizedX,
+            normalizedY: latestCropCorrection.normalizedY + latestMotionCorrection.normalizedY,
+            confidence: max(latestCropCorrection.confidence, latestMotionCorrection.confidence),
+            timestamp: max(latestCropCorrection.timestamp, latestMotionCorrection.timestamp)
+        )
     }
 
     private func layoutCropWindow(correction: PreviewVisualCorrection) {
@@ -292,7 +312,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             guard let self else { return }
             self.overviewImageAspectRatio = aspectRatio
             self.overviewImageView.image = thumbnail
-            self.layoutCropWindow(correction: self.latestCropCorrection)
+            self.layoutCropWindow(correction: self.combinedCropCorrection())
         }
     }
 
@@ -1101,7 +1121,7 @@ private final class PreviewFrameMotionAnalyzer {
             return
         }
 
-        let dt = min(max(elapsed, 1.0 / 120.0), 1.0 / 24.0)
+        let dt = min(max(elapsed, 1.0 / 120.0), 1.0 / 8.0)
         guard let shift = estimateShift(reference: previousFrame, current: currentFrame) else {
             recentShifts.removeAll(keepingCapacity: true)
             decayCorrection(deltaTime: dt, timestamp: timestamp)
@@ -1210,7 +1230,7 @@ private final class PreviewFrameMotionAnalyzer {
     }
 
     private func correctionStepLimit(deltaTime: TimeInterval) -> CGFloat {
-        let scale = clamp(CGFloat(deltaTime / (1.0 / 60.0)), min: 0.5, max: 2.5)
+        let scale = clamp(CGFloat(deltaTime / (1.0 / 60.0)), min: 0.5, max: 8.0)
         return preference.visualCorrectionMaximumStep * scale
     }
 
@@ -1652,6 +1672,7 @@ struct CameraPreviewView: UIViewRepresentable {
         private var microPitchBaseline: Double = 0
         private var microRollBaseline: Double = 0
         private var microYawBaseline: Double = 0
+        private var lastOverlayTimestamp: TimeInterval = 0
         private let stateLock = NSLock()
         private weak var camera: CameraController?
         private weak var motionMonitor: MotionStabilityMonitor?
@@ -1830,6 +1851,14 @@ struct CameraPreviewView: UIViewRepresentable {
             let finalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
             let finalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
             let finalRoll = clamp(smoothedRoll + leadRoll, min: -rollLimit, max: rollLimit)
+            updateCropOverlayIfNeeded(
+                view: view,
+                preference: preference,
+                timestamp: timestamp,
+                translationX: finalX,
+                translationY: finalY,
+                viewportSize: viewportSize
+            )
 
             view.applyPreviewTransform(
                 PreviewRenderTransform(
@@ -1854,8 +1883,40 @@ struct CameraPreviewView: UIViewRepresentable {
             leadX = 0
             leadY = 0
             leadRoll = 0
+            lastOverlayTimestamp = 0
             resetMicroJitterIntegrator()
+            view.updateMotionCropCorrection(.identity)
             view.applyPreviewTransform(.identity, at: CACurrentMediaTime())
+        }
+
+        private func updateCropOverlayIfNeeded(
+            view: PreviewContainerView,
+            preference: StabilizationPreference,
+            timestamp: TimeInterval,
+            translationX: CGFloat,
+            translationY: CGFloat,
+            viewportSize: CGSize
+        ) {
+            guard preference.usesCropWindowStabilization,
+                  viewportSize.width > 1,
+                  viewportSize.height > 1
+            else {
+                return
+            }
+
+            guard lastOverlayTimestamp == 0 || timestamp - lastOverlayTimestamp >= 1.0 / 30.0 else {
+                return
+            }
+
+            lastOverlayTimestamp = timestamp
+            view.updateMotionCropCorrection(
+                PreviewVisualCorrection(
+                    normalizedX: translationX / viewportSize.width,
+                    normalizedY: translationY / viewportSize.height,
+                    confidence: 1,
+                    timestamp: timestamp
+                )
+            )
         }
 
         private func updateMicroJitterIntegrator(
