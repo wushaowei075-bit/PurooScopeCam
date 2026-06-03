@@ -125,21 +125,17 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualHighPassCorrectionGain: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced:
-            return 1.28
         case .strong:
-            return 1.42
+            return 1.28
         }
     }
 
     var visualHighPassLeakRate: Double {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced:
-            return 13.0
         case .strong:
             return 11.5
         }
@@ -147,21 +143,17 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualHighPassResponseRate: Double {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced:
-            return 62
         case .strong:
-            return 72
+            return 40
         }
     }
 
     var visualHighPassMaximumOffset: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced:
-            return 0.032
         case .strong:
             return 0.044
         }
@@ -169,32 +161,37 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualMicroJitterCorrectionGain: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced:
-            return 1.16
         case .strong:
-            return 1.34
+            return 1.08
         }
     }
 
     var visualMicroJitterMaximumOffset: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced:
-            return 0.014
         case .strong:
-            return 0.018
+            return 0.014
         }
     }
 
     var visualAnalysisMinimumInterval: TimeInterval {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return .infinity
-        case .balanced, .strong:
-            return 1.0 / 60.0
+        case .strong:
+            return 1.0 / 30.0
+        }
+    }
+
+    var visualCorrectionSign: CGFloat {
+        switch self {
+        case .off, .auto, .balanced:
+            return 0
+        case .strong:
+            return -1
         }
     }
 

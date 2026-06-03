@@ -1349,7 +1349,20 @@ private final class PreviewFrameMotionAnalyzer {
     }
 
     private func emit(_ correction: PreviewVisualCorrection) {
-        onCorrection?(correction)
+        let sign = preference.visualCorrectionSign
+        guard sign != 0 else {
+            onCorrection?(.identity)
+            return
+        }
+
+        onCorrection?(
+            PreviewVisualCorrection(
+                normalizedX: correction.normalizedX * sign,
+                normalizedY: correction.normalizedY * sign,
+                confidence: correction.confidence,
+                timestamp: correction.timestamp
+            )
+        )
     }
 
     private func markIdle() {
