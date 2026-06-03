@@ -1411,8 +1411,6 @@ struct CameraPreviewView: UIViewRepresentable {
         private var leadX: CGFloat = 0
         private var leadY: CGFloat = 0
         private var leadRoll: CGFloat = 0
-        private var microX: CGFloat = 0
-        private var microY: CGFloat = 0
         private var microPitch: Double = 0
         private var microRoll: Double = 0
         private var microYaw: Double = 0
@@ -1512,8 +1510,6 @@ struct CameraPreviewView: UIViewRepresentable {
             let dt = min(max(elapsed, 1.0 / 300.0), 1.0 / 60.0)
             lastTimestamp = timestamp
             if elapsed > 0.08 {
-                microX = 0
-                microY = 0
                 resetMicroJitterIntegrator()
             }
 
@@ -1525,8 +1521,6 @@ struct CameraPreviewView: UIViewRepresentable {
                 smoothedX = 0
                 smoothedY = 0
                 smoothedRoll = 0
-                microX = 0
-                microY = 0
                 resetMicroJitterIntegrator()
             }
 
@@ -1570,18 +1564,8 @@ struct CameraPreviewView: UIViewRepresentable {
             let velocityY = deadzone(sample.rotationX, floor: velocityFloor) * velocityLeadGain
             let velocityRoll = -deadzone(sample.rotationZ, floor: velocityFloor) * preference.rollVelocityLeadGain
 
-            let microOutputLimitX = maxX * preference.gyroMicroJitterOutputLimitFraction
-            let microOutputLimitY = maxY * preference.gyroMicroJitterOutputLimitFraction
-            let targetMicroX = clamp(
-                -microYawDelta * preference.gyroMicroJitterGain,
-                min: -microOutputLimitX,
-                max: microOutputLimitX
-            )
-            let targetMicroY = clamp(
-                microPitchDelta * preference.gyroMicroJitterGain,
-                min: -microOutputLimitY,
-                max: microOutputLimitY
-            )
+            targetX -= microYawDelta * preference.gyroMicroJitterGain
+            targetY += microPitchDelta * preference.gyroMicroJitterGain
             let microRollTarget = -microRollDelta * preference.gyroMicroRollGain
 
             targetX += visualState.normalizedX * viewportSize.width * visualGain
@@ -1595,7 +1579,6 @@ struct CameraPreviewView: UIViewRepresentable {
             let responseRate = preference.previewResponseRate
             let alpha = CGFloat(1 - exp(-dt * responseRate))
             let leadAlpha = CGFloat(1 - exp(-dt * preference.gyroVelocityResponseRate))
-            let microAlpha = CGFloat(1 - exp(-dt * preference.gyroMicroJitterResponseRate))
 
             smoothedX += (targetX - smoothedX) * alpha
             smoothedY += (targetY - smoothedY) * alpha
@@ -1603,18 +1586,14 @@ struct CameraPreviewView: UIViewRepresentable {
             leadX += (velocityX - leadX) * leadAlpha
             leadY += (velocityY - leadY) * leadAlpha
             leadRoll += (velocityRoll - leadRoll) * leadAlpha
-            microX += (targetMicroX - microX) * microAlpha
-            microY += (targetMicroY - microY) * microAlpha
 
             smoothedX = clamp(smoothedX, min: -maxX, max: maxX)
             smoothedY = clamp(smoothedY, min: -maxY, max: maxY)
             leadX = clamp(leadX, min: -maxX * 0.18, max: maxX * 0.18)
             leadY = clamp(leadY, min: -maxY * 0.18, max: maxY * 0.18)
-            microX = clamp(microX, min: -microOutputLimitX, max: microOutputLimitX)
-            microY = clamp(microY, min: -microOutputLimitY, max: microOutputLimitY)
 
-            let finalX = clamp(smoothedX + leadX + microX, min: -maxX, max: maxX)
-            let finalY = clamp(smoothedY + leadY + microY, min: -maxY, max: maxY)
+            let finalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
+            let finalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
             let finalRoll = clamp(smoothedRoll + leadRoll, min: -rollLimit, max: rollLimit)
 
             view.applyPreviewTransform(
@@ -1640,8 +1619,6 @@ struct CameraPreviewView: UIViewRepresentable {
             leadX = 0
             leadY = 0
             leadRoll = 0
-            microX = 0
-            microY = 0
             resetMicroJitterIntegrator()
             view.applyPreviewTransform(.identity, at: CACurrentMediaTime())
         }
