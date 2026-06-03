@@ -92,6 +92,15 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         }
     }
 
+    var usesCropWindowStabilization: Bool {
+        switch self {
+        case .off, .auto:
+            return false
+        case .balanced, .strong:
+            return true
+        }
+    }
+
     var previewStabilizationGain: CGFloat {
         switch self {
         case .off, .auto:
@@ -108,9 +117,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 1
         case .balanced:
-            return 1.08
+            return 1.04
         case .strong:
-            return 1.12
+            return 1.07
         }
     }
 
@@ -123,73 +132,87 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualHighPassCorrectionGain: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto:
             return 0
+        case .balanced:
+            return 0.72
         case .strong:
-            return 1.28
+            return 0.96
         }
     }
 
     var visualHighPassLeakRate: Double {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto:
             return 0
+        case .balanced:
+            return 8.5
         case .strong:
-            return 11.5
+            return 10.5
         }
     }
 
     var visualHighPassResponseRate: Double {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto:
             return 0
+        case .balanced:
+            return 58
         case .strong:
-            return 40
+            return 72
         }
     }
 
     var visualHighPassMaximumOffset: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto:
             return 0
+        case .balanced:
+            return 0.018
         case .strong:
-            return 0.044
+            return 0.031
         }
     }
 
     var visualMicroJitterCorrectionGain: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto:
             return 0
+        case .balanced:
+            return 0.34
         case .strong:
-            return 1.08
+            return 0.50
         }
     }
 
     var visualMicroJitterMaximumOffset: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto:
             return 0
+        case .balanced:
+            return 0.005
         case .strong:
-            return 0.014
+            return 0.009
         }
     }
 
     var visualAnalysisMinimumInterval: TimeInterval {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto:
             return .infinity
+        case .balanced:
+            return 1.0 / 45.0
         case .strong:
-            return 1.0 / 30.0
+            return 1.0 / 60.0
         }
     }
 
     var visualCorrectionSign: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto:
             return 0
-        case .strong:
-            return -1
+        case .balanced, .strong:
+            return 1
         }
     }
 

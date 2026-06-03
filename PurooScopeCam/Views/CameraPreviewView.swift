@@ -25,8 +25,18 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let renderer: StabilizedMetalPreviewRenderer
     private let visualAnalyzer = PreviewFrameMotionAnalyzer()
     private let frameClockMapper = PreviewFrameClockMapper()
+    private let overviewCIContext = CIContext()
+    private let overviewContainer = UIView()
+    private let overviewImageView = UIImageView()
+    private let cropWindowView = UIView()
+    private let cropCenterHorizontalView = UIView()
+    private let cropCenterVerticalView = UIView()
     private let viewportLock = NSLock()
+    private let preferenceLock = NSLock()
     private var viewportSize = CGSize.zero
+    private var stabilizationPreference: StabilizationPreference = .off
+    private var latestCropCorrection = PreviewVisualCorrection.identity
+    private var lastOverviewUpdateTime: TimeInterval = 0
 
     override init(frame: CGRect) {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -51,9 +61,11 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
         visualAnalyzer.onCorrection = { [weak self] correction in
             self?.renderer.setVisualCorrection(correction)
+            self?.updateCropWindowOverlay(correction)
         }
 
         addSubview(metalView)
+        configureOverview()
     }
 
     required init?(coder: NSCoder) {
@@ -63,6 +75,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     override func layoutSubviews() {
         super.layoutSubviews()
         metalView.frame = bounds
+        layoutOverview()
         viewportLock.lock()
         viewportSize = bounds.size
         viewportLock.unlock()
@@ -80,13 +93,25 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     }
 
     func updateStabilizationPreference(_ preference: StabilizationPreference) {
+        preferenceLock.lock()
+        stabilizationPreference = preference
+        preferenceLock.unlock()
+
         visualAnalyzer.setPreference(preference)
         renderer.setPreviewDelayFrames(preference.visualPreviewDelayFrames)
+        renderer.setCropWindowScale(preference.usesCropWindowStabilization ? preference.previewCropScale : 1)
+        DispatchQueue.main.async { [weak self] in
+            self?.overviewContainer.isHidden = !preference.usesCropWindowStabilization
+            self?.layoutOverview()
+            self?.updateCropWindowOverlay(self?.latestCropCorrection ?? .identity)
+        }
     }
 
     func stopVisualAnalysis() {
         visualAnalyzer.setPreference(.off)
         renderer.setVisualCorrection(.identity)
+        renderer.setCropWindowScale(1)
+        overviewContainer.isHidden = true
     }
 
     var isStabilizedRecording: Bool {
@@ -112,6 +137,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         guard let motionTime = frameClockMapper.motionTime(for: timestamp) else { return }
         renderer.enqueue(pixelBuffer: pixelBuffer, motionTime: motionTime)
         visualAnalyzer.enqueue(pixelBuffer: pixelBuffer, motionTime: motionTime)
+        updateOverviewThumbnailIfNeeded(pixelBuffer: pixelBuffer, motionTime: motionTime)
     }
 
     func cameraController(
@@ -126,6 +152,144 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
                 clampedFrameRate
             )
         }
+    }
+
+    private func configureOverview() {
+        overviewContainer.backgroundColor = UIColor.black.withAlphaComponent(0.24)
+        overviewContainer.layer.cornerRadius = 6
+        overviewContainer.layer.borderColor = UIColor.white.withAlphaComponent(0.42).cgColor
+        overviewContainer.layer.borderWidth = 1
+        overviewContainer.clipsToBounds = true
+        overviewContainer.isHidden = true
+        overviewContainer.isUserInteractionEnabled = false
+
+        overviewImageView.contentMode = .scaleAspectFill
+        overviewImageView.clipsToBounds = true
+
+        cropWindowView.backgroundColor = .clear
+        cropWindowView.layer.borderColor = UIColor.systemYellow.cgColor
+        cropWindowView.layer.borderWidth = 2
+        cropWindowView.layer.shadowColor = UIColor.black.cgColor
+        cropWindowView.layer.shadowOpacity = 0.45
+        cropWindowView.layer.shadowRadius = 2
+        cropWindowView.layer.shadowOffset = .zero
+
+        cropCenterHorizontalView.backgroundColor = UIColor.systemYellow
+        cropCenterVerticalView.backgroundColor = UIColor.systemYellow
+        cropWindowView.addSubview(cropCenterHorizontalView)
+        cropWindowView.addSubview(cropCenterVerticalView)
+
+        overviewContainer.addSubview(overviewImageView)
+        overviewContainer.addSubview(cropWindowView)
+        addSubview(overviewContainer)
+    }
+
+    private func layoutOverview() {
+        let width = min(max(bounds.width * 0.28, 92), 128)
+        let height = width * 1.34
+        let topInset = max(bounds.height * 0.08, 44)
+        overviewContainer.frame = CGRect(
+            x: bounds.maxX - width - 18,
+            y: topInset,
+            width: width,
+            height: height
+        )
+        overviewImageView.frame = overviewContainer.bounds
+        layoutCropWindow(correction: latestCropCorrection)
+    }
+
+    private func updateCropWindowOverlay(_ correction: PreviewVisualCorrection) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.latestCropCorrection = correction
+            self.layoutCropWindow(correction: correction)
+        }
+    }
+
+    private func layoutCropWindow(correction: PreviewVisualCorrection) {
+        preferenceLock.lock()
+        let preference = stabilizationPreference
+        preferenceLock.unlock()
+
+        guard preference.usesCropWindowStabilization else {
+            cropWindowView.frame = .zero
+            return
+        }
+
+        let bounds = overviewContainer.bounds
+        guard bounds.width > 2, bounds.height > 2 else { return }
+
+        let cropScale = max(preference.previewCropScale, 1.0001)
+        let cropWidth = bounds.width / cropScale
+        let cropHeight = bounds.height / cropScale
+        let halfWidth = cropWidth * 0.5
+        let halfHeight = cropHeight * 0.5
+        let centerX = clamp(
+            bounds.midX - correction.normalizedX * bounds.width,
+            min: halfWidth,
+            max: bounds.width - halfWidth
+        )
+        let centerY = clamp(
+            bounds.midY + correction.normalizedY * bounds.height,
+            min: halfHeight,
+            max: bounds.height - halfHeight
+        )
+
+        cropWindowView.frame = CGRect(
+            x: centerX - halfWidth,
+            y: centerY - halfHeight,
+            width: cropWidth,
+            height: cropHeight
+        )
+        cropCenterHorizontalView.frame = CGRect(
+            x: cropWidth * 0.5 - 8,
+            y: cropHeight * 0.5 - 0.5,
+            width: 16,
+            height: 1
+        )
+        cropCenterVerticalView.frame = CGRect(
+            x: cropWidth * 0.5 - 0.5,
+            y: cropHeight * 0.5 - 8,
+            width: 1,
+            height: 16
+        )
+    }
+
+    private func updateOverviewThumbnailIfNeeded(
+        pixelBuffer: CVPixelBuffer,
+        motionTime: TimeInterval
+    ) {
+        preferenceLock.lock()
+        let shouldUpdate = stabilizationPreference.usesCropWindowStabilization
+        preferenceLock.unlock()
+        guard shouldUpdate,
+              motionTime.isFinite,
+              motionTime - lastOverviewUpdateTime >= 0.2
+        else {
+            return
+        }
+        lastOverviewUpdateTime = motionTime
+
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        let targetWidth: CGFloat = 160
+        let scale = targetWidth / max(image.extent.width, 1)
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let targetRect = CGRect(
+            x: 0,
+            y: 0,
+            width: image.extent.width * scale,
+            height: image.extent.height * scale
+        )
+        guard let cgImage = overviewCIContext.createCGImage(scaled, from: targetRect) else { return }
+        let thumbnail = UIImage(cgImage: cgImage)
+
+        DispatchQueue.main.async { [weak self] in
+            self?.overviewImageView.image = thumbnail
+        }
+    }
+
+    private func clamp<T: Comparable>(_ value: T, min minimum: T, max maximum: T) -> T {
+        Swift.min(Swift.max(value, minimum), maximum)
     }
 }
 
@@ -175,6 +339,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         TimedRenderTransform(transform: .identity, timestamp: 0)
     ]
     private var previewDelayFrames = 0
+    private var cropWindowScale: CGFloat = 1
 
     init(device: MTLDevice) {
         guard let commandQueue = device.makeCommandQueue() else {
@@ -245,6 +410,12 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         stateLock.unlock()
     }
 
+    func setCropWindowScale(_ scale: CGFloat) {
+        stateLock.lock()
+        cropWindowScale = max(1, min(scale, 1.18))
+        stateLock.unlock()
+    }
+
     var isRecording: Bool {
         recorder.isRecording
     }
@@ -271,6 +442,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         let queuedFrame = nextFrameForDisplay()
         let transform = queuedFrame.map { renderTransformForFrame(at: $0.motionTime) } ?? .identity
         let correction = queuedFrame.map { correctionForFrame(at: $0.motionTime) } ?? .identity
+        let cropScale = cropWindowScale
         stateLock.unlock()
 
         guard let queuedFrame,
@@ -291,7 +463,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 drawableSize: drawableSize,
                 viewBounds: view.bounds,
                 previewTransform: transform,
-                visualCorrection: correction
+                visualCorrection: correction,
+                cropWindowScale: cropScale
             )
         )
 
@@ -406,12 +579,13 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         drawableSize: CGSize,
         viewBounds: CGRect,
         previewTransform: PreviewRenderTransform,
-        visualCorrection: PreviewVisualCorrection
+        visualCorrection: PreviewVisualCorrection,
+        cropWindowScale: CGFloat
     ) -> CGAffineTransform {
         let imageWidth = max(imageExtent.width, 1)
         let imageHeight = max(imageExtent.height, 1)
         let baseScale = max(drawableSize.width / imageWidth, drawableSize.height / imageHeight)
-        let stabilizedScale = baseScale * previewTransform.scale
+        let stabilizedScale = baseScale * max(previewTransform.scale, cropWindowScale)
         let rotation = previewTransform.rotationRadians
         let cosine = cos(rotation)
         let sine = sin(rotation)
@@ -884,7 +1058,7 @@ private final class PreviewFrameMotionAnalyzer {
     }
 
     private func process(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) {
-        guard preference.usesElectronicPreviewStabilization else {
+        guard preference.usesCropWindowStabilization else {
             resetAnalysisState()
             emit(.identity)
             return
