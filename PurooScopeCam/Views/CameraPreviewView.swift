@@ -1680,6 +1680,15 @@ struct CameraPreviewView: UIViewRepresentable {
         private var latestPreference: StabilizationPreference = .balanced
         private var latestVisualState: PreviewStabilizationState = .identity
 
+        private struct GyroAxisCorrection {
+            var targetX: CGFloat
+            var targetY: CGFloat
+            var velocityX: CGFloat
+            var velocityY: CGFloat
+            var microX: CGFloat
+            var microY: CGFloat
+        }
+
         func attach(
             to view: PreviewContainerView,
             camera: CameraController,
@@ -1813,15 +1822,28 @@ struct CameraPreviewView: UIViewRepresentable {
             let microYawDelta = clamp(CGFloat(microYaw - microYawBaseline), min: -microAngleLimit, max: microAngleLimit)
             let microRollDelta = clamp(CGFloat(microRoll - microRollBaseline), min: -microAngleLimit, max: microAngleLimit)
 
-            var targetX = -yawDelta * gain
-            var targetY = pitchDelta * gain
+            let axisCorrection = gyroAxisCorrection(
+                preference: preference,
+                pitchDelta: pitchDelta,
+                yawDelta: yawDelta,
+                rotationX: sample.rotationX,
+                rotationY: sample.rotationY,
+                microPitchDelta: microPitchDelta,
+                microYawDelta: microYawDelta,
+                gain: gain,
+                velocityLeadGain: velocityLeadGain,
+                velocityFloor: velocityFloor,
+                microGain: preference.gyroMicroJitterGain
+            )
+            var targetX = axisCorrection.targetX
+            var targetY = axisCorrection.targetY
             let targetRoll = -rollDelta * 0.45
-            let velocityX = -deadzone(sample.rotationY, floor: velocityFloor) * velocityLeadGain
-            let velocityY = deadzone(sample.rotationX, floor: velocityFloor) * velocityLeadGain
+            let velocityX = axisCorrection.velocityX
+            let velocityY = axisCorrection.velocityY
             let velocityRoll = -deadzone(sample.rotationZ, floor: velocityFloor) * preference.rollVelocityLeadGain
 
-            targetX -= microYawDelta * preference.gyroMicroJitterGain
-            targetY += microPitchDelta * preference.gyroMicroJitterGain
+            targetX += axisCorrection.microX
+            targetY += axisCorrection.microY
             let microRollTarget = -microRollDelta * preference.gyroMicroRollGain
 
             targetX += visualState.normalizedX * viewportSize.width * visualGain
@@ -1869,6 +1891,50 @@ struct CameraPreviewView: UIViewRepresentable {
                 ),
                 at: timestamp
             )
+        }
+
+        private func gyroAxisCorrection(
+            preference: StabilizationPreference,
+            pitchDelta: CGFloat,
+            yawDelta: CGFloat,
+            rotationX: Double,
+            rotationY: Double,
+            microPitchDelta: CGFloat,
+            microYawDelta: CGFloat,
+            gain: CGFloat,
+            velocityLeadGain: CGFloat,
+            velocityFloor: Double,
+            microGain: CGFloat
+        ) -> GyroAxisCorrection {
+            switch preference {
+            case .balanced:
+                return GyroAxisCorrection(
+                    targetX: yawDelta * gain,
+                    targetY: -pitchDelta * gain,
+                    velocityX: deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
+                    velocityY: -deadzone(rotationX, floor: velocityFloor) * velocityLeadGain,
+                    microX: microYawDelta * microGain,
+                    microY: -microPitchDelta * microGain
+                )
+            case .strong:
+                return GyroAxisCorrection(
+                    targetX: -pitchDelta * gain,
+                    targetY: yawDelta * gain,
+                    velocityX: -deadzone(rotationX, floor: velocityFloor) * velocityLeadGain,
+                    velocityY: deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
+                    microX: -microPitchDelta * microGain,
+                    microY: microYawDelta * microGain
+                )
+            case .off, .auto:
+                return GyroAxisCorrection(
+                    targetX: 0,
+                    targetY: 0,
+                    velocityX: 0,
+                    velocityY: 0,
+                    microX: 0,
+                    microY: 0
+                )
+            }
         }
 
         private func reset(view: PreviewContainerView) {

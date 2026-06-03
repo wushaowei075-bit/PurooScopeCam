@@ -107,10 +107,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 900
-        case .strong:
-            return 1250
+        case .balanced, .strong:
+            return 1000
         }
     }
 
@@ -118,10 +116,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 1
-        case .balanced:
-            return 1.18
-        case .strong:
-            return 1.32
+        case .balanced, .strong:
+            return 1.24
         }
     }
 
@@ -134,37 +130,29 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualHighPassCorrectionGain: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .strong:
-            return 0.36
         }
     }
 
     var visualHighPassLeakRate: Double {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .strong:
-            return 0.55
         }
     }
 
     var visualHighPassResponseRate: Double {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .strong:
-            return 3.2
         }
     }
 
     var visualHighPassMaximumOffset: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .strong:
-            return 0.055
         }
     }
 
@@ -178,37 +166,29 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualShiftDeadZone: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return .infinity
-        case .strong:
-            return 0.85
         }
     }
 
     var visualCorrectionMaximumStep: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .strong:
-            return 0.0015
         }
     }
 
     var visualAnalysisMinimumInterval: TimeInterval {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return .infinity
-        case .strong:
-            return 1.0 / 6.0
         }
     }
 
     var visualCorrectionSign: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .strong:
-            return 1
         }
     }
 
@@ -223,10 +203,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 11.0
-        case .strong:
-            return 4.2
+        case .balanced, .strong:
+            return 8.0
         }
     }
 
@@ -234,10 +212,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 28
-        case .strong:
-            return 36
+        case .balanced, .strong:
+            return 30
         }
     }
 
@@ -245,10 +221,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 95
-        case .strong:
-            return 105
+        case .balanced, .strong:
+            return 100
         }
     }
 
@@ -256,10 +230,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return .infinity
-        case .balanced:
-            return 0.016
-        case .strong:
-            return 0.010
+        case .balanced, .strong:
+            return 0.012
         }
     }
 
@@ -267,10 +239,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 0.005
-        case .strong:
-            return 0.010
+        case .balanced, .strong:
+            return 0.006
         }
     }
 
@@ -278,10 +248,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 92
-        case .strong:
-            return 74
+        case .balanced, .strong:
+            return 88
         }
     }
 
@@ -289,10 +257,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 2100
-        case .strong:
-            return 3200
+        case .balanced, .strong:
+            return 2400
         }
     }
 
@@ -300,10 +266,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 24
-        case .strong:
-            return 12
+        case .balanced, .strong:
+            return 18
         }
     }
 
@@ -311,10 +275,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 5.0
-        case .strong:
-            return 2.2
+        case .balanced, .strong:
+            return 3.6
         }
     }
 
@@ -322,10 +284,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return .infinity
-        case .balanced:
-            return 0.008
-        case .strong:
-            return 0.004
+        case .balanced, .strong:
+            return 0.006
         }
     }
 
@@ -333,10 +293,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 0.0038
-        case .strong:
-            return 0.0075
+        case .balanced, .strong:
+            return 0.0052
         }
     }
 
@@ -344,10 +302,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced:
-            return 0.040
-        case .strong:
-            return 0.095
+        case .balanced, .strong:
+            return 0.060
         }
     }
 
