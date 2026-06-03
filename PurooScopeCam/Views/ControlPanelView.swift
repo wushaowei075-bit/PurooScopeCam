@@ -13,7 +13,7 @@ struct ControlPanelView: View {
                     title: "变焦",
                     value: Binding(
                         get: { Double(camera.zoomFactor) },
-                        set: { camera.setZoomFactor(CGFloat($0)) }
+                        set: { camera.setDisplayedZoomFactor(CGFloat($0)) }
                     ),
                     range: 1...6,
                     systemImage: "plus.magnifyingglass"

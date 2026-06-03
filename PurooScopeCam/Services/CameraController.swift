@@ -45,6 +45,10 @@ final class CameraController: NSObject, ObservableObject {
                 self?.publishPreviewStabilizationState(.identity)
             }
             applySelectedStabilizationMode()
+            let desiredZoomFactor = requestedZoomFactor
+            sessionQueue.async { [weak self] in
+                self?.applyZoomFactorOnSessionQueue(desiredZoomFactor)
+            }
         }
     }
     @Published var zoomFactor: CGFloat = 1
@@ -73,6 +77,7 @@ final class CameraController: NSObject, ObservableObject {
     private weak var previewRecordingSink: StabilizedRecordingFrameSink?
     private var isConfigured = false
     private var targetFrameRate = 60
+    private var requestedZoomFactor: CGFloat = 1
 
     private struct CaptureQualityApplication {
         var options: [CaptureQualityOption]
@@ -150,6 +155,35 @@ final class CameraController: NSObject, ObservableObject {
             } catch {
                 self.publishStatus(error: "无法设置变焦。")
             }
+        }
+    }
+
+    func setDisplayedZoomFactor(_ value: CGFloat) {
+        let clamped = min(max(value, 1), 6)
+        sessionQueue.async { [weak self] in
+            self?.requestedZoomFactor = clamped
+            self?.applyZoomFactorOnSessionQueue(clamped)
+        }
+    }
+
+    private func applyZoomFactorOnSessionQueue(_ desiredDisplayZoom: CGFloat) {
+        guard let device = videoDeviceInput?.device else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+
+            let cropScale = stabilizationPreference.usesCropWindowStabilization
+                ? stabilizationPreference.previewCropScale
+                : 1
+            let deviceMax = min(device.activeFormat.videoMaxZoomFactor, 6)
+            let compensatedDeviceZoom = desiredDisplayZoom / max(cropScale, 1)
+            let deviceZoom = min(max(compensatedDeviceZoom, 1), deviceMax)
+            device.videoZoomFactor = deviceZoom
+
+            let actualDisplayZoom = min(max(deviceZoom * max(cropScale, 1), 1), 6)
+            publish { $0.zoomFactor = actualDisplayZoom }
+        } catch {
+            publishStatus(error: "无法设置变焦。")
         }
     }
 
@@ -265,6 +299,7 @@ final class CameraController: NSObject, ObservableObject {
             self.configurePhotoOutput()
             self.configureMovieOutput()
             self.applySelectedStabilizationMode()
+            self.applyZoomFactorOnSessionQueue(self.requestedZoomFactor)
 
             self.isConfigured = true
             self.startSession()
@@ -402,10 +437,11 @@ final class CameraController: NSObject, ObservableObject {
 
             do {
                 try device.lockForConfiguration()
-                defer { device.unlockForConfiguration() }
                 let qualityApplication = self.configureCaptureQuality(device)
+                device.unlockForConfiguration()
                 self.publishCaptureQuality(qualityApplication)
                 self.applySelectedStabilizationMode()
+                self.applyZoomFactorOnSessionQueue(self.requestedZoomFactor)
             } catch {
                 self.publishStatus(error: "无法切换画质。")
             }

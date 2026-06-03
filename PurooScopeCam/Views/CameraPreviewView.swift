@@ -36,6 +36,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var viewportSize = CGSize.zero
     private var stabilizationPreference: StabilizationPreference = .off
     private var latestCropCorrection = PreviewVisualCorrection.identity
+    private var overviewImageAspectRatio: CGFloat = 1
     private var lastOverviewUpdateTime: TimeInterval = 0
 
     override init(frame: CGRect) {
@@ -163,7 +164,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         overviewContainer.isHidden = true
         overviewContainer.isUserInteractionEnabled = false
 
-        overviewImageView.contentMode = .scaleAspectFill
+        overviewImageView.contentMode = .scaleAspectFit
         overviewImageView.clipsToBounds = true
 
         cropWindowView.backgroundColor = .clear
@@ -216,23 +217,26 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             return
         }
 
-        let bounds = overviewContainer.bounds
-        guard bounds.width > 2, bounds.height > 2 else { return }
+        let imageRect = AVMakeRect(
+            aspectRatio: CGSize(width: max(overviewImageAspectRatio, 0.1), height: 1),
+            insideRect: overviewContainer.bounds
+        )
+        guard imageRect.width > 2, imageRect.height > 2 else { return }
 
         let cropScale = max(preference.previewCropScale, 1.0001)
-        let cropWidth = bounds.width / cropScale
-        let cropHeight = bounds.height / cropScale
+        let cropWidth = imageRect.width / cropScale
+        let cropHeight = imageRect.height / cropScale
         let halfWidth = cropWidth * 0.5
         let halfHeight = cropHeight * 0.5
         let centerX = clamp(
-            bounds.midX - correction.normalizedX * bounds.width,
-            min: halfWidth,
-            max: bounds.width - halfWidth
+            imageRect.midX - correction.normalizedX * imageRect.width,
+            min: imageRect.minX + halfWidth,
+            max: imageRect.maxX - halfWidth
         )
         let centerY = clamp(
-            bounds.midY + correction.normalizedY * bounds.height,
-            min: halfHeight,
-            max: bounds.height - halfHeight
+            imageRect.midY + correction.normalizedY * imageRect.height,
+            min: imageRect.minY + halfHeight,
+            max: imageRect.maxY - halfHeight
         )
 
         cropWindowView.frame = CGRect(
@@ -282,9 +286,13 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         )
         guard let cgImage = overviewCIContext.createCGImage(scaled, from: targetRect) else { return }
         let thumbnail = UIImage(cgImage: cgImage)
+        let aspectRatio = image.extent.width / max(image.extent.height, 1)
 
         DispatchQueue.main.async { [weak self] in
-            self?.overviewImageView.image = thumbnail
+            guard let self else { return }
+            self.overviewImageAspectRatio = aspectRatio
+            self.overviewImageView.image = thumbnail
+            self.layoutCropWindow(correction: self.latestCropCorrection)
         }
     }
 
@@ -412,7 +420,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func setCropWindowScale(_ scale: CGFloat) {
         stateLock.lock()
-        cropWindowScale = max(1, min(scale, 1.18))
+        cropWindowScale = max(1, min(scale, 1.22))
         stateLock.unlock()
     }
 
