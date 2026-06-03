@@ -107,8 +107,10 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced, .strong:
-            return 820
+        case .balanced:
+            return 760
+        case .strong:
+            return 780
         }
     }
 
@@ -116,7 +118,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 1
-        case .balanced, .strong:
+        case .balanced:
+            return 1.20
+        case .strong:
             return 1.24
         }
     }
@@ -210,37 +214,37 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var gyroVelocityLeadGain: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced, .strong:
-            return 22
+        case .strong:
+            return 18
         }
     }
 
     var gyroVelocityResponseRate: Double {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced, .strong:
-            return 86
+        case .strong:
+            return 110
         }
     }
 
     var gyroVelocityNoiseFloor: Double {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return .infinity
-        case .balanced, .strong:
-            return 0.010
+        case .strong:
+            return 0.007
         }
     }
 
     var rollVelocityLeadGain: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced, .strong:
-            return 0.004
+        case .strong:
+            return 0.0015
         }
     }
 
@@ -248,62 +252,64 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced, .strong:
-            return 74
+        case .balanced:
+            return 66
+        case .strong:
+            return 92
         }
     }
 
     var gyroMicroJitterGain: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced, .strong:
-            return 1350
+        case .strong:
+            return 820
         }
     }
 
     var gyroMicroJitterFollowRate: Double {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced, .strong:
-            return 18
+        case .strong:
+            return 24
         }
     }
 
     var gyroMicroJitterLeakRate: Double {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced, .strong:
-            return 4.8
+        case .strong:
+            return 9.5
         }
     }
 
     var gyroMicroJitterNoiseFloor: Double {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return .infinity
-        case .balanced, .strong:
-            return 0.008
+        case .strong:
+            return 0.006
         }
     }
 
     var gyroMicroJitterAngleLimit: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced, .strong:
-            return 0.0035
+        case .strong:
+            return 0.0022
         }
     }
 
     var gyroMicroRollGain: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .balanced:
             return 0
-        case .balanced, .strong:
-            return 0.040
+        case .strong:
+            return 0.015
         }
     }
 
