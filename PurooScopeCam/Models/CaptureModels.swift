@@ -280,9 +280,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 1180
+            return 1500
         case .strong:
-            return 1480
+            return 1850
         }
     }
 
@@ -291,9 +291,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 18
+            return 24
         case .strong:
-            return 16
+            return 22
         }
     }
 
@@ -302,9 +302,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 3.5
+            return 8.0
         case .strong:
-            return 3.0
+            return 7.0
         }
     }
 
@@ -313,9 +313,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return .infinity
         case .balanced:
-            return 0.012
+            return 0.0075
         case .strong:
-            return 0.010
+            return 0.0065
         }
     }
 
@@ -324,9 +324,31 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off, .auto:
             return 0
         case .balanced:
-            return 0.0045
+            return 0.0036
         case .strong:
-            return 0.0062
+            return 0.0046
+        }
+    }
+
+    var gyroMicroJitterResponseRate: Double {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 135
+        case .strong:
+            return 155
+        }
+    }
+
+    var gyroMicroJitterOutputLimitFraction: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 0.32
+        case .strong:
+            return 0.38
         }
     }
 
