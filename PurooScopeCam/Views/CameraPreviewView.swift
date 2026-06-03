@@ -440,7 +440,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func setCropWindowScale(_ scale: CGFloat) {
         stateLock.lock()
-        cropWindowScale = max(1, min(scale, 1.22))
+        cropWindowScale = max(1, min(scale, 1.36))
         stateLock.unlock()
     }
 
