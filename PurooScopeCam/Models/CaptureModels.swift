@@ -107,8 +107,10 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced, .strong:
+        case .balanced:
             return 420
+        case .strong:
+            return 560
         }
     }
 
@@ -116,8 +118,10 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 1
-        case .balanced, .strong:
+        case .balanced:
             return 1.14
+        case .strong:
+            return 1.17
         }
     }
 

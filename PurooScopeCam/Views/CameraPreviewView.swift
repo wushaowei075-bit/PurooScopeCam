@@ -1909,12 +1909,12 @@ struct CameraPreviewView: UIViewRepresentable {
             switch preference {
             case .balanced:
                 return GyroAxisCorrection(
-                    targetX: -pitchDelta * gain,
-                    targetY: yawDelta * gain,
-                    velocityX: -deadzone(rotationX, floor: velocityFloor) * velocityLeadGain,
-                    velocityY: deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
-                    microX: -microPitchDelta * microGain,
-                    microY: microYawDelta * microGain
+                    targetX: pitchDelta * gain,
+                    targetY: -yawDelta * gain,
+                    velocityX: deadzone(rotationX, floor: velocityFloor) * velocityLeadGain,
+                    velocityY: -deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
+                    microX: microPitchDelta * microGain,
+                    microY: -microYawDelta * microGain
                 )
             case .strong:
                 return GyroAxisCorrection(
