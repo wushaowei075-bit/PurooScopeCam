@@ -180,14 +180,14 @@ private struct CropWindowTrajectorySettings {
             softLimit = 0.66
             snapToCenterThreshold = 0.016
         case .strong:
-            maximumOffset = 0.18
-            deadZone = 0.008
-            responseRate = 8.5
-            centeringRate = 3.8
-            maximumVelocity = 0.38
-            maximumAcceleration = 2.4
-            softLimit = 0.76
-            snapToCenterThreshold = 0.004
+            maximumOffset = 0.075
+            deadZone = 0.070
+            responseRate = 1.20
+            centeringRate = 16.0
+            maximumVelocity = 0.028
+            maximumAcceleration = 0.14
+            softLimit = 0.45
+            snapToCenterThreshold = 0.050
         }
     }
 }
@@ -1445,16 +1445,25 @@ private final class PreviewFrameMotionAnalyzer {
 
     private func filteredShift(_ shift: VisualShift) -> VisualShift {
         recentShifts.append(shift)
-        if recentShifts.count > 3 {
-            recentShifts.removeFirst(recentShifts.count - 3)
+        let historyLimit = visualShiftHistoryLimit
+        if recentShifts.count > historyLimit {
+            recentShifts.removeFirst(recentShifts.count - historyLimit)
         }
-        guard recentShifts.count == 3 else { return shift }
+        guard recentShifts.count >= visualShiftMedianSampleCount else { return shift }
 
         let medianDx = median(recentShifts.map(\.dx))
         let medianDy = median(recentShifts.map(\.dy))
         let deviationX = shift.dx - medianDx
         let deviationY = shift.dy - medianDy
         let deviation = (deviationX * deviationX + deviationY * deviationY).squareRoot()
+        if preference == .strong {
+            return VisualShift(
+                dx: medianDx,
+                dy: medianDy,
+                confidence: min(shift.confidence, median(recentShifts.map(\.confidence)) * 0.72)
+            )
+        }
+
         guard deviation > visualShiftMedianDeviationLimit else { return shift }
 
         return VisualShift(
@@ -1728,7 +1737,7 @@ private final class PreviewFrameMotionAnalyzer {
     private var visualShiftInlierRadius: CGFloat {
         switch preference {
         case .strong:
-            return 1.35
+            return 0.72
         case .balanced:
             return 1.20
         case .auto:
@@ -1741,7 +1750,7 @@ private final class PreviewFrameMotionAnalyzer {
     private var visualShiftMinimumInlierRatio: CGFloat {
         switch preference {
         case .strong:
-            return 0.42
+            return 0.66
         case .balanced:
             return 0.50
         case .auto:
@@ -1754,7 +1763,7 @@ private final class PreviewFrameMotionAnalyzer {
     private var visualShiftMaximumMeanResidual: CGFloat {
         switch preference {
         case .strong:
-            return 1.15
+            return 0.58
         case .balanced:
             return 0.95
         case .auto:
@@ -1767,13 +1776,35 @@ private final class PreviewFrameMotionAnalyzer {
     private var visualShiftMedianDeviationLimit: CGFloat {
         switch preference {
         case .strong:
-            return 2.2
+            return 0.42
         case .balanced:
             return 1.4
         case .auto:
             return 0.9
         case .off:
             return .greatestFiniteMagnitude
+        }
+    }
+
+    private var visualShiftHistoryLimit: Int {
+        switch preference {
+        case .strong:
+            return 9
+        case .balanced, .auto:
+            return 3
+        case .off:
+            return 1
+        }
+    }
+
+    private var visualShiftMedianSampleCount: Int {
+        switch preference {
+        case .strong:
+            return 5
+        case .balanced, .auto:
+            return 3
+        case .off:
+            return 1
         }
     }
 
