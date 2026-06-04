@@ -90,6 +90,13 @@ struct CameraScreen: View {
             )
             .foregroundStyle(camera.status.isRecording ? .red : .white)
 
+            if camera.stabilizationPreference == .strong {
+                statusPill(
+                    title: "极限HF2",
+                    systemImage: "bolt.horizontal.fill"
+                )
+            }
+
             Spacer()
 
             ShakeMeterView(sample: motionMonitor.displaySample)

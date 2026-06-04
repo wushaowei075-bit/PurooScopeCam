@@ -2226,7 +2226,8 @@ struct CameraPreviewView: UIViewRepresentable {
                 return
             }
 
-            guard lastOverlayTimestamp == 0 || timestamp - lastOverlayTimestamp >= 1.0 / 30.0 else {
+            let overlayInterval = preference == .strong ? 1.0 / 60.0 : 1.0 / 30.0
+            guard lastOverlayTimestamp == 0 || timestamp - lastOverlayTimestamp >= overlayInterval else {
                 return
             }
 
