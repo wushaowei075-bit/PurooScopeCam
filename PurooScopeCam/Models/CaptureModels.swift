@@ -77,11 +77,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return "关闭"
         case .auto:
-            return "原生"
+            return "系统关"
         case .balanced:
             return "均衡"
         case .strong:
-            return "静锁"
+            return "系统强"
         }
     }
 
@@ -96,9 +96,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var usesCropWindowStabilization: Bool {
         switch self {
-        case .off, .auto:
+        case .off, .auto, .strong:
             return false
-        case .balanced, .strong:
+        case .balanced:
             return true
         }
     }
@@ -119,7 +119,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .balanced:
             return 1.36
         case .strong:
-            return 1.60
+            return 1
         }
     }
 
@@ -361,28 +361,33 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var requestedModes: [AVCaptureVideoStabilizationMode] {
         switch self {
-        case .off:
+        case .off, .auto:
             return [.off]
-        case .auto:
-            return [.auto]
         case .balanced:
             return [.standard, .auto]
         case .strong:
-            return [.standard, .auto]
+            return strongSystemStabilizationModes
         }
     }
 
     var requestedPreviewModes: [AVCaptureVideoStabilizationMode] {
         switch self {
-        case .off:
+        case .off, .auto:
             return [.off]
-        case .auto:
-            return [.standard, .auto, .off]
         case .balanced:
             return [.standard, .auto, .off]
         case .strong:
-            return [.standard, .auto, .off]
+            return strongSystemStabilizationModes + [.off]
         }
+    }
+
+    private var strongSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
+        var modes: [AVCaptureVideoStabilizationMode] = []
+        if #available(iOS 18.0, *) {
+            modes.append(.cinematicExtendedEnhanced)
+        }
+        modes.append(contentsOf: [.cinematicExtended, .cinematic, .standard, .auto])
+        return modes
     }
 }
 
@@ -462,6 +467,8 @@ struct PreviewRenderTransform: Equatable {
 
 struct CaptureStatus: Equatable {
     var activeStabilizationMode: AVCaptureVideoStabilizationMode = .off
+    var activePreviewStabilizationMode: AVCaptureVideoStabilizationMode = .off
+    var activeMovieStabilizationMode: AVCaptureVideoStabilizationMode = .off
     var isSessionRunning = false
     var isRecording = false
     var isSaving = false

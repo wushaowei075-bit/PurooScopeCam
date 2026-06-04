@@ -80,7 +80,7 @@ struct CameraScreen: View {
     private var topBar: some View {
         HStack(spacing: 10) {
             statusPill(
-                title: camera.status.activeStabilizationMode.scopeDisplayName,
+                title: "预\(camera.status.activePreviewStabilizationMode.scopeDisplayName)",
                 systemImage: "dot.scope"
             )
 
@@ -92,13 +92,13 @@ struct CameraScreen: View {
 
             if camera.stabilizationPreference == .auto {
                 statusPill(
-                    title: "系统原生",
-                    systemImage: "camera.viewfinder"
+                    title: "强制关闭",
+                    systemImage: "slash.circle"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
-                    title: "静态裁切",
-                    systemImage: "scope"
+                    title: "系统增强",
+                    systemImage: "sparkles"
                 )
             }
 

@@ -121,12 +121,6 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
-    func configurePreviewConnection(_ connection: AVCaptureConnection?) {
-        sessionQueue.async { [weak self] in
-            self?.applyStabilization(to: connection)
-        }
-    }
-
     func setPreviewFrameSink(_ sink: CameraFrameSink?) {
         videoOutputQueue.async { [weak self] in
             guard let self else { return }
@@ -558,20 +552,45 @@ final class CameraController: NSObject, ObservableObject {
     private func applyStabilization(to connection: AVCaptureConnection?) {
         guard let connection else { return }
         let selected = bestAvailableMode(for: connection, requestedModes: stabilizationPreference.requestedModes)
-        apply(selectedStabilizationMode: selected, to: connection)
+        apply(selectedStabilizationMode: selected, to: connection, target: .movie)
     }
 
     private func applyPreviewStabilization(to connection: AVCaptureConnection?) {
         guard let connection else { return }
         let selected = bestAvailableMode(for: connection, requestedModes: stabilizationPreference.requestedPreviewModes)
-        apply(selectedStabilizationMode: selected, to: connection)
+        apply(selectedStabilizationMode: selected, to: connection, target: .preview)
     }
 
-    private func apply(selectedStabilizationMode selected: AVCaptureVideoStabilizationMode, to connection: AVCaptureConnection) {
+    private enum StabilizationConnectionTarget {
+        case preview
+        case movie
+    }
+
+    private func apply(
+        selectedStabilizationMode selected: AVCaptureVideoStabilizationMode,
+        to connection: AVCaptureConnection,
+        target: StabilizationConnectionTarget
+    ) {
         if connection.isVideoStabilizationSupported {
             connection.preferredVideoStabilizationMode = selected
+            let activeMode = connection.activeVideoStabilizationMode
             publishStatus { status in
-                status.activeStabilizationMode = connection.activeVideoStabilizationMode
+                status.activeStabilizationMode = activeMode
+                switch target {
+                case .preview:
+                    status.activePreviewStabilizationMode = activeMode
+                case .movie:
+                    status.activeMovieStabilizationMode = activeMode
+                }
+            }
+        } else {
+            publishStatus { status in
+                switch target {
+                case .preview:
+                    status.activePreviewStabilizationMode = .off
+                case .movie:
+                    status.activeMovieStabilizationMode = .off
+                }
             }
         }
     }
