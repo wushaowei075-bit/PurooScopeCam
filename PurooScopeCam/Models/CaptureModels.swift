@@ -108,11 +108,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 900
+            return 0
         case .balanced:
             return 480
         case .strong:
-            return 720
+            return 0
         }
     }
 
@@ -121,11 +121,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 1
         case .auto:
-            return 1.22
+            return 1.30
         case .balanced:
             return 1.15
         case .strong:
-            return 1.34
+            return 1.30
         }
     }
 
@@ -134,20 +134,18 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0.34
+            return 0.44
         case .balanced:
             return 0.38
         case .strong:
-            return 0.42
+            return 0.44
         }
     }
 
     var previewTranslationStepLimitFraction: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .strong:
-            return 0.006
         }
     }
 
@@ -160,29 +158,37 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualHighPassCorrectionGain: CGFloat {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off, .balanced:
             return 0
+        case .auto, .strong:
+            return 1.35
         }
     }
 
     var visualHighPassLeakRate: Double {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off, .balanced:
             return 0
+        case .auto, .strong:
+            return 1.10
         }
     }
 
     var visualHighPassResponseRate: Double {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off, .balanced:
             return 0
+        case .auto, .strong:
+            return 22
         }
     }
 
     var visualHighPassMaximumOffset: CGFloat {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off, .balanced:
             return 0
+        case .auto, .strong:
+            return 0.12
         }
     }
 
@@ -196,36 +202,48 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualShiftDeadZone: CGFloat {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off, .balanced:
             return .infinity
+        case .auto, .strong:
+            return 0.02
         }
     }
 
     var visualCorrectionMaximumStep: CGFloat {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off, .balanced:
             return 0
+        case .auto, .strong:
+            return 0.018
         }
     }
 
     var visualAnalysisMinimumInterval: TimeInterval {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off, .balanced:
             return .infinity
+        case .auto, .strong:
+            return 1.0 / 60.0
         }
     }
 
     var visualCorrectionSign: CGFloat {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off, .balanced:
             return 0
+        case .auto:
+            return 1
+        case .strong:
+            return -1
         }
     }
 
     var visualPreviewDelayFrames: Int {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off, .balanced:
             return 0
+        case .auto, .strong:
+            return 1
         }
     }
 
@@ -234,11 +252,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 28.0
+            return 60.0
         case .balanced:
             return 10.5
         case .strong:
-            return 7.2
+            return 60.0
         }
     }
 
@@ -275,11 +293,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 240
+            return 120
         case .balanced:
             return 105
         case .strong:
-            return 145
+            return 120
         }
     }
 
