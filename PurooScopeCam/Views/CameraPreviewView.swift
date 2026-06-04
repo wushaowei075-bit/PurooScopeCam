@@ -172,13 +172,13 @@ private struct CropWindowTrajectorySettings {
             snapToCenterThreshold = 0.010
         case .balanced:
             maximumOffset = 0.13
-            deadZone = 0.014
-            responseRate = 5.2
-            centeringRate = 5.0
-            maximumVelocity = 0.20
-            maximumAcceleration = 1.15
-            softLimit = 0.70
-            snapToCenterThreshold = 0.006
+            deadZone = 0.035
+            responseRate = 3.8
+            centeringRate = 9.0
+            maximumVelocity = 0.12
+            maximumAcceleration = 0.70
+            softLimit = 0.66
+            snapToCenterThreshold = 0.016
         case .strong:
             maximumOffset = 0.18
             deadZone = 0.008
