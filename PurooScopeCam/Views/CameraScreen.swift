@@ -90,9 +90,14 @@ struct CameraScreen: View {
             )
             .foregroundStyle(camera.status.isRecording ? .red : .white)
 
-            if camera.stabilizationPreference == .strong {
+            if camera.stabilizationPreference == .auto {
                 statusPill(
-                    title: "极限HF2",
+                    title: "HF反低",
+                    systemImage: "arrow.left.arrow.right"
+                )
+            } else if camera.stabilizationPreference == .strong {
+                statusPill(
+                    title: "HF反高",
                     systemImage: "bolt.horizontal.fill"
                 )
             }

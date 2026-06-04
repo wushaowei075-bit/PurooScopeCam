@@ -2170,16 +2170,16 @@ struct CameraPreviewView: UIViewRepresentable {
                     microX: microPitchDelta * microGain,
                     microY: -microYawDelta * microGain
                 )
-            case .strong:
+            case .auto, .strong:
                 return GyroAxisCorrection(
-                    targetX: pitchDelta * gain,
-                    targetY: -yawDelta * gain,
-                    velocityX: deadzone(rotationX, floor: velocityFloor) * velocityLeadGain,
-                    velocityY: -deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
-                    microX: microPitchDelta * microGain,
-                    microY: -microYawDelta * microGain
+                    targetX: -pitchDelta * gain,
+                    targetY: yawDelta * gain,
+                    velocityX: -deadzone(rotationX, floor: velocityFloor) * velocityLeadGain,
+                    velocityY: deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
+                    microX: -microPitchDelta * microGain,
+                    microY: microYawDelta * microGain
                 )
-            case .off, .auto:
+            case .off:
                 return GyroAxisCorrection(
                     targetX: 0,
                     targetY: 0,

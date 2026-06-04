@@ -77,11 +77,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return "关闭"
         case .auto:
-            return "自动"
+            return "HF低"
         case .balanced:
             return "均衡"
         case .strong:
-            return "极限"
+            return "HF高"
         }
     }
 
@@ -108,11 +108,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0
+            return 6_000
         case .balanced:
             return 0
         case .strong:
-            return 18_000
+            return 12_000
         }
     }
 
@@ -161,7 +161,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 1.20
+            return 0
         case .balanced:
             return 1.25
         case .strong:
@@ -174,7 +174,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0.55
+            return 3.50
         case .balanced:
             return 0.70
         case .strong:
@@ -187,7 +187,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 4.5
+            return 0
         case .balanced:
             return 10.0
         case .strong:
@@ -200,7 +200,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0.12
+            return 0
         case .balanced:
             return 0.13
         case .strong:
@@ -221,7 +221,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return .infinity
         case .auto:
-            return 0.075
+            return .greatestFiniteMagnitude
         case .balanced:
             return 0.065
         case .strong:
@@ -234,7 +234,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0.0025
+            return 0
         case .balanced:
             return 0.0045
         case .strong:
@@ -278,7 +278,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 60.0
+            return 28.0
         case .balanced:
             return 60.0
         case .strong:
@@ -288,17 +288,21 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var gyroVelocityLeadGain: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .balanced:
             return 0
+        case .auto:
+            return 36
         case .strong:
-            return 110
+            return 72
         }
     }
 
     var gyroVelocityResponseRate: Double {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .balanced:
             return 0
+        case .auto:
+            return 70
         case .strong:
             return 75
         }
@@ -306,8 +310,10 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var gyroVelocityNoiseFloor: Double {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .balanced:
             return .infinity
+        case .auto:
+            return 0.006
         case .strong:
             return 0.006
         }
@@ -315,10 +321,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var rollVelocityLeadGain: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .strong:
-            return 0.035
         }
     }
 
@@ -327,27 +331,31 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 120
+            return 180
         case .balanced:
             return 120
         case .strong:
-            return 240
+            return 180
         }
     }
 
     var gyroMicroJitterGain: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .balanced:
             return 0
+        case .auto:
+            return 8_000
         case .strong:
-            return 26_000
+            return 14_000
         }
     }
 
     var gyroMicroJitterFollowRate: Double {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .balanced:
             return 0
+        case .auto:
+            return 22
         case .strong:
             return 22
         }
@@ -355,8 +363,10 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var gyroMicroJitterLeakRate: Double {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .balanced:
             return 0
+        case .auto:
+            return 6.0
         case .strong:
             return 6.0
         }
@@ -364,8 +374,10 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var gyroMicroJitterNoiseFloor: Double {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .balanced:
             return .infinity
+        case .auto:
+            return 0.005
         case .strong:
             return 0.005
         }
@@ -373,19 +385,19 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var gyroMicroJitterAngleLimit: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .balanced:
             return 0
+        case .auto:
+            return 0.0025
         case .strong:
-            return 0.0045
+            return 0.0035
         }
     }
 
     var gyroMicroRollGain: CGFloat {
         switch self {
-        case .off, .auto, .balanced:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .strong:
-            return 0.35
         }
     }
 
