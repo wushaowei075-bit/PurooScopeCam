@@ -1532,7 +1532,9 @@ private final class PreviewFrameMotionAnalyzer {
             return 1.20
         case .balanced:
             return 1.25
-        case .off, .auto:
+        case .auto:
+            return 1.25
+        case .off:
             return 1.45
         }
     }
@@ -1540,10 +1542,12 @@ private final class PreviewFrameMotionAnalyzer {
     private var visualShiftMinimumInlierRatio: CGFloat {
         switch preference {
         case .strong:
-            return 0.48
+            return 0.50
         case .balanced:
             return 0.44
-        case .off, .auto:
+        case .auto:
+            return 0.44
+        case .off:
             return 0.34
         }
     }
@@ -1551,10 +1555,12 @@ private final class PreviewFrameMotionAnalyzer {
     private var visualShiftMaximumMeanResidual: CGFloat {
         switch preference {
         case .strong:
-            return 0.88
+            return 0.95
         case .balanced:
             return 0.96
-        case .off, .auto:
+        case .auto:
+            return 1.05
+        case .off:
             return 1.6
         }
     }
@@ -1562,10 +1568,12 @@ private final class PreviewFrameMotionAnalyzer {
     private var visualShiftMedianDeviationLimit: CGFloat {
         switch preference {
         case .strong:
-            return 1.8
+            return 1.4
         case .balanced:
             return 2.1
-        case .off, .auto:
+        case .auto:
+            return 1.6
+        case .off:
             return .greatestFiniteMagnitude
         }
     }
