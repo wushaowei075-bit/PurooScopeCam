@@ -1918,8 +1918,8 @@ struct CameraPreviewView: UIViewRepresentable {
                 )
             case .strong:
                 return GyroAxisCorrection(
-                    targetX: -pitchDelta * gain,
-                    targetY: yawDelta * gain,
+                    targetX: pitchDelta * gain,
+                    targetY: -yawDelta * gain,
                     velocityX: deadzone(rotationX, floor: velocityFloor) * velocityLeadGain,
                     velocityY: -deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
                     microX: microPitchDelta * microGain,
