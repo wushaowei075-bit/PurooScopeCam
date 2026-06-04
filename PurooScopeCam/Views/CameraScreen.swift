@@ -92,13 +92,13 @@ struct CameraScreen: View {
 
             if camera.stabilizationPreference == .auto {
                 statusPill(
-                    title: "HF反低",
-                    systemImage: "arrow.left.arrow.right"
+                    title: "系统原生",
+                    systemImage: "camera.viewfinder"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
-                    title: "HF反高",
-                    systemImage: "bolt.horizontal.fill"
+                    title: "静态裁切",
+                    systemImage: "scope"
                 )
             }
 
