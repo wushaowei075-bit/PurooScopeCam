@@ -1666,6 +1666,8 @@ struct CameraPreviewView: UIViewRepresentable {
         private var leadX: CGFloat = 0
         private var leadY: CGFloat = 0
         private var leadRoll: CGFloat = 0
+        private var renderedX: CGFloat = 0
+        private var renderedY: CGFloat = 0
         private var microPitch: Double = 0
         private var microRoll: Double = 0
         private var microYaw: Double = 0
@@ -1786,6 +1788,8 @@ struct CameraPreviewView: UIViewRepresentable {
                 smoothedX = 0
                 smoothedY = 0
                 smoothedRoll = 0
+                renderedX = 0
+                renderedY = 0
                 resetMicroJitterIntegrator()
             }
 
@@ -1871,8 +1875,19 @@ struct CameraPreviewView: UIViewRepresentable {
             leadX = clamp(leadX, min: -maxX * 0.18, max: maxX * 0.18)
             leadY = clamp(leadY, min: -maxY * 0.18, max: maxY * 0.18)
 
-            let finalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
-            let finalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
+            let requestedFinalX = clamp(smoothedX + leadX, min: -maxX, max: maxX)
+            let requestedFinalY = clamp(smoothedY + leadY, min: -maxY, max: maxY)
+            let limitedTranslation = rateLimitedTranslation(
+                requestedX: requestedFinalX,
+                requestedY: requestedFinalY,
+                preference: preference,
+                viewportSize: viewportSize,
+                deltaTime: dt,
+                maxX: maxX,
+                maxY: maxY
+            )
+            let finalX = limitedTranslation.x
+            let finalY = limitedTranslation.y
             let finalRoll = clamp(smoothedRoll + leadRoll, min: -rollLimit, max: rollLimit)
             updateCropOverlayIfNeeded(
                 view: view,
@@ -1950,6 +1965,8 @@ struct CameraPreviewView: UIViewRepresentable {
             leadX = 0
             leadY = 0
             leadRoll = 0
+            renderedX = 0
+            renderedY = 0
             lastOverlayTimestamp = 0
             resetMicroJitterIntegrator()
             view.updateMotionCropCorrection(.identity)
@@ -1984,6 +2001,31 @@ struct CameraPreviewView: UIViewRepresentable {
                     timestamp: timestamp
                 )
             )
+        }
+
+        private func rateLimitedTranslation(
+            requestedX: CGFloat,
+            requestedY: CGFloat,
+            preference: StabilizationPreference,
+            viewportSize: CGSize,
+            deltaTime: TimeInterval,
+            maxX: CGFloat,
+            maxY: CGFloat
+        ) -> CGPoint {
+            let limitFraction = preference.previewTranslationStepLimitFraction
+            guard limitFraction > 0 else {
+                renderedX = requestedX
+                renderedY = requestedY
+                return CGPoint(x: requestedX, y: requestedY)
+            }
+
+            let frameScale = CGFloat(deltaTime / (1.0 / 60.0))
+            let maxStep = max(1, min(viewportSize.width, viewportSize.height) * limitFraction * frameScale)
+            renderedX += clamp(requestedX - renderedX, min: -maxStep, max: maxStep)
+            renderedY += clamp(requestedY - renderedY, min: -maxStep, max: maxStep)
+            renderedX = clamp(renderedX, min: -maxX, max: maxX)
+            renderedY = clamp(renderedY, min: -maxY, max: maxY)
+            return CGPoint(x: renderedX, y: renderedY)
         }
 
         private func updateMicroJitterIntegrator(

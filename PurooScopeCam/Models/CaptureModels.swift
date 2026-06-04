@@ -87,52 +87,67 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var usesElectronicPreviewStabilization: Bool {
         switch self {
-        case .off, .auto:
+        case .off:
             return false
-        case .balanced, .strong:
+        case .auto, .balanced, .strong:
             return true
         }
     }
 
     var usesCropWindowStabilization: Bool {
         switch self {
-        case .off, .auto:
+        case .off:
             return false
-        case .balanced, .strong:
+        case .auto, .balanced, .strong:
             return true
         }
     }
 
     var previewStabilizationGain: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off:
             return 0
+        case .auto:
+            return 900
         case .balanced:
             return 480
         case .strong:
-            return 1050
+            return 720
         }
     }
 
     var previewCropScale: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off:
             return 1
+        case .auto:
+            return 1.22
         case .balanced:
             return 1.15
         case .strong:
-            return 1.42
+            return 1.34
         }
     }
 
     var previewCropTravelFactor: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off:
             return 0
+        case .auto:
+            return 0.34
         case .balanced:
             return 0.38
         case .strong:
-            return 0.49
+            return 0.42
+        }
+    }
+
+    var previewTranslationStepLimitFraction: CGFloat {
+        switch self {
+        case .off, .auto, .balanced:
+            return 0
+        case .strong:
+            return 0.006
         }
     }
 
@@ -216,12 +231,14 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var attitudeFollowRate: CGFloat {
         switch self {
-        case .off, .auto:
+        case .off:
             return 0
+        case .auto:
+            return 28.0
         case .balanced:
             return 10.5
         case .strong:
-            return 7.0
+            return 7.2
         }
     }
 
@@ -255,12 +272,14 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var previewResponseRate: Double {
         switch self {
-        case .off, .auto:
+        case .off:
             return 0
+        case .auto:
+            return 240
         case .balanced:
             return 105
         case .strong:
-            return 155
+            return 145
         }
     }
 
