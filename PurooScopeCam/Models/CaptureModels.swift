@@ -110,7 +110,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .balanced:
             return 420
         case .strong:
-            return 560
+            return 480
         }
     }
 
@@ -121,7 +121,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .balanced:
             return 1.14
         case .strong:
-            return 1.17
+            return 1.15
         }
     }
 
