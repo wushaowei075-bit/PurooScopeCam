@@ -20,6 +20,178 @@ private struct PreviewVisualCorrection: Equatable {
     )
 }
 
+private struct CropWindowTrajectoryState {
+    private var x: CGFloat = 0
+    private var y: CGFloat = 0
+    private var velocityX: CGFloat = 0
+    private var velocityY: CGFloat = 0
+    private var lastTimestamp: TimeInterval?
+    private var lastPreference: StabilizationPreference?
+
+    mutating func reset() {
+        x = 0
+        y = 0
+        velocityX = 0
+        velocityY = 0
+        lastTimestamp = nil
+        lastPreference = nil
+    }
+
+    mutating func update(
+        target correction: PreviewVisualCorrection,
+        preference: StabilizationPreference
+    ) -> PreviewVisualCorrection {
+        let settings = CropWindowTrajectorySettings(preference: preference)
+        let timestamp = correction.timestamp.isFinite && correction.timestamp > 0
+            ? correction.timestamp
+            : CACurrentMediaTime()
+
+        if lastPreference != preference {
+            x = 0
+            y = 0
+            velocityX = 0
+            velocityY = 0
+            lastPreference = preference
+            lastTimestamp = timestamp
+        }
+
+        let elapsed = lastTimestamp.map { timestamp - $0 } ?? (1.0 / 60.0)
+        let dt = clamp(CGFloat(elapsed), min: 1.0 / 120.0, max: 1.0 / 20.0)
+        lastTimestamp = timestamp
+
+        var targetX = correction.normalizedX
+        var targetY = correction.normalizedY
+        let targetMagnitude = (targetX * targetX + targetY * targetY).squareRoot()
+        if targetMagnitude <= settings.deadZone {
+            targetX = 0
+            targetY = 0
+        } else if targetMagnitude > 0 {
+            let scale = (targetMagnitude - settings.deadZone) / targetMagnitude
+            targetX *= scale
+            targetY *= scale
+        }
+
+        targetX = clamp(targetX, min: -settings.maximumOffset, max: settings.maximumOffset)
+        targetY = clamp(targetY, min: -settings.maximumOffset, max: settings.maximumOffset)
+
+        let edgeDamping = dampingForEdge(
+            x: x,
+            y: y,
+            maximumOffset: settings.maximumOffset,
+            softLimit: settings.softLimit
+        )
+        let desiredVelocityX = (targetX - x) * settings.responseRate * edgeDamping
+        let desiredVelocityY = (targetY - y) * settings.responseRate * edgeDamping
+        let maximumVelocity = settings.maximumVelocity * edgeDamping
+        let maximumVelocityStep = settings.maximumAcceleration * dt
+
+        velocityX += clamp(desiredVelocityX - velocityX, min: -maximumVelocityStep, max: maximumVelocityStep)
+        velocityY += clamp(desiredVelocityY - velocityY, min: -maximumVelocityStep, max: maximumVelocityStep)
+        velocityX = clamp(velocityX, min: -maximumVelocity, max: maximumVelocity)
+        velocityY = clamp(velocityY, min: -maximumVelocity, max: maximumVelocity)
+
+        x += velocityX * dt
+        y += velocityY * dt
+
+        let recenterAlpha = CGFloat(1 - exp(-Double(dt * settings.centeringRate)))
+        if targetX == 0 {
+            x += (0 - x) * recenterAlpha
+        }
+        if targetY == 0 {
+            y += (0 - y) * recenterAlpha
+        }
+
+        if (x * x + y * y).squareRoot() < settings.snapToCenterThreshold,
+           targetX == 0,
+           targetY == 0 {
+            x = 0
+            y = 0
+            velocityX = 0
+            velocityY = 0
+        }
+
+        x = clamp(x, min: -settings.maximumOffset, max: settings.maximumOffset)
+        y = clamp(y, min: -settings.maximumOffset, max: settings.maximumOffset)
+
+        return PreviewVisualCorrection(
+            normalizedX: x,
+            normalizedY: y,
+            confidence: correction.confidence,
+            timestamp: timestamp
+        )
+    }
+
+    private func dampingForEdge(
+        x: CGFloat,
+        y: CGFloat,
+        maximumOffset: CGFloat,
+        softLimit: CGFloat
+    ) -> CGFloat {
+        guard maximumOffset > 0 else { return 0 }
+        let usage = max(abs(x), abs(y)) / maximumOffset
+        guard usage > softLimit else { return 1 }
+        let remaining = max(0, 1 - usage)
+        let softRange = max(0.001, 1 - softLimit)
+        return clamp(remaining / softRange, min: 0.22, max: 1)
+    }
+
+    private func clamp<T: Comparable>(_ value: T, min minimum: T, max maximum: T) -> T {
+        Swift.min(Swift.max(value, minimum), maximum)
+    }
+}
+
+private struct CropWindowTrajectorySettings {
+    var maximumOffset: CGFloat
+    var deadZone: CGFloat
+    var responseRate: CGFloat
+    var centeringRate: CGFloat
+    var maximumVelocity: CGFloat
+    var maximumAcceleration: CGFloat
+    var softLimit: CGFloat
+    var snapToCenterThreshold: CGFloat
+
+    init(preference: StabilizationPreference) {
+        switch preference {
+        case .off:
+            maximumOffset = 0
+            deadZone = .infinity
+            responseRate = 0
+            centeringRate = 0
+            maximumVelocity = 0
+            maximumAcceleration = 0
+            softLimit = 1
+            snapToCenterThreshold = 0
+        case .auto:
+            maximumOffset = 0.12
+            deadZone = 0.030
+            responseRate = 3.2
+            centeringRate = 7.5
+            maximumVelocity = 0.10
+            maximumAcceleration = 0.55
+            softLimit = 0.62
+            snapToCenterThreshold = 0.010
+        case .balanced:
+            maximumOffset = 0.13
+            deadZone = 0.014
+            responseRate = 5.2
+            centeringRate = 5.0
+            maximumVelocity = 0.20
+            maximumAcceleration = 1.15
+            softLimit = 0.70
+            snapToCenterThreshold = 0.006
+        case .strong:
+            maximumOffset = 0.18
+            deadZone = 0.008
+            responseRate = 8.5
+            centeringRate = 3.8
+            maximumVelocity = 0.38
+            maximumAcceleration = 2.4
+            softLimit = 0.76
+            snapToCenterThreshold = 0.004
+        }
+    }
+}
+
 final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFrameSink {
     private let metalView: MTKView
     private let renderer: StabilizedMetalPreviewRenderer
@@ -37,6 +209,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var stabilizationPreference: StabilizationPreference = .off
     private var latestCropCorrection = PreviewVisualCorrection.identity
     private var latestMotionCorrection = PreviewVisualCorrection.identity
+    private var cropTrajectory = CropWindowTrajectoryState()
     private var overviewImageAspectRatio: CGFloat = 1
     private var lastOverviewUpdateTime: TimeInterval = 0
 
@@ -62,8 +235,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         metalView.delegate = renderer
 
         visualAnalyzer.onCorrection = { [weak self] correction in
-            self?.renderer.setVisualCorrection(correction)
-            self?.updateCropWindowOverlay(correction)
+            self?.applyVisualCropCorrection(correction)
         }
 
         addSubview(metalView)
@@ -103,9 +275,14 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         renderer.setPreviewDelayFrames(preference.visualPreviewDelayFrames)
         renderer.setCropWindowScale(preference.usesCropWindowStabilization ? preference.previewCropScale : 1)
         DispatchQueue.main.async { [weak self] in
-            self?.overviewContainer.isHidden = !preference.usesCropWindowStabilization
-            self?.layoutOverview()
-            self?.layoutCropWindow(correction: self?.combinedCropCorrection() ?? .identity)
+            guard let self else { return }
+            self.cropTrajectory.reset()
+            self.latestCropCorrection = .identity
+            self.latestMotionCorrection = .identity
+            self.renderer.setVisualCorrection(.identity)
+            self.overviewContainer.isHidden = !preference.usesCropWindowStabilization
+            self.layoutOverview()
+            self.layoutCropWindow(correction: self.combinedCropCorrection())
         }
     }
 
@@ -113,9 +290,14 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         visualAnalyzer.setPreference(.off)
         renderer.setVisualCorrection(.identity)
         renderer.setCropWindowScale(1)
-        latestCropCorrection = .identity
-        latestMotionCorrection = .identity
-        overviewContainer.isHidden = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.cropTrajectory.reset()
+            self.latestCropCorrection = .identity
+            self.latestMotionCorrection = .identity
+            self.overviewContainer.isHidden = true
+            self.layoutCropWindow(correction: .identity)
+        }
     }
 
     var isStabilizedRecording: Bool {
@@ -202,10 +384,27 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         layoutCropWindow(correction: combinedCropCorrection())
     }
 
-    private func updateCropWindowOverlay(_ correction: PreviewVisualCorrection) {
+    private func applyVisualCropCorrection(_ correction: PreviewVisualCorrection) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.latestCropCorrection = correction
+            if correction == .identity {
+                self.cropTrajectory.reset()
+                self.latestCropCorrection = .identity
+                self.renderer.setVisualCorrection(.identity)
+                self.layoutCropWindow(correction: self.combinedCropCorrection())
+                return
+            }
+
+            self.preferenceLock.lock()
+            let preference = self.stabilizationPreference
+            self.preferenceLock.unlock()
+
+            let filteredCorrection = self.cropTrajectory.update(
+                target: correction,
+                preference: preference
+            )
+            self.latestCropCorrection = filteredCorrection
+            self.renderer.setVisualCorrection(filteredCorrection)
             self.layoutCropWindow(correction: self.combinedCropCorrection())
         }
     }
@@ -440,7 +639,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func setCropWindowScale(_ scale: CGFloat) {
         stateLock.lock()
-        cropWindowScale = max(1, min(scale, 1.36))
+        cropWindowScale = max(1, min(scale, 1.60))
         stateLock.unlock()
     }
 
