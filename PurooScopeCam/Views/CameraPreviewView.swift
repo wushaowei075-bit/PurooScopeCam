@@ -1811,8 +1811,9 @@ struct CameraPreviewView: UIViewRepresentable {
             let gain = preference.previewStabilizationGain
             let scale = preference.previewCropScale
             let viewportSize = view.currentViewportSize
-            let maxX = max(12, viewportSize.width * (scale - 1) * 0.38)
-            let maxY = max(12, viewportSize.height * (scale - 1) * 0.38)
+            let travelFactor = preference.previewCropTravelFactor
+            let maxX = max(12, viewportSize.width * (scale - 1) * travelFactor)
+            let maxY = max(12, viewportSize.height * (scale - 1) * travelFactor)
             let visualGain = preference.visualStabilizationGain
             let velocityLeadGain = preference.gyroVelocityLeadGain
             let velocityFloor = preference.gyroVelocityNoiseFloor

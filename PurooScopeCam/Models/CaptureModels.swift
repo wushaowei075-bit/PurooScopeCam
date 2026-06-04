@@ -110,7 +110,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .balanced:
             return 480
         case .strong:
-            return 520
+            return 1050
         }
     }
 
@@ -121,7 +121,18 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .balanced:
             return 1.15
         case .strong:
-            return 1.16
+            return 1.42
+        }
+    }
+
+    var previewCropTravelFactor: CGFloat {
+        switch self {
+        case .off, .auto:
+            return 0
+        case .balanced:
+            return 0.38
+        case .strong:
+            return 0.49
         }
     }
 
@@ -207,8 +218,10 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced, .strong:
+        case .balanced:
             return 10.5
+        case .strong:
+            return 7.0
         }
     }
 
@@ -244,8 +257,10 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off, .auto:
             return 0
-        case .balanced, .strong:
+        case .balanced:
             return 105
+        case .strong:
+            return 155
         }
     }
 
