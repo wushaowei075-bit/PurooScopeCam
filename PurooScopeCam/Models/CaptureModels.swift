@@ -77,11 +77,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return "关闭"
         case .auto:
-            return "轨迹快"
-        case .balanced:
             return "轨迹稳"
+        case .balanced:
+            return "轨迹猛"
         case .strong:
-            return "轨迹强"
+            return "链路验"
         }
     }
 
@@ -108,11 +108,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 1200
+            return 6000
         case .balanced:
-            return 2200
+            return 18000
         case .strong:
-            return 3600
+            return 22000
         }
     }
 
@@ -121,11 +121,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 1
         case .auto:
-            return 1.35
-        case .balanced:
             return 1.50
+        case .balanced:
+            return 1.80
         case .strong:
-            return 1.65
+            return 1.80
         }
     }
 
@@ -134,11 +134,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0.74
-        case .balanced:
             return 0.82
+        case .balanced:
+            return 0.92
         case .strong:
-            return 0.90
+            return 0.92
         }
     }
 
@@ -244,9 +244,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0.90
-        case .balanced:
             return 0.96
+        case .balanced:
+            return 0.985
         case .strong:
             return 0.985
         }
@@ -257,11 +257,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0.25
+            return 0.60
         case .balanced:
-            return 0.42
+            return 1.00
         case .strong:
-            return 0.62
+            return 1.00
         }
     }
 

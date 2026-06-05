@@ -304,8 +304,18 @@ private final class MotionTrajectoryStabilizer {
         let maxX = max(12, viewportSize.width * (scale - 1) * preference.previewCropTravelFactor)
         let maxY = max(12, viewportSize.height * (scale - 1) * preference.previewCropTravelFactor)
         let gain = preference.previewStabilizationGain
-        let translationX = clamp(CGFloat(compensation.pitch) * gain, min: -maxX, max: maxX)
-        let translationY = clamp(CGFloat(-compensation.yaw) * gain, min: -maxY, max: maxY)
+        var translationX = clamp(CGFloat(compensation.pitch) * gain, min: -maxX, max: maxX)
+        var translationY = clamp(CGFloat(-compensation.yaw) * gain, min: -maxY, max: maxY)
+
+        if preference == .strong {
+            let diagnosticPhaseX = timestamp * 2.0 * Double.pi * 0.70
+            let diagnosticPhaseY = timestamp * 2.0 * Double.pi * 0.50
+            let diagnosticX = CGFloat(sin(diagnosticPhaseX)) * min(maxX * 0.20, 60)
+            let diagnosticY = CGFloat(cos(diagnosticPhaseY)) * min(maxY * 0.12, 36)
+            translationX = clamp(translationX + diagnosticX, min: -maxX, max: maxX)
+            translationY = clamp(translationY + diagnosticY, min: -maxY, max: maxY)
+        }
+
         let rollLimit: CGFloat = preference == .strong ? .pi / 30 : .pi / 44
         let roll = clamp(
             CGFloat(-compensation.roll) * preference.trajectoryRollGain,

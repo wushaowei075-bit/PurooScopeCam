@@ -92,17 +92,17 @@ struct CameraScreen: View {
 
             if camera.stabilizationPreference == .auto {
                 statusPill(
-                    title: "轨迹快",
+                    title: "轨迹稳",
                     systemImage: "point.3.connected.trianglepath.dotted"
                 )
             } else if camera.stabilizationPreference == .balanced {
                 statusPill(
-                    title: "轨迹稳",
+                    title: "轨迹猛",
                     systemImage: "point.3.filled.connected.trianglepath.dotted"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
-                    title: "轨迹强",
+                    title: "链路验",
                     systemImage: "scope"
                 )
             }
