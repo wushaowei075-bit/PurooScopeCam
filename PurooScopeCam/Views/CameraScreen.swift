@@ -92,18 +92,18 @@ struct CameraScreen: View {
 
             if camera.stabilizationPreference == .auto {
                 statusPill(
-                    title: "系统标准",
-                    systemImage: "rectangle.dashed"
+                    title: "自研陀螺",
+                    systemImage: "gyroscope"
                 )
             } else if camera.stabilizationPreference == .balanced {
                 statusPill(
-                    title: "系统电影",
-                    systemImage: "film"
+                    title: "自研视觉",
+                    systemImage: "scope"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
-                    title: "系统扩展",
-                    systemImage: "arrow.up.left.and.arrow.down.right"
+                    title: "自研混合",
+                    systemImage: "square.stack.3d.up"
                 )
             }
 

@@ -162,32 +162,32 @@ private struct CropWindowTrajectorySettings {
             softLimit = 1
             snapToCenterThreshold = 0
         case .auto:
-            maximumOffset = 0.12
-            deadZone = 0.030
-            responseRate = 3.2
-            centeringRate = 7.5
-            maximumVelocity = 0.10
-            maximumAcceleration = 0.55
-            softLimit = 0.62
-            snapToCenterThreshold = 0.010
+            maximumOffset = 0.15
+            deadZone = 0.015
+            responseRate = 18.0
+            centeringRate = 12.0
+            maximumVelocity = 0.35
+            maximumAcceleration = 2.4
+            softLimit = 0.78
+            snapToCenterThreshold = 0.006
         case .balanced:
-            maximumOffset = 0.13
-            deadZone = 0.035
-            responseRate = 3.8
-            centeringRate = 9.0
-            maximumVelocity = 0.12
-            maximumAcceleration = 0.70
-            softLimit = 0.66
-            snapToCenterThreshold = 0.016
+            maximumOffset = 0.16
+            deadZone = 0.005
+            responseRate = 26.0
+            centeringRate = 6.0
+            maximumVelocity = 0.42
+            maximumAcceleration = 3.0
+            softLimit = 0.82
+            snapToCenterThreshold = 0.004
         case .strong:
-            maximumOffset = 0.075
-            deadZone = 0.070
-            responseRate = 1.20
-            centeringRate = 16.0
-            maximumVelocity = 0.028
-            maximumAcceleration = 0.14
-            softLimit = 0.45
-            snapToCenterThreshold = 0.050
+            maximumOffset = 0.14
+            deadZone = 0.020
+            responseRate = 18.0
+            centeringRate = 10.0
+            maximumVelocity = 0.30
+            maximumAcceleration = 2.0
+            softLimit = 0.76
+            snapToCenterThreshold = 0.008
         }
     }
 }
@@ -2161,7 +2161,7 @@ struct CameraPreviewView: UIViewRepresentable {
             microGain: CGFloat
         ) -> GyroAxisCorrection {
             switch preference {
-            case .balanced:
+            case .auto, .strong:
                 return GyroAxisCorrection(
                     targetX: pitchDelta * gain,
                     targetY: -yawDelta * gain,
@@ -2170,7 +2170,7 @@ struct CameraPreviewView: UIViewRepresentable {
                     microX: microPitchDelta * microGain,
                     microY: -microYawDelta * microGain
                 )
-            case .off, .auto, .strong:
+            case .off, .balanced:
                 return GyroAxisCorrection(
                     targetX: 0,
                     targetY: 0,
@@ -2217,7 +2217,7 @@ struct CameraPreviewView: UIViewRepresentable {
                 return
             }
 
-            let overlayInterval = preference == .strong ? 1.0 / 60.0 : 1.0 / 30.0
+            let overlayInterval = preference == .balanced ? 1.0 / 30.0 : 1.0 / 60.0
             guard lastOverlayTimestamp == 0 || timestamp - lastOverlayTimestamp >= overlayInterval else {
                 return
             }
