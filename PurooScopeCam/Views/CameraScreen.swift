@@ -95,10 +95,15 @@ struct CameraScreen: View {
                     title: "系统标准",
                     systemImage: "rectangle.dashed"
                 )
+            } else if camera.stabilizationPreference == .balanced {
+                statusPill(
+                    title: "系统电影",
+                    systemImage: "film"
+                )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
-                    title: "系统增强",
-                    systemImage: "sparkles"
+                    title: "系统扩展",
+                    systemImage: "arrow.up.left.and.arrow.down.right"
                 )
             }
 

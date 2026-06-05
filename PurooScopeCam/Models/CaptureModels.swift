@@ -79,27 +79,23 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return "标准"
         case .balanced:
-            return "均衡"
+            return "电影"
         case .strong:
-            return "系统强"
+            return "扩展"
         }
     }
 
     var usesElectronicPreviewStabilization: Bool {
         switch self {
-        case .off, .auto, .strong:
+        case .off, .auto, .balanced, .strong:
             return false
-        case .balanced:
-            return true
         }
     }
 
     var usesCropWindowStabilization: Bool {
         switch self {
-        case .off, .auto, .strong:
+        case .off, .auto, .balanced, .strong:
             return false
-        case .balanced:
-            return true
         }
     }
 
@@ -117,7 +113,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 1
         case .balanced:
-            return 1.36
+            return 1
         case .strong:
             return 1
         }
@@ -130,7 +126,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0
         case .balanced:
-            return 0.46
+            return 0
         case .strong:
             return 0
         }
@@ -157,7 +153,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0
         case .balanced:
-            return 1.25
+            return 0
         case .strong:
             return 0
         }
@@ -170,7 +166,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0
         case .balanced:
-            return 0.70
+            return 0
         case .strong:
             return 0
         }
@@ -183,7 +179,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0
         case .balanced:
-            return 10.0
+            return 0
         case .strong:
             return 0
         }
@@ -196,7 +192,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0
         case .balanced:
-            return 0.13
+            return 0
         case .strong:
             return 0
         }
@@ -217,7 +213,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return .greatestFiniteMagnitude
         case .balanced:
-            return 0.065
+            return .greatestFiniteMagnitude
         case .strong:
             return .greatestFiniteMagnitude
         }
@@ -230,7 +226,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0
         case .balanced:
-            return 0.0045
+            return 0
         case .strong:
             return 0
         }
@@ -261,7 +257,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0
         case .balanced:
-            return 1
+            return 0
         case .strong:
             return 0
         }
@@ -269,10 +265,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var attitudeFollowRate: CGFloat {
         switch self {
-        case .off, .auto, .strong:
+        case .off, .auto, .balanced, .strong:
             return 0
-        case .balanced:
-            return 60.0
         }
     }
 
@@ -311,7 +305,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0
         case .balanced:
-            return 120
+            return 0
         case .strong:
             return 0
         }
@@ -364,11 +358,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return [.off]
         case .auto:
-            return lowLagSystemStabilizationModes
+            return standardSystemStabilizationModes
         case .balanced:
-            return [.standard, .auto]
+            return cinematicSystemStabilizationModes
         case .strong:
-            return strongSystemStabilizationModes
+            return extendedSystemStabilizationModes
         }
     }
 
@@ -377,25 +371,24 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return [.off]
         case .auto:
-            return lowLagSystemStabilizationModes + [.off]
+            return standardSystemStabilizationModes + [.off]
         case .balanced:
-            return [.standard, .auto, .off]
+            return cinematicSystemStabilizationModes + [.off]
         case .strong:
-            return strongSystemStabilizationModes + [.off]
+            return extendedSystemStabilizationModes + [.off]
         }
     }
 
-    private var lowLagSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
-        [.standard, .auto]
+    private var standardSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
+        [.standard]
     }
 
-    private var strongSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
-        var modes: [AVCaptureVideoStabilizationMode] = []
-        if #available(iOS 18.0, *) {
-            modes.append(.cinematicExtendedEnhanced)
-        }
-        modes.append(contentsOf: [.cinematicExtended, .cinematic, .standard, .auto])
-        return modes
+    private var cinematicSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
+        [.cinematic]
+    }
+
+    private var extendedSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
+        [.cinematicExtended]
     }
 }
 
