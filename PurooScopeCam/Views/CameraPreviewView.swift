@@ -171,23 +171,23 @@ private struct CropWindowTrajectorySettings {
             softLimit = 0.78
             snapToCenterThreshold = 0.006
         case .balanced:
-            maximumOffset = 0.17
-            deadZone = 0.010
-            responseRate = 32.0
-            centeringRate = 10.0
-            maximumVelocity = 0.58
-            maximumAcceleration = 5.0
-            softLimit = 0.84
-            snapToCenterThreshold = 0.005
+            maximumOffset = 0.22
+            deadZone = 0.004
+            responseRate = 54.0
+            centeringRate = 8.0
+            maximumVelocity = 1.20
+            maximumAcceleration = 14.0
+            softLimit = 0.90
+            snapToCenterThreshold = 0.003
         case .strong:
-            maximumOffset = 0.18
-            deadZone = 0.006
-            responseRate = 46.0
-            centeringRate = 14.0
-            maximumVelocity = 0.82
-            maximumAcceleration = 7.0
-            softLimit = 0.88
-            snapToCenterThreshold = 0.004
+            maximumOffset = 0.22
+            deadZone = 0.004
+            responseRate = 54.0
+            centeringRate = 8.0
+            maximumVelocity = 1.20
+            maximumAcceleration = 14.0
+            softLimit = 0.90
+            snapToCenterThreshold = 0.003
         }
     }
 }
@@ -2100,9 +2100,9 @@ struct CameraPreviewView: UIViewRepresentable {
             let rollLimit: CGFloat
             switch preference {
             case .strong:
-                rollLimit = .pi / 34
+                rollLimit = .pi / 30
             case .balanced:
-                rollLimit = .pi / 44
+                rollLimit = .pi / 30
             case .off, .auto:
                 rollLimit = .pi / 58
             }
@@ -2171,7 +2171,7 @@ struct CameraPreviewView: UIViewRepresentable {
             microGain: CGFloat
         ) -> GyroAxisCorrection {
             switch preference {
-            case .auto, .balanced, .strong:
+            case .auto:
                 return GyroAxisCorrection(
                     targetX: pitchDelta * gain,
                     targetY: -yawDelta * gain,
@@ -2179,6 +2179,24 @@ struct CameraPreviewView: UIViewRepresentable {
                     velocityY: -deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
                     microX: microPitchDelta * microGain,
                     microY: -microYawDelta * microGain
+                )
+            case .balanced:
+                return GyroAxisCorrection(
+                    targetX: yawDelta * gain,
+                    targetY: -pitchDelta * gain,
+                    velocityX: deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
+                    velocityY: -deadzone(rotationX, floor: velocityFloor) * velocityLeadGain,
+                    microX: microYawDelta * microGain,
+                    microY: -microPitchDelta * microGain
+                )
+            case .strong:
+                return GyroAxisCorrection(
+                    targetX: -yawDelta * gain,
+                    targetY: pitchDelta * gain,
+                    velocityX: -deadzone(rotationY, floor: velocityFloor) * velocityLeadGain,
+                    velocityY: deadzone(rotationX, floor: velocityFloor) * velocityLeadGain,
+                    microX: -microYawDelta * microGain,
+                    microY: microPitchDelta * microGain
                 )
             case .off:
                 return GyroAxisCorrection(

@@ -92,18 +92,18 @@ struct CameraScreen: View {
 
             if camera.stabilizationPreference == .auto {
                 statusPill(
-                    title: "自研陀螺",
+                    title: "原轴快",
                     systemImage: "gyroscope"
                 )
             } else if camera.stabilizationPreference == .balanced {
                 statusPill(
-                    title: "高频强",
-                    systemImage: "waveform.path"
+                    title: "换轴强",
+                    systemImage: "arrow.left.and.right"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
-                    title: "高频极",
-                    systemImage: "waveform.path.ecg"
+                    title: "换轴反",
+                    systemImage: "arrow.left.arrow.right"
                 )
             }
 
