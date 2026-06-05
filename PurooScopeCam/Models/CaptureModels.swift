@@ -77,7 +77,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return "关闭"
         case .auto:
-            return "电影"
+            return "标准"
         case .balanced:
             return "均衡"
         case .strong:
@@ -364,7 +364,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return [.off]
         case .auto:
-            return mediumSystemStabilizationModes
+            return lowLagSystemStabilizationModes
         case .balanced:
             return [.standard, .auto]
         case .strong:
@@ -377,7 +377,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return [.off]
         case .auto:
-            return mediumSystemStabilizationModes + [.off]
+            return lowLagSystemStabilizationModes + [.off]
         case .balanced:
             return [.standard, .auto, .off]
         case .strong:
@@ -385,8 +385,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         }
     }
 
-    private var mediumSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
-        [.cinematic, .standard, .auto]
+    private var lowLagSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
+        [.standard, .auto]
     }
 
     private var strongSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {

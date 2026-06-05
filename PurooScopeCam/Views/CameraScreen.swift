@@ -92,8 +92,8 @@ struct CameraScreen: View {
 
             if camera.stabilizationPreference == .auto {
                 statusPill(
-                    title: "系统电影",
-                    systemImage: "film"
+                    title: "系统标准",
+                    systemImage: "rectangle.dashed"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
