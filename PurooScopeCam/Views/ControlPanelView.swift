@@ -5,7 +5,7 @@ struct ControlPanelView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            stabilizationPicker
+            stabilizationStrengthControl
             qualityPicker
 
             HStack(spacing: 12) {
@@ -79,13 +79,31 @@ struct ControlPanelView: View {
         .background(.black.opacity(0.56), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var stabilizationPicker: some View {
-        Picker("防抖", selection: $camera.stabilizationPreference) {
-            ForEach(StabilizationPreference.allCases) { preference in
-                Text(preference.title).tag(preference)
+    private var stabilizationStrengthControl: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Label("稳定强度", systemImage: "scope")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.86))
+
+                Spacer(minLength: 0)
+
+                Text(StabilizationTuning(strength: camera.stabilizationStrength).percentText)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.82))
             }
+
+            Slider(
+                value: Binding(
+                    get: { camera.stabilizationStrength },
+                    set: { camera.setStabilizationStrength($0) }
+                ),
+                in: 0...1
+            )
         }
-        .pickerStyle(.segmented)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var qualityPicker: some View {

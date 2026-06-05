@@ -245,9 +245,11 @@ private final class MotionTrajectoryStabilizer {
         at timestamp: TimeInterval,
         samples: [StabilitySample],
         preference: StabilizationPreference,
+        tuning: StabilizationTuning,
         viewportSize: CGSize
     ) -> PreviewRenderTransform {
         guard preference.usesElectronicPreviewStabilization,
+              tuning.usesDigitalStabilization,
               timestamp.isFinite,
               viewportSize.width > 1,
               viewportSize.height > 1
@@ -263,7 +265,7 @@ private final class MotionTrajectoryStabilizer {
             smoothedTrajectory = .zero
             resetDirectGyroCorrection()
             lastTransform = PreviewRenderTransform(
-                scale: preference.previewCropScale,
+                scale: tuning.previewCropScale,
                 rotationRadians: 0,
                 translationX: 0,
                 translationY: 0
@@ -287,7 +289,7 @@ private final class MotionTrajectoryStabilizer {
             smoothedTrajectory = .zero
             resetDirectGyroCorrection()
             lastTransform = PreviewRenderTransform(
-                scale: preference.previewCropScale,
+                scale: tuning.previewCropScale,
                 rotationRadians: 0,
                 translationX: 0,
                 translationY: 0
@@ -300,28 +302,28 @@ private final class MotionTrajectoryStabilizer {
         rawTrajectory.add(delta)
 
         let frameScale = max(deltaTime / (1.0 / 60.0), 0.25)
-        let alpha = pow(preference.trajectorySmoothingAlpha, frameScale)
+        let alpha = pow(tuning.trajectorySmoothingAlpha, frameScale)
         smoothedTrajectory.pitch = smoothedTrajectory.pitch * alpha + rawTrajectory.pitch * (1 - alpha)
         smoothedTrajectory.yaw = smoothedTrajectory.yaw * alpha + rawTrajectory.yaw * (1 - alpha)
         smoothedTrajectory.roll = smoothedTrajectory.roll * alpha + rawTrajectory.roll * (1 - alpha)
 
         let compensation = rawTrajectory - smoothedTrajectory
-        let scale = preference.previewCropScale
-        let maxX = max(12, viewportSize.width * (scale - 1) * preference.previewCropTravelFactor)
-        let maxY = max(12, viewportSize.height * (scale - 1) * preference.previewCropTravelFactor)
-        let gain = preference.previewStabilizationGain
+        let scale = tuning.previewCropScale
+        let maxX = max(12, viewportSize.width * (scale - 1) * tuning.previewCropTravelFactor)
+        let maxY = max(12, viewportSize.height * (scale - 1) * tuning.previewCropTravelFactor)
+        let gain = tuning.trajectoryGain
         var translationX = clamp(CGFloat(compensation.pitch) * gain, min: -maxX, max: maxX)
         var translationY = clamp(CGFloat(-compensation.yaw) * gain, min: -maxY, max: maxY)
-        let rollLimit: CGFloat = preference == .strong ? .pi / 30 : .pi / 44
+        let rollLimit = tuning.rollLimit
         var roll = clamp(
-            CGFloat(-compensation.roll) * preference.trajectoryRollGain,
+            CGFloat(-compensation.roll) * tuning.trajectoryRollGain,
             min: -rollLimit,
             max: rollLimit
         )
 
         let direct = smoothedGyroCorrection(
             samples: samples,
-            preference: preference,
+            tuning: tuning,
             maxX: maxX,
             maxY: maxY,
             rollLimit: rollLimit,
@@ -368,18 +370,18 @@ private final class MotionTrajectoryStabilizer {
 
     private func smoothedGyroCorrection(
         samples: [StabilitySample],
-        preference: StabilizationPreference,
+        tuning: StabilizationTuning,
         maxX: CGFloat,
         maxY: CGFloat,
         rollLimit: CGFloat,
         deltaTime: TimeInterval
     ) -> (x: CGFloat, y: CGFloat, roll: CGFloat) {
-        guard preference == .balanced || preference == .strong else {
+        guard tuning.usesDigitalStabilization else {
             resetDirectGyroCorrection()
             return (0, 0, 0)
         }
 
-        let suffixCount = preference == .balanced ? 8 : 10
+        let suffixCount = tuning.directSampleCount
         let recent = samples.suffix(suffixCount)
         guard !recent.isEmpty else { return (0, 0, 0) }
 
@@ -387,32 +389,20 @@ private final class MotionTrajectoryStabilizer {
         let rateX = recent.reduce(0) { $0 + $1.rotationX } / divisor
         let rateY = recent.reduce(0) { $0 + $1.rotationY } / divisor
         let rateZ = recent.reduce(0) { $0 + $1.rotationZ } / divisor
-        let floor = preference == .balanced ? 0.0040 : 0.0026
-        let gain: CGFloat = preference == .balanced ? 1150 : 1850
-        let rollGain: CGFloat = preference == .balanced ? 0.006 : 0.010
-        let responseRate = preference == .balanced ? 18.0 : 26.0
-        let maximumStepFraction: CGFloat = preference == .balanced ? 1.25 : 1.90
+        let floor = tuning.directNoiseFloor
+        let gain = tuning.directGain
+        let rollGain = tuning.directRollGain
+        let responseRate = tuning.directResponseRate
+        let maximumStepFraction = tuning.directMaximumStepFraction
 
         let xRate = deadzone(rateX, floor: floor)
         let yRate = deadzone(rateY, floor: floor)
         let zRate = deadzone(rateZ, floor: floor)
 
-        let targetX: CGFloat
-        let targetY: CGFloat
-        let targetRoll: CGFloat
-        switch preference {
-        case .balanced:
-            targetX = clamp(CGFloat(xRate) * gain, min: -maxX * 0.26, max: maxX * 0.26)
-            targetY = clamp(CGFloat(-yRate) * gain, min: -maxY * 0.26, max: maxY * 0.26)
-            targetRoll = clamp(CGFloat(-zRate) * rollGain, min: -rollLimit * 0.35, max: rollLimit * 0.35)
-        case .strong:
-            targetX = clamp(CGFloat(xRate) * gain, min: -maxX * 0.38, max: maxX * 0.38)
-            targetY = clamp(CGFloat(-yRate) * gain, min: -maxY * 0.38, max: maxY * 0.38)
-            targetRoll = clamp(CGFloat(-zRate) * rollGain, min: -rollLimit * 0.50, max: rollLimit * 0.50)
-        case .off, .auto:
-            resetDirectGyroCorrection()
-            return (0, 0, 0)
-        }
+        let limitFraction = tuning.directLimitFraction
+        let targetX = clamp(CGFloat(xRate) * gain, min: -maxX * limitFraction, max: maxX * limitFraction)
+        let targetY = clamp(CGFloat(-yRate) * gain, min: -maxY * limitFraction, max: maxY * limitFraction)
+        let targetRoll = clamp(CGFloat(-zRate) * rollGain, min: -rollLimit * limitFraction, max: rollLimit * limitFraction)
 
         let dt = clamp(CGFloat(deltaTime), min: 1.0 / 300.0, max: 1.0 / 30.0)
         let alpha = CGFloat(1 - exp(-Double(dt) * responseRate))
@@ -460,6 +450,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let trajectoryLock = NSLock()
     private var viewportSize = CGSize.zero
     private var stabilizationPreference: StabilizationPreference = .off
+    private var stabilizationTuning = StabilizationTuning(strength: 0)
     private weak var motionMonitor: MotionStabilityMonitor?
     private var trajectoryStabilizer = MotionTrajectoryStabilizer()
     private var latestCropCorrection = PreviewVisualCorrection.identity
@@ -521,24 +512,37 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         renderer.setRenderTransform(transform, at: timestamp)
     }
 
-    func updateStabilizationPreference(_ preference: StabilizationPreference) {
+    func updateStabilizationSettings(
+        preference: StabilizationPreference,
+        strength: Double
+    ) {
+        let tuning = StabilizationTuning(strength: strength)
         preferenceLock.lock()
+        let oldPreference = stabilizationPreference
+        let oldTuning = stabilizationTuning
         stabilizationPreference = preference
+        stabilizationTuning = tuning
         preferenceLock.unlock()
 
         visualAnalyzer.setPreference(preference)
         renderer.setPreviewDelayFrames(preference.visualPreviewDelayFrames)
-        renderer.setCropWindowScale(preference.usesCropWindowStabilization ? preference.previewCropScale : 1)
-        trajectoryLock.lock()
-        trajectoryStabilizer.reset()
-        trajectoryLock.unlock()
+        renderer.setCropWindowScale(tuning.usesDigitalStabilization ? tuning.previewCropScale : 1)
+        if oldPreference != preference ||
+            oldTuning.usesDigitalStabilization != tuning.usesDigitalStabilization {
+            trajectoryLock.lock()
+            trajectoryStabilizer.reset()
+            trajectoryLock.unlock()
+        }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.cropTrajectory.reset()
-            self.latestCropCorrection = .identity
-            self.latestMotionCorrection = .identity
-            self.renderer.setVisualCorrection(.identity)
-            self.overviewContainer.isHidden = !preference.usesCropWindowStabilization
+            if oldPreference != preference ||
+                oldTuning.usesDigitalStabilization != tuning.usesDigitalStabilization {
+                self.cropTrajectory.reset()
+                self.latestCropCorrection = .identity
+                self.latestMotionCorrection = .identity
+                self.renderer.setVisualCorrection(.identity)
+            }
+            self.overviewContainer.isHidden = !tuning.usesDigitalStabilization
             self.layoutOverview()
             self.layoutCropWindow(correction: self.combinedCropCorrection())
         }
@@ -548,6 +552,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         visualAnalyzer.setPreference(.off)
         renderer.setVisualCorrection(.identity)
         renderer.setCropWindowScale(1)
+        preferenceLock.lock()
+        stabilizationTuning = StabilizationTuning(strength: 0)
+        preferenceLock.unlock()
         trajectoryLock.lock()
         trajectoryStabilizer.reset()
         trajectoryLock.unlock()
@@ -608,9 +615,11 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private func trajectoryTransform(at motionTime: TimeInterval) -> PreviewRenderTransform {
         preferenceLock.lock()
         let preference = stabilizationPreference
+        let tuning = stabilizationTuning
         preferenceLock.unlock()
 
         guard preference.usesElectronicPreviewStabilization,
+              tuning.usesDigitalStabilization,
               let motionMonitor
         else {
             trajectoryLock.lock()
@@ -619,14 +628,15 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             return .identity
         }
 
-        let sampleWindow = motionMonitor.latestSampleWindow(duration: 0.18)
+        let sampleWindow = motionMonitor.latestSampleWindow(duration: tuning.sampleWindowDuration)
         let trajectoryTime = sampleWindow?.timestamp ?? motionTime
-        let samples = sampleWindow?.samples ?? motionMonitor.samples(from: motionTime - 0.18, to: motionTime)
+        let samples = sampleWindow?.samples ?? motionMonitor.samples(from: motionTime - tuning.sampleWindowDuration, to: motionTime)
         trajectoryLock.lock()
         let transform = trajectoryStabilizer.transform(
             at: trajectoryTime,
             samples: samples,
             preference: preference,
+            tuning: tuning,
             viewportSize: currentViewportSize
         )
         trajectoryLock.unlock()
@@ -736,9 +746,12 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private func layoutCropWindow(correction: PreviewVisualCorrection) {
         preferenceLock.lock()
         let preference = stabilizationPreference
+        let tuning = stabilizationTuning
         preferenceLock.unlock()
 
-        guard preference.usesCropWindowStabilization else {
+        guard preference.usesCropWindowStabilization,
+              tuning.usesDigitalStabilization
+        else {
             cropWindowView.frame = .zero
             return
         }
@@ -749,7 +762,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         )
         guard imageRect.width > 2, imageRect.height > 2 else { return }
 
-        let cropScale = max(preference.previewCropScale, 1.0001)
+        let cropScale = max(tuning.previewCropScale, 1.0001)
         let cropWidth = imageRect.width / cropScale
         let cropHeight = imageRect.height / cropScale
         let halfWidth = cropWidth * 0.5
@@ -790,7 +803,8 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         motionTime: TimeInterval
     ) {
         preferenceLock.lock()
-        let shouldUpdate = stabilizationPreference.usesCropWindowStabilization
+        let shouldUpdate = stabilizationPreference.usesCropWindowStabilization &&
+            stabilizationTuning.usesDigitalStabilization
         preferenceLock.unlock()
         guard shouldUpdate,
               motionTime.isFinite,
@@ -946,7 +960,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func setCropWindowScale(_ scale: CGFloat) {
         stateLock.lock()
-        cropWindowScale = max(1, min(scale, 1.60))
+        cropWindowScale = max(1, min(scale, 2.20))
         stateLock.unlock()
     }
 
@@ -2169,6 +2183,7 @@ struct CameraPreviewView: UIViewRepresentable {
     @ObservedObject var camera: CameraController
     let motionMonitor: MotionStabilityMonitor
     let stabilizationPreference: StabilizationPreference
+    let stabilizationStrength: Double
     let visualState: PreviewStabilizationState
 
     func makeCoordinator() -> Coordinator {
@@ -2177,7 +2192,10 @@ struct CameraPreviewView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
-        view.updateStabilizationPreference(stabilizationPreference)
+        view.updateStabilizationSettings(
+            preference: stabilizationPreference,
+            strength: stabilizationStrength
+        )
         context.coordinator.attach(
             to: view,
             camera: camera,
@@ -2189,7 +2207,10 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PreviewContainerView, context: Context) {
-        view.updateStabilizationPreference(stabilizationPreference)
+        view.updateStabilizationSettings(
+            preference: stabilizationPreference,
+            strength: stabilizationStrength
+        )
         context.coordinator.update(
             preference: stabilizationPreference,
             visualState: visualState

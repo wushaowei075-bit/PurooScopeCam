@@ -12,6 +12,7 @@ struct CameraScreen: View {
                 camera: camera,
                 motionMonitor: motionMonitor,
                 stabilizationPreference: camera.stabilizationPreference,
+                stabilizationStrength: camera.stabilizationStrength,
                 visualState: camera.previewStabilizationState
             )
                 .ignoresSafeArea()
@@ -90,22 +91,10 @@ struct CameraScreen: View {
             )
             .foregroundStyle(camera.status.isRecording ? .red : .white)
 
-            if camera.stabilizationPreference == .auto {
-                statusPill(
-                    title: "轨迹增强",
-                    systemImage: "point.3.connected.trianglepath.dotted"
-                )
-            } else if camera.stabilizationPreference == .balanced {
-                statusPill(
-                    title: "高频稳",
-                    systemImage: "point.3.filled.connected.trianglepath.dotted"
-                )
-            } else if camera.stabilizationPreference == .strong {
-                statusPill(
-                    title: "高频强",
-                    systemImage: "scope"
-                )
-            }
+            statusPill(
+                title: "稳\(StabilizationTuning(strength: camera.stabilizationStrength).percentText)",
+                systemImage: "scope"
+            )
 
             Spacer()
 

@@ -51,6 +51,7 @@ final class CameraController: NSObject, ObservableObject {
             }
         }
     }
+    @Published private(set) var stabilizationStrength: Double = 0.30
     @Published var zoomFactor: CGFloat = 1
     @Published var exposureBias: Float = 0
     @Published var captureQualityPreference: CaptureQualityOption = .automatic {
@@ -136,6 +137,22 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
+    func setStabilizationStrength(_ value: Double) {
+        let clamped = min(max(value, 0), 1)
+        guard abs(stabilizationStrength - clamped) >= 0.001 else { return }
+
+        stabilizationStrength = clamped
+        videoOutputQueue.async { [weak self] in
+            self?.stabilizationEngine.reset()
+            self?.publishPreviewStabilizationState(.identity)
+        }
+
+        let desiredZoomFactor = requestedZoomFactor
+        sessionQueue.async { [weak self] in
+            self?.applyZoomFactorOnSessionQueue(desiredZoomFactor)
+        }
+    }
+
     func setZoomFactor(_ value: CGFloat) {
         let clamped = min(max(value, 1), 6)
         sessionQueue.async { [weak self] in
@@ -166,9 +183,8 @@ final class CameraController: NSObject, ObservableObject {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
 
-            let cropScale = stabilizationPreference.usesCropWindowStabilization
-                ? stabilizationPreference.previewCropScale
-                : 1
+            let tuning = StabilizationTuning(strength: stabilizationStrength)
+            let cropScale = tuning.usesDigitalStabilization ? tuning.previewCropScale : 1
             let deviceMax = min(device.activeFormat.videoMaxZoomFactor, 6)
             let compensatedDeviceZoom = desiredDisplayZoom / max(cropScale, 1)
             let deviceZoom = min(max(compensatedDeviceZoom, 1), deviceMax)
