@@ -92,18 +92,18 @@ struct CameraScreen: View {
 
             if camera.stabilizationPreference == .auto {
                 statusPill(
-                    title: "原轴快",
-                    systemImage: "gyroscope"
+                    title: "轨迹快",
+                    systemImage: "point.3.connected.trianglepath.dotted"
                 )
             } else if camera.stabilizationPreference == .balanced {
                 statusPill(
-                    title: "换轴强",
-                    systemImage: "arrow.left.and.right"
+                    title: "轨迹稳",
+                    systemImage: "point.3.filled.connected.trianglepath.dotted"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
-                    title: "换轴反",
-                    systemImage: "arrow.left.arrow.right"
+                    title: "轨迹强",
+                    systemImage: "scope"
                 )
             }
 

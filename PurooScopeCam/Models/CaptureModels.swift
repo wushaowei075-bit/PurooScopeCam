@@ -77,11 +77,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return "关闭"
         case .auto:
-            return "原轴快"
+            return "轨迹快"
         case .balanced:
-            return "换轴强"
+            return "轨迹稳"
         case .strong:
-            return "换轴反"
+            return "轨迹强"
         }
     }
 
@@ -108,11 +108,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 1350
+            return 1200
         case .balanced:
             return 2200
         case .strong:
-            return 2200
+            return 3600
         }
     }
 
@@ -121,9 +121,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 1
         case .auto:
-            return 1.36
+            return 1.35
         case .balanced:
-            return 1.60
+            return 1.50
         case .strong:
             return 1.65
         }
@@ -134,11 +134,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0.78
+            return 0.74
         case .balanced:
-            return 0.88
+            return 0.82
         case .strong:
-            return 0.88
+            return 0.90
         }
     }
 
@@ -236,6 +236,32 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
             return 0
         case .strong:
             return 0
+        }
+    }
+
+    var trajectorySmoothingAlpha: Double {
+        switch self {
+        case .off:
+            return 0
+        case .auto:
+            return 0.90
+        case .balanced:
+            return 0.96
+        case .strong:
+            return 0.985
+        }
+    }
+
+    var trajectoryRollGain: CGFloat {
+        switch self {
+        case .off:
+            return 0
+        case .auto:
+            return 0.25
+        case .balanced:
+            return 0.42
+        case .strong:
+            return 0.62
         }
     }
 

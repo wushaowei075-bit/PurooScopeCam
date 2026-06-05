@@ -192,6 +192,167 @@ private struct CropWindowTrajectorySettings {
     }
 }
 
+private struct GyroRotation {
+    var pitch: Double
+    var yaw: Double
+    var roll: Double
+
+    static let zero = GyroRotation(pitch: 0, yaw: 0, roll: 0)
+
+    static func + (lhs: GyroRotation, rhs: GyroRotation) -> GyroRotation {
+        GyroRotation(
+            pitch: lhs.pitch + rhs.pitch,
+            yaw: lhs.yaw + rhs.yaw,
+            roll: lhs.roll + rhs.roll
+        )
+    }
+
+    static func - (lhs: GyroRotation, rhs: GyroRotation) -> GyroRotation {
+        GyroRotation(
+            pitch: lhs.pitch - rhs.pitch,
+            yaw: lhs.yaw - rhs.yaw,
+            roll: lhs.roll - rhs.roll
+        )
+    }
+
+    mutating func add(_ delta: GyroRotation) {
+        pitch += delta.pitch
+        yaw += delta.yaw
+        roll += delta.roll
+    }
+}
+
+private final class MotionTrajectoryStabilizer {
+    private var lastPreference: StabilizationPreference?
+    private var lastFrameTime: TimeInterval?
+    private var rawTrajectory = GyroRotation.zero
+    private var smoothedTrajectory = GyroRotation.zero
+    private var lastTransform = PreviewRenderTransform.identity
+
+    func reset() {
+        lastPreference = nil
+        lastFrameTime = nil
+        rawTrajectory = .zero
+        smoothedTrajectory = .zero
+        lastTransform = .identity
+    }
+
+    func transform(
+        at timestamp: TimeInterval,
+        samples: [StabilitySample],
+        preference: StabilizationPreference,
+        viewportSize: CGSize
+    ) -> PreviewRenderTransform {
+        guard preference.usesElectronicPreviewStabilization,
+              timestamp.isFinite,
+              viewportSize.width > 1,
+              viewportSize.height > 1
+        else {
+            reset()
+            return .identity
+        }
+
+        if lastPreference != preference {
+            lastPreference = preference
+            lastFrameTime = timestamp
+            rawTrajectory = .zero
+            smoothedTrajectory = .zero
+            lastTransform = PreviewRenderTransform(
+                scale: preference.previewCropScale,
+                rotationRadians: 0,
+                translationX: 0,
+                translationY: 0
+            )
+            return lastTransform
+        }
+
+        guard let previousFrameTime = lastFrameTime else {
+            lastFrameTime = timestamp
+            return lastTransform
+        }
+
+        let deltaTime = timestamp - previousFrameTime
+        guard deltaTime.isFinite, deltaTime > 0 else {
+            return lastTransform
+        }
+
+        if deltaTime > 0.15 {
+            lastFrameTime = timestamp
+            rawTrajectory = .zero
+            smoothedTrajectory = .zero
+            lastTransform = PreviewRenderTransform(
+                scale: preference.previewCropScale,
+                rotationRadians: 0,
+                translationX: 0,
+                translationY: 0
+            )
+            return lastTransform
+        }
+
+        lastFrameTime = timestamp
+        let delta = integrate(samples: samples, from: previousFrameTime, to: timestamp)
+        rawTrajectory.add(delta)
+
+        let frameScale = max(deltaTime / (1.0 / 60.0), 0.25)
+        let alpha = pow(preference.trajectorySmoothingAlpha, frameScale)
+        smoothedTrajectory.pitch = smoothedTrajectory.pitch * alpha + rawTrajectory.pitch * (1 - alpha)
+        smoothedTrajectory.yaw = smoothedTrajectory.yaw * alpha + rawTrajectory.yaw * (1 - alpha)
+        smoothedTrajectory.roll = smoothedTrajectory.roll * alpha + rawTrajectory.roll * (1 - alpha)
+
+        let compensation = rawTrajectory - smoothedTrajectory
+        let scale = preference.previewCropScale
+        let maxX = max(12, viewportSize.width * (scale - 1) * preference.previewCropTravelFactor)
+        let maxY = max(12, viewportSize.height * (scale - 1) * preference.previewCropTravelFactor)
+        let gain = preference.previewStabilizationGain
+        let translationX = clamp(CGFloat(compensation.pitch) * gain, min: -maxX, max: maxX)
+        let translationY = clamp(CGFloat(-compensation.yaw) * gain, min: -maxY, max: maxY)
+        let rollLimit: CGFloat = preference == .strong ? .pi / 30 : .pi / 44
+        let roll = clamp(
+            CGFloat(-compensation.roll) * preference.trajectoryRollGain,
+            min: -rollLimit,
+            max: rollLimit
+        )
+
+        lastTransform = PreviewRenderTransform(
+            scale: scale,
+            rotationRadians: roll,
+            translationX: translationX,
+            translationY: translationY
+        )
+        return lastTransform
+    }
+
+    private func integrate(
+        samples: [StabilitySample],
+        from start: TimeInterval,
+        to end: TimeInterval
+    ) -> GyroRotation {
+        guard samples.count >= 2 else { return .zero }
+
+        let ordered = samples.sorted { $0.timestamp < $1.timestamp }
+        var total = GyroRotation.zero
+        var previous = ordered[0]
+
+        for current in ordered.dropFirst() {
+            let segmentStart = max(start, previous.timestamp)
+            let segmentEnd = min(end, current.timestamp)
+            if segmentEnd > segmentStart {
+                let dt = segmentEnd - segmentStart
+                total.pitch += (previous.rotationX + current.rotationX) * 0.5 * dt
+                total.yaw += (previous.rotationY + current.rotationY) * 0.5 * dt
+                total.roll += (previous.rotationZ + current.rotationZ) * 0.5 * dt
+            }
+            previous = current
+        }
+
+        return total
+    }
+
+    private func clamp<T: Comparable>(_ value: T, min minimum: T, max maximum: T) -> T {
+        Swift.min(Swift.max(value, minimum), maximum)
+    }
+}
+
 final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFrameSink {
     private let metalView: MTKView
     private let renderer: StabilizedMetalPreviewRenderer
@@ -205,8 +366,11 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let cropCenterVerticalView = UIView()
     private let viewportLock = NSLock()
     private let preferenceLock = NSLock()
+    private let trajectoryLock = NSLock()
     private var viewportSize = CGSize.zero
     private var stabilizationPreference: StabilizationPreference = .off
+    private weak var motionMonitor: MotionStabilityMonitor?
+    private var trajectoryStabilizer = MotionTrajectoryStabilizer()
     private var latestCropCorrection = PreviewVisualCorrection.identity
     private var latestMotionCorrection = PreviewVisualCorrection.identity
     private var cropTrajectory = CropWindowTrajectoryState()
@@ -274,6 +438,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         visualAnalyzer.setPreference(preference)
         renderer.setPreviewDelayFrames(preference.visualPreviewDelayFrames)
         renderer.setCropWindowScale(preference.usesCropWindowStabilization ? preference.previewCropScale : 1)
+        trajectoryLock.lock()
+        trajectoryStabilizer.reset()
+        trajectoryLock.unlock()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.cropTrajectory.reset()
@@ -290,6 +457,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         visualAnalyzer.setPreference(.off)
         renderer.setVisualCorrection(.identity)
         renderer.setCropWindowScale(1)
+        trajectoryLock.lock()
+        trajectoryStabilizer.reset()
+        trajectoryLock.unlock()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.cropTrajectory.reset()
@@ -298,6 +468,13 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             self.overviewContainer.isHidden = true
             self.layoutCropWindow(correction: .identity)
         }
+    }
+
+    func updateMotionMonitor(_ motionMonitor: MotionStabilityMonitor?) {
+        self.motionMonitor = motionMonitor
+        trajectoryLock.lock()
+        trajectoryStabilizer.reset()
+        trajectoryLock.unlock()
     }
 
     var isStabilizedRecording: Bool {
@@ -321,9 +498,46 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         at timestamp: CMTime
     ) {
         guard let motionTime = frameClockMapper.motionTime(for: timestamp) else { return }
+        let transform = trajectoryTransform(at: motionTime)
+        let viewportSize = currentViewportSize
+        applyPreviewTransform(transform, at: motionTime)
+        updateMotionCropCorrection(
+            PreviewVisualCorrection(
+                normalizedX: viewportSize.width > 1 ? transform.translationX / viewportSize.width : 0,
+                normalizedY: viewportSize.height > 1 ? transform.translationY / viewportSize.height : 0,
+                confidence: transform == .identity ? 0 : 1,
+                timestamp: motionTime
+            )
+        )
         renderer.enqueue(pixelBuffer: pixelBuffer, motionTime: motionTime)
         visualAnalyzer.enqueue(pixelBuffer: pixelBuffer, motionTime: motionTime)
         updateOverviewThumbnailIfNeeded(pixelBuffer: pixelBuffer, motionTime: motionTime)
+    }
+
+    private func trajectoryTransform(at motionTime: TimeInterval) -> PreviewRenderTransform {
+        preferenceLock.lock()
+        let preference = stabilizationPreference
+        preferenceLock.unlock()
+
+        guard preference.usesElectronicPreviewStabilization,
+              let motionMonitor
+        else {
+            trajectoryLock.lock()
+            trajectoryStabilizer.reset()
+            trajectoryLock.unlock()
+            return .identity
+        }
+
+        let samples = motionMonitor.samples(from: motionTime - 0.18, to: motionTime)
+        trajectoryLock.lock()
+        let transform = trajectoryStabilizer.transform(
+            at: motionTime,
+            samples: samples,
+            preference: preference,
+            viewportSize: currentViewportSize
+        )
+        trajectoryLock.unlock()
+        return transform
     }
 
     func cameraController(
@@ -1891,6 +2105,7 @@ struct CameraPreviewView: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: PreviewContainerView, coordinator: Coordinator) {
         uiView.stopVisualAnalysis()
+        uiView.updateMotionMonitor(nil)
         coordinator.detach()
     }
 
@@ -1946,24 +2161,12 @@ struct CameraPreviewView: UIViewRepresentable {
                 camera.setPreviewFrameSink(view)
             }
 
-            if motionObserverID != nil, self.motionMonitor === motionMonitor {
-                return
-            }
-
-            if let motionObserverID {
+            if let motionObserverID, self.motionMonitor !== motionMonitor {
                 self.motionMonitor?.removeSampleObserver(motionObserverID)
+                self.motionObserverID = nil
             }
             self.motionMonitor = motionMonitor
-            motionObserverID = motionMonitor.addSampleObserver { [weak self, weak view] sample in
-                guard let self, let view else { return }
-                let latest = self.latest()
-                self.apply(
-                    sample: sample,
-                    preference: latest.preference,
-                    visualState: latest.visualState,
-                    to: view
-                )
-            }
+            view.updateMotionMonitor(motionMonitor)
         }
 
         func update(

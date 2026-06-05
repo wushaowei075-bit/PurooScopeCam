@@ -13,6 +13,7 @@ final class MotionStabilityMonitor: ObservableObject {
     private let observerLock = NSLock()
     private var filteredScore = 0.0
     private var sampleObservers: [UUID: SampleObserver] = [:]
+    private var sampleBuffer: [StabilitySample] = []
     private var lastDisplaySampleTime: TimeInterval = 0
 
     init() {
@@ -95,6 +96,13 @@ final class MotionStabilityMonitor: ObservableObject {
 
             self.observerLock.lock()
             self.sample = next
+            self.sampleBuffer.append(next)
+            let cutoff = next.timestamp - 1.25
+            if let firstFreshIndex = self.sampleBuffer.firstIndex(where: { $0.timestamp >= cutoff }) {
+                self.sampleBuffer.removeFirst(firstFreshIndex)
+            } else {
+                self.sampleBuffer.removeAll(keepingCapacity: true)
+            }
             let observers = Array(self.sampleObservers.values)
             self.observerLock.unlock()
 
@@ -111,6 +119,32 @@ final class MotionStabilityMonitor: ObservableObject {
 
     func stop() {
         manager.stopDeviceMotionUpdates()
+    }
+
+    func samples(from start: TimeInterval, to end: TimeInterval) -> [StabilitySample] {
+        guard start.isFinite, end.isFinite, end > start else { return [] }
+
+        observerLock.lock()
+        let buffer = sampleBuffer
+        observerLock.unlock()
+
+        guard !buffer.isEmpty else { return [] }
+        let padding = 1.0 / 120.0
+        let lowerBound = start - padding
+        var selected = buffer.filter { $0.timestamp >= lowerBound && $0.timestamp <= end }
+
+        if selected.isEmpty,
+           let nearest = buffer.last(where: { $0.timestamp <= end }) {
+            selected = [nearest]
+        }
+
+        if let first = selected.first,
+           first.timestamp > start,
+           let previous = buffer.last(where: { $0.timestamp < first.timestamp }) {
+            selected.insert(previous, at: 0)
+        }
+
+        return selected
     }
 
     private func shouldPublishDisplaySample(_ next: StabilitySample) -> Bool {
