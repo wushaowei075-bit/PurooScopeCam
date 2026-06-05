@@ -227,6 +227,9 @@ private final class MotionTrajectoryStabilizer {
     private var lastFrameTime: TimeInterval?
     private var rawTrajectory = GyroRotation.zero
     private var smoothedTrajectory = GyroRotation.zero
+    private var filteredDirectX: CGFloat = 0
+    private var filteredDirectY: CGFloat = 0
+    private var filteredDirectRoll: CGFloat = 0
     private var lastTransform = PreviewRenderTransform.identity
 
     func reset() {
@@ -234,6 +237,7 @@ private final class MotionTrajectoryStabilizer {
         lastFrameTime = nil
         rawTrajectory = .zero
         smoothedTrajectory = .zero
+        resetDirectGyroCorrection()
         lastTransform = .identity
     }
 
@@ -257,6 +261,7 @@ private final class MotionTrajectoryStabilizer {
             lastFrameTime = timestamp
             rawTrajectory = .zero
             smoothedTrajectory = .zero
+            resetDirectGyroCorrection()
             lastTransform = PreviewRenderTransform(
                 scale: preference.previewCropScale,
                 rotationRadians: 0,
@@ -280,6 +285,7 @@ private final class MotionTrajectoryStabilizer {
             lastFrameTime = timestamp
             rawTrajectory = .zero
             smoothedTrajectory = .zero
+            resetDirectGyroCorrection()
             lastTransform = PreviewRenderTransform(
                 scale: preference.previewCropScale,
                 rotationRadians: 0,
@@ -313,12 +319,13 @@ private final class MotionTrajectoryStabilizer {
             max: rollLimit
         )
 
-        let direct = directGyroCorrection(
+        let direct = smoothedGyroCorrection(
             samples: samples,
             preference: preference,
             maxX: maxX,
             maxY: maxY,
-            rollLimit: rollLimit
+            rollLimit: rollLimit,
+            deltaTime: deltaTime
         )
         translationX = clamp(translationX + direct.x, min: -maxX, max: maxX)
         translationY = clamp(translationY + direct.y, min: -maxY, max: maxY)
@@ -359,18 +366,20 @@ private final class MotionTrajectoryStabilizer {
         return total
     }
 
-    private func directGyroCorrection(
+    private func smoothedGyroCorrection(
         samples: [StabilitySample],
         preference: StabilizationPreference,
         maxX: CGFloat,
         maxY: CGFloat,
-        rollLimit: CGFloat
+        rollLimit: CGFloat,
+        deltaTime: TimeInterval
     ) -> (x: CGFloat, y: CGFloat, roll: CGFloat) {
         guard preference == .balanced || preference == .strong else {
+            resetDirectGyroCorrection()
             return (0, 0, 0)
         }
 
-        let suffixCount = preference == .balanced ? 3 : 2
+        let suffixCount = preference == .balanced ? 8 : 10
         let recent = samples.suffix(suffixCount)
         guard !recent.isEmpty else { return (0, 0, 0) }
 
@@ -378,36 +387,56 @@ private final class MotionTrajectoryStabilizer {
         let rateX = recent.reduce(0) { $0 + $1.rotationX } / divisor
         let rateY = recent.reduce(0) { $0 + $1.rotationY } / divisor
         let rateZ = recent.reduce(0) { $0 + $1.rotationZ } / divisor
-        let floor = preference == .balanced ? 0.0012 : 0.0006
-        let gain: CGFloat = preference == .balanced ? 3600 : 6200
-        let rollGain: CGFloat = preference == .balanced ? 0.018 : 0.030
+        let floor = preference == .balanced ? 0.0040 : 0.0026
+        let gain: CGFloat = preference == .balanced ? 1150 : 1850
+        let rollGain: CGFloat = preference == .balanced ? 0.006 : 0.010
+        let responseRate = preference == .balanced ? 18.0 : 26.0
+        let maximumStepFraction: CGFloat = preference == .balanced ? 1.25 : 1.90
 
         let xRate = deadzone(rateX, floor: floor)
         let yRate = deadzone(rateY, floor: floor)
         let zRate = deadzone(rateZ, floor: floor)
 
+        let targetX: CGFloat
+        let targetY: CGFloat
+        let targetRoll: CGFloat
         switch preference {
         case .balanced:
-            return (
-                x: clamp(CGFloat(xRate) * gain, min: -maxX * 0.72, max: maxX * 0.72),
-                y: clamp(CGFloat(-yRate) * gain, min: -maxY * 0.72, max: maxY * 0.72),
-                roll: clamp(CGFloat(-zRate) * rollGain, min: -rollLimit * 0.75, max: rollLimit * 0.75)
-            )
+            targetX = clamp(CGFloat(xRate) * gain, min: -maxX * 0.26, max: maxX * 0.26)
+            targetY = clamp(CGFloat(-yRate) * gain, min: -maxY * 0.26, max: maxY * 0.26)
+            targetRoll = clamp(CGFloat(-zRate) * rollGain, min: -rollLimit * 0.35, max: rollLimit * 0.35)
         case .strong:
-            return (
-                x: clamp(CGFloat(-yRate) * gain, min: -maxX * 0.82, max: maxX * 0.82),
-                y: clamp(CGFloat(xRate) * gain, min: -maxY * 0.82, max: maxY * 0.82),
-                roll: clamp(CGFloat(zRate) * rollGain, min: -rollLimit * 0.90, max: rollLimit * 0.90)
-            )
+            targetX = clamp(CGFloat(xRate) * gain, min: -maxX * 0.38, max: maxX * 0.38)
+            targetY = clamp(CGFloat(-yRate) * gain, min: -maxY * 0.38, max: maxY * 0.38)
+            targetRoll = clamp(CGFloat(-zRate) * rollGain, min: -rollLimit * 0.50, max: rollLimit * 0.50)
         case .off, .auto:
+            resetDirectGyroCorrection()
             return (0, 0, 0)
         }
+
+        let dt = clamp(CGFloat(deltaTime), min: 1.0 / 300.0, max: 1.0 / 30.0)
+        let alpha = CGFloat(1 - exp(-Double(dt) * responseRate))
+        let maxStepX = max(1.0, maxX * maximumStepFraction * dt)
+        let maxStepY = max(1.0, maxY * maximumStepFraction * dt)
+        let maxStepRoll = max(0.001, rollLimit * maximumStepFraction * dt)
+
+        filteredDirectX += clamp((targetX - filteredDirectX) * alpha, min: -maxStepX, max: maxStepX)
+        filteredDirectY += clamp((targetY - filteredDirectY) * alpha, min: -maxStepY, max: maxStepY)
+        filteredDirectRoll += clamp((targetRoll - filteredDirectRoll) * alpha, min: -maxStepRoll, max: maxStepRoll)
+
+        return (filteredDirectX, filteredDirectY, filteredDirectRoll)
     }
 
     private func deadzone(_ value: Double, floor: Double) -> Double {
         let magnitude = abs(value)
         guard magnitude > floor else { return 0 }
         return value > 0 ? magnitude - floor : -(magnitude - floor)
+    }
+
+    private func resetDirectGyroCorrection() {
+        filteredDirectX = 0
+        filteredDirectY = 0
+        filteredDirectRoll = 0
     }
 
     private func clamp<T: Comparable>(_ value: T, min minimum: T, max maximum: T) -> T {

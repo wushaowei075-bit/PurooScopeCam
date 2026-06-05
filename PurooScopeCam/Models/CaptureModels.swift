@@ -77,11 +77,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return "关闭"
         case .auto:
-            return "轨迹稳"
+            return "轨迹增强"
         case .balanced:
-            return "陀螺直驱"
+            return "高频稳"
         case .strong:
-            return "轴向反测"
+            return "高频强"
         }
     }
 
@@ -108,11 +108,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 6000
+            return 12000
         case .balanced:
-            return 18000
+            return 12000
         case .strong:
-            return 22000
+            return 15000
         }
     }
 
@@ -121,11 +121,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 1
         case .auto:
-            return 1.50
+            return 1.55
         case .balanced:
-            return 1.80
+            return 1.65
         case .strong:
-            return 1.80
+            return 1.75
         }
     }
 
@@ -136,9 +136,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0.82
         case .balanced:
-            return 0.92
+            return 0.86
         case .strong:
-            return 0.92
+            return 0.90
         }
     }
 
@@ -244,11 +244,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .off:
             return 0
         case .auto:
-            return 0.96
+            return 0.985
         case .balanced:
-            return 0.985
+            return 0.990
         case .strong:
-            return 0.985
+            return 0.992
         }
     }
 
@@ -259,9 +259,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return 0.60
         case .balanced:
-            return 1.00
+            return 0.75
         case .strong:
-            return 1.00
+            return 0.90
         }
     }
 
