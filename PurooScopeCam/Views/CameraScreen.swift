@@ -97,13 +97,13 @@ struct CameraScreen: View {
                 )
             } else if camera.stabilizationPreference == .balanced {
                 statusPill(
-                    title: "自研视觉",
-                    systemImage: "scope"
+                    title: "高频强",
+                    systemImage: "waveform.path"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
-                    title: "自研混合",
-                    systemImage: "square.stack.3d.up"
+                    title: "高频极",
+                    systemImage: "waveform.path.ecg"
                 )
             }
 

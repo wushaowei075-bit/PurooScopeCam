@@ -171,23 +171,23 @@ private struct CropWindowTrajectorySettings {
             softLimit = 0.78
             snapToCenterThreshold = 0.006
         case .balanced:
-            maximumOffset = 0.16
-            deadZone = 0.005
-            responseRate = 26.0
-            centeringRate = 6.0
-            maximumVelocity = 0.42
-            maximumAcceleration = 3.0
-            softLimit = 0.82
-            snapToCenterThreshold = 0.004
-        case .strong:
-            maximumOffset = 0.14
-            deadZone = 0.020
-            responseRate = 18.0
+            maximumOffset = 0.17
+            deadZone = 0.010
+            responseRate = 32.0
             centeringRate = 10.0
-            maximumVelocity = 0.30
-            maximumAcceleration = 2.0
-            softLimit = 0.76
-            snapToCenterThreshold = 0.008
+            maximumVelocity = 0.58
+            maximumAcceleration = 5.0
+            softLimit = 0.84
+            snapToCenterThreshold = 0.005
+        case .strong:
+            maximumOffset = 0.18
+            deadZone = 0.006
+            responseRate = 46.0
+            centeringRate = 14.0
+            maximumVelocity = 0.82
+            maximumAcceleration = 7.0
+            softLimit = 0.88
+            snapToCenterThreshold = 0.004
         }
     }
 }
@@ -1285,7 +1285,9 @@ private final class PreviewFrameMotionAnalyzer {
     }
 
     private func process(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) {
-        guard preference.usesCropWindowStabilization else {
+        guard preference.usesCropWindowStabilization,
+              preference.visualAnalysisMinimumInterval.isFinite
+        else {
             resetAnalysisState()
             emit(.identity)
             return
@@ -2095,7 +2097,15 @@ struct CameraPreviewView: UIViewRepresentable {
             targetX = clamp(targetX, min: -maxX, max: maxX)
             targetY = clamp(targetY, min: -maxY, max: maxY)
 
-            let rollLimit = preference == .strong ? CGFloat.pi / 40 : CGFloat.pi / 58
+            let rollLimit: CGFloat
+            switch preference {
+            case .strong:
+                rollLimit = .pi / 34
+            case .balanced:
+                rollLimit = .pi / 44
+            case .off, .auto:
+                rollLimit = .pi / 58
+            }
             let clampedRoll = clamp(targetRoll + microRollTarget, min: -rollLimit, max: rollLimit)
             let responseRate = preference.previewResponseRate
             let alpha = CGFloat(1 - exp(-dt * responseRate))
@@ -2161,7 +2171,7 @@ struct CameraPreviewView: UIViewRepresentable {
             microGain: CGFloat
         ) -> GyroAxisCorrection {
             switch preference {
-            case .auto, .strong:
+            case .auto, .balanced, .strong:
                 return GyroAxisCorrection(
                     targetX: pitchDelta * gain,
                     targetY: -yawDelta * gain,
@@ -2170,7 +2180,7 @@ struct CameraPreviewView: UIViewRepresentable {
                     microX: microPitchDelta * microGain,
                     microY: -microYawDelta * microGain
                 )
-            case .off, .balanced:
+            case .off:
                 return GyroAxisCorrection(
                     targetX: 0,
                     targetY: 0,
@@ -2217,7 +2227,7 @@ struct CameraPreviewView: UIViewRepresentable {
                 return
             }
 
-            let overlayInterval = preference == .balanced ? 1.0 / 30.0 : 1.0 / 60.0
+            let overlayInterval = 1.0 / 60.0
             guard lastOverlayTimestamp == 0 || timestamp - lastOverlayTimestamp >= overlayInterval else {
                 return
             }
