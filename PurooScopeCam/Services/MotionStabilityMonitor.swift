@@ -128,6 +128,30 @@ final class MotionStabilityMonitor: ObservableObject {
         let buffer = sampleBuffer
         observerLock.unlock()
 
+        return selectedSamples(in: buffer, from: start, to: end)
+    }
+
+    func latestSampleWindow(duration: TimeInterval) -> (timestamp: TimeInterval, samples: [StabilitySample])? {
+        guard duration.isFinite, duration > 0 else { return nil }
+
+        observerLock.lock()
+        let latest = sample
+        let buffer = sampleBuffer
+        observerLock.unlock()
+
+        guard latest.band != .unavailable, latest.timestamp.isFinite else { return nil }
+
+        let start = latest.timestamp - duration
+        let selected = selectedSamples(in: buffer, from: start, to: latest.timestamp)
+        guard !selected.isEmpty else { return nil }
+        return (latest.timestamp, selected)
+    }
+
+    private func selectedSamples(
+        in buffer: [StabilitySample],
+        from start: TimeInterval,
+        to end: TimeInterval
+    ) -> [StabilitySample] {
         guard !buffer.isEmpty else { return [] }
         let padding = 1.0 / 120.0
         let lowerBound = start - padding

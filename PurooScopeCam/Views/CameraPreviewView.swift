@@ -306,22 +306,23 @@ private final class MotionTrajectoryStabilizer {
         let gain = preference.previewStabilizationGain
         var translationX = clamp(CGFloat(compensation.pitch) * gain, min: -maxX, max: maxX)
         var translationY = clamp(CGFloat(-compensation.yaw) * gain, min: -maxY, max: maxY)
-
-        if preference == .strong {
-            let diagnosticPhaseX = timestamp * 2.0 * Double.pi * 0.70
-            let diagnosticPhaseY = timestamp * 2.0 * Double.pi * 0.50
-            let diagnosticX = CGFloat(sin(diagnosticPhaseX)) * min(maxX * 0.20, 60)
-            let diagnosticY = CGFloat(cos(diagnosticPhaseY)) * min(maxY * 0.12, 36)
-            translationX = clamp(translationX + diagnosticX, min: -maxX, max: maxX)
-            translationY = clamp(translationY + diagnosticY, min: -maxY, max: maxY)
-        }
-
         let rollLimit: CGFloat = preference == .strong ? .pi / 30 : .pi / 44
-        let roll = clamp(
+        var roll = clamp(
             CGFloat(-compensation.roll) * preference.trajectoryRollGain,
             min: -rollLimit,
             max: rollLimit
         )
+
+        let direct = directGyroCorrection(
+            samples: samples,
+            preference: preference,
+            maxX: maxX,
+            maxY: maxY,
+            rollLimit: rollLimit
+        )
+        translationX = clamp(translationX + direct.x, min: -maxX, max: maxX)
+        translationY = clamp(translationY + direct.y, min: -maxY, max: maxY)
+        roll = clamp(roll + direct.roll, min: -rollLimit, max: rollLimit)
 
         lastTransform = PreviewRenderTransform(
             scale: scale,
@@ -356,6 +357,57 @@ private final class MotionTrajectoryStabilizer {
         }
 
         return total
+    }
+
+    private func directGyroCorrection(
+        samples: [StabilitySample],
+        preference: StabilizationPreference,
+        maxX: CGFloat,
+        maxY: CGFloat,
+        rollLimit: CGFloat
+    ) -> (x: CGFloat, y: CGFloat, roll: CGFloat) {
+        guard preference == .balanced || preference == .strong else {
+            return (0, 0, 0)
+        }
+
+        let suffixCount = preference == .balanced ? 3 : 2
+        let recent = samples.suffix(suffixCount)
+        guard !recent.isEmpty else { return (0, 0, 0) }
+
+        let divisor = Double(recent.count)
+        let rateX = recent.reduce(0) { $0 + $1.rotationX } / divisor
+        let rateY = recent.reduce(0) { $0 + $1.rotationY } / divisor
+        let rateZ = recent.reduce(0) { $0 + $1.rotationZ } / divisor
+        let floor = preference == .balanced ? 0.0012 : 0.0006
+        let gain: CGFloat = preference == .balanced ? 3600 : 6200
+        let rollGain: CGFloat = preference == .balanced ? 0.018 : 0.030
+
+        let xRate = deadzone(rateX, floor: floor)
+        let yRate = deadzone(rateY, floor: floor)
+        let zRate = deadzone(rateZ, floor: floor)
+
+        switch preference {
+        case .balanced:
+            return (
+                x: clamp(CGFloat(xRate) * gain, min: -maxX * 0.72, max: maxX * 0.72),
+                y: clamp(CGFloat(-yRate) * gain, min: -maxY * 0.72, max: maxY * 0.72),
+                roll: clamp(CGFloat(-zRate) * rollGain, min: -rollLimit * 0.75, max: rollLimit * 0.75)
+            )
+        case .strong:
+            return (
+                x: clamp(CGFloat(-yRate) * gain, min: -maxX * 0.82, max: maxX * 0.82),
+                y: clamp(CGFloat(xRate) * gain, min: -maxY * 0.82, max: maxY * 0.82),
+                roll: clamp(CGFloat(zRate) * rollGain, min: -rollLimit * 0.90, max: rollLimit * 0.90)
+            )
+        case .off, .auto:
+            return (0, 0, 0)
+        }
+    }
+
+    private func deadzone(_ value: Double, floor: Double) -> Double {
+        let magnitude = abs(value)
+        guard magnitude > floor else { return 0 }
+        return value > 0 ? magnitude - floor : -(magnitude - floor)
     }
 
     private func clamp<T: Comparable>(_ value: T, min minimum: T, max maximum: T) -> T {
@@ -538,10 +590,12 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             return .identity
         }
 
-        let samples = motionMonitor.samples(from: motionTime - 0.18, to: motionTime)
+        let sampleWindow = motionMonitor.latestSampleWindow(duration: 0.18)
+        let trajectoryTime = sampleWindow?.timestamp ?? motionTime
+        let samples = sampleWindow?.samples ?? motionMonitor.samples(from: motionTime - 0.18, to: motionTime)
         trajectoryLock.lock()
         let transform = trajectoryStabilizer.transform(
-            at: motionTime,
+            at: trajectoryTime,
             samples: samples,
             preference: preference,
             viewportSize: currentViewportSize

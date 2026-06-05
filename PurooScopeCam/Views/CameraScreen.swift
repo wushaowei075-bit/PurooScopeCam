@@ -97,12 +97,12 @@ struct CameraScreen: View {
                 )
             } else if camera.stabilizationPreference == .balanced {
                 statusPill(
-                    title: "轨迹猛",
+                    title: "陀螺直驱",
                     systemImage: "point.3.filled.connected.trianglepath.dotted"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
-                    title: "链路验",
+                    title: "轴向反测",
                     systemImage: "scope"
                 )
             }

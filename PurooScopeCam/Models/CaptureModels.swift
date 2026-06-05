@@ -79,9 +79,9 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         case .auto:
             return "轨迹稳"
         case .balanced:
-            return "轨迹猛"
+            return "陀螺直驱"
         case .strong:
-            return "链路验"
+            return "轴向反测"
         }
     }
 
