@@ -92,8 +92,8 @@ struct CameraScreen: View {
 
             if camera.stabilizationPreference == .auto {
                 statusPill(
-                    title: "强制关闭",
-                    systemImage: "slash.circle"
+                    title: "系统电影",
+                    systemImage: "film"
                 )
             } else if camera.stabilizationPreference == .strong {
                 statusPill(
