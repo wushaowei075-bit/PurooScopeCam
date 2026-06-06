@@ -434,7 +434,7 @@ struct StabilizationTuning: Equatable {
     var previewCropScale: CGFloat {
         guard usesDigitalStabilization else { return 1 }
         let value = CGFloat(effectiveStrength)
-        return 1.14 + value * 0.92
+        return 1.16 + value * 0.78
     }
 
     var previewCropTravelFactor: CGFloat {
@@ -443,16 +443,16 @@ struct StabilizationTuning: Equatable {
     }
 
     var sampleWindowDuration: TimeInterval {
-        0.045 + effectiveStrength * 0.055
+        0.075 + effectiveStrength * 0.085
     }
 
     var trajectoryGain: CGFloat {
         let value = CGFloat(effectiveStrength)
-        return (3200 + value * 17000) * (1 + zoomBoost * 0.35)
+        return (2800 + value * 12000) * (1 + zoomBoost * 0.24)
     }
 
     var trajectorySmoothingAlpha: Double {
-        0.88 + effectiveStrength * 0.08
+        0.90 + effectiveStrength * 0.07
     }
 
     var trajectoryRollGain: CGFloat {
@@ -461,35 +461,35 @@ struct StabilizationTuning: Equatable {
     }
 
     var directSampleCount: Int {
-        Int((3 + effectiveStrength * 7).rounded())
+        Int((10 + effectiveStrength * 14).rounded())
     }
 
     var directNoiseFloor: Double {
-        Swift.max(0.0035, 0.012 - effectiveStrength * 0.007 - Double(zoomBoost) * 0.0025)
+        0.012 + effectiveStrength * 0.006 - Double(zoomBoost) * 0.0015
     }
 
     var directGain: CGFloat {
         let value = CGFloat(effectiveStrength)
-        return (180 + value * 2500) * (1 + zoomBoost * 1.35)
+        return (70 + value * 620) * (1 + zoomBoost * 0.55)
     }
 
     var directRollGain: CGFloat {
         let value = CGFloat(effectiveStrength)
-        return 0.001 + value * 0.012
+        return 0.001 + value * 0.004
     }
 
     var directResponseRate: Double {
-        35 + effectiveStrength * 75
+        14 + effectiveStrength * 28
     }
 
     var directLimitFraction: CGFloat {
         let value = CGFloat(effectiveStrength)
-        return (0.035 + value * 0.30) * (1 + zoomBoost * 0.70)
+        return (0.018 + value * 0.075) * (1 + zoomBoost * 0.35)
     }
 
     var directMaximumStepFraction: CGFloat {
         let value = CGFloat(effectiveStrength)
-        return 3.00 + value * 6.00
+        return 0.85 + value * 1.65
     }
 
     var rollLimit: CGFloat {
@@ -499,7 +499,7 @@ struct StabilizationTuning: Equatable {
 
     private var effectiveStrength: Double {
         guard strength > 0 else { return 0 }
-        return Swift.min(1, pow(strength, 0.72) * 1.18)
+        return Swift.min(1, pow(strength, 0.90) * 1.08)
     }
 
     private var zoomBoost: CGFloat {
