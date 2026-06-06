@@ -298,7 +298,17 @@ private final class MotionTrajectoryStabilizer {
         }
 
         lastFrameTime = timestamp
-        let delta = integrate(samples: samples, from: previousFrameTime, to: timestamp)
+        let isStill = averageAngularVelocity(samples: samples) < tuning.stillnessAngularVelocityFloor
+        if isStill {
+            releaseTrajectory(deltaTime: deltaTime, tuning: tuning)
+        }
+
+        let delta = integrate(
+            samples: samples,
+            from: previousFrameTime,
+            to: timestamp,
+            noiseFloor: tuning.trajectoryNoiseFloor
+        )
         rawTrajectory.add(delta)
 
         let frameScale = max(deltaTime / (1.0 / 60.0), 0.25)
@@ -321,14 +331,16 @@ private final class MotionTrajectoryStabilizer {
             max: rollLimit
         )
 
-        let direct = smoothedGyroCorrection(
-            samples: samples,
-            tuning: tuning,
-            maxX: maxX,
-            maxY: maxY,
-            rollLimit: rollLimit,
-            deltaTime: deltaTime
-        )
+        let direct = isStill
+            ? releaseDirectGyroCorrection(deltaTime: deltaTime, tuning: tuning)
+            : smoothedGyroCorrection(
+                samples: samples,
+                tuning: tuning,
+                maxX: maxX,
+                maxY: maxY,
+                rollLimit: rollLimit,
+                deltaTime: deltaTime
+            )
         translationX = clamp(translationX + direct.x, min: -maxX, max: maxX)
         translationY = clamp(translationY + direct.y, min: -maxY, max: maxY)
         roll = clamp(roll + direct.roll, min: -rollLimit, max: rollLimit)
@@ -345,7 +357,8 @@ private final class MotionTrajectoryStabilizer {
     private func integrate(
         samples: [StabilitySample],
         from start: TimeInterval,
-        to end: TimeInterval
+        to end: TimeInterval,
+        noiseFloor: Double
     ) -> GyroRotation {
         guard samples.count >= 2 else { return .zero }
 
@@ -358,14 +371,36 @@ private final class MotionTrajectoryStabilizer {
             let segmentEnd = min(end, current.timestamp)
             if segmentEnd > segmentStart {
                 let dt = segmentEnd - segmentStart
-                total.pitch += (previous.rotationX + current.rotationX) * 0.5 * dt
-                total.yaw += (previous.rotationY + current.rotationY) * 0.5 * dt
-                total.roll += (previous.rotationZ + current.rotationZ) * 0.5 * dt
+                let previousX = deadzone(previous.rotationX, floor: noiseFloor)
+                let currentX = deadzone(current.rotationX, floor: noiseFloor)
+                let previousY = deadzone(previous.rotationY, floor: noiseFloor)
+                let currentY = deadzone(current.rotationY, floor: noiseFloor)
+                let previousZ = deadzone(previous.rotationZ, floor: noiseFloor)
+                let currentZ = deadzone(current.rotationZ, floor: noiseFloor)
+                total.pitch += (previousX + currentX) * 0.5 * dt
+                total.yaw += (previousY + currentY) * 0.5 * dt
+                total.roll += (previousZ + currentZ) * 0.5 * dt
             }
             previous = current
         }
 
         return total
+    }
+
+    private func averageAngularVelocity(samples: [StabilitySample]) -> Double {
+        guard !samples.isEmpty else { return 0 }
+        let total = samples.reduce(0) { $0 + $1.angularVelocity }
+        return total / Double(samples.count)
+    }
+
+    private func releaseTrajectory(deltaTime: TimeInterval, tuning: StabilizationTuning) {
+        let alpha = exp(-deltaTime * tuning.stillnessReleaseRate)
+        rawTrajectory.pitch *= alpha
+        rawTrajectory.yaw *= alpha
+        rawTrajectory.roll *= alpha
+        smoothedTrajectory.pitch *= alpha
+        smoothedTrajectory.yaw *= alpha
+        smoothedTrajectory.roll *= alpha
     }
 
     private func smoothedGyroCorrection(
@@ -414,6 +449,17 @@ private final class MotionTrajectoryStabilizer {
         filteredDirectY += clamp((targetY - filteredDirectY) * alpha, min: -maxStepY, max: maxStepY)
         filteredDirectRoll += clamp((targetRoll - filteredDirectRoll) * alpha, min: -maxStepRoll, max: maxStepRoll)
 
+        return (filteredDirectX, filteredDirectY, filteredDirectRoll)
+    }
+
+    private func releaseDirectGyroCorrection(
+        deltaTime: TimeInterval,
+        tuning: StabilizationTuning
+    ) -> (x: CGFloat, y: CGFloat, roll: CGFloat) {
+        let alpha = CGFloat(exp(-deltaTime * tuning.stillnessReleaseRate))
+        filteredDirectX *= alpha
+        filteredDirectY *= alpha
+        filteredDirectRoll *= alpha
         return (filteredDirectX, filteredDirectY, filteredDirectRoll)
     }
 

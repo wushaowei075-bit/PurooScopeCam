@@ -468,6 +468,18 @@ struct StabilizationTuning: Equatable {
         0.012 + effectiveStrength * 0.006 - Double(zoomBoost) * 0.0015
     }
 
+    var trajectoryNoiseFloor: Double {
+        0.009 + effectiveStrength * 0.006
+    }
+
+    var stillnessAngularVelocityFloor: Double {
+        0.024 + effectiveStrength * 0.010
+    }
+
+    var stillnessReleaseRate: Double {
+        10 + effectiveStrength * 10
+    }
+
     var directGain: CGFloat {
         let value = CGFloat(effectiveStrength)
         return (70 + value * 620) * (1 + zoomBoost * 0.55)
