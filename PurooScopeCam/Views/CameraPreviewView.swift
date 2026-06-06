@@ -222,6 +222,40 @@ private struct GyroRotation {
     }
 }
 
+private struct StabilizationDebugSnapshot {
+    var timestamp: TimeInterval
+    var strength: Double
+    var displayZoomFactor: CGFloat
+    var cropScale: CGFloat
+    var sampleCount: Int
+    var averageAngularVelocity: Double
+    var stillnessFloor: Double
+    var isStill: Bool
+    var trajectoryX: CGFloat
+    var trajectoryY: CGFloat
+    var directX: CGFloat
+    var directY: CGFloat
+    var finalX: CGFloat
+    var finalY: CGFloat
+    var roll: CGFloat
+
+    func overlayText(systemModeName: String) -> String {
+        let state = isStill ? "静止" : "运动"
+        return """
+        防抖调试  系统:\(systemModeName)
+        强度:\(format(strength * 100, digits: 0))%  变焦:\(format(Double(displayZoomFactor), digits: 1))x  裁切:\(format(Double(cropScale), digits: 2))x
+        角速:\(format(averageAngularVelocity, digits: 4)) / 阈:\(format(stillnessFloor, digits: 4))  \(state)
+        轨迹 X:\(format(Double(trajectoryX), digits: 1)) Y:\(format(Double(trajectoryY), digits: 1))
+        直驱 X:\(format(Double(directX), digits: 1)) Y:\(format(Double(directY), digits: 1))
+        最终 X:\(format(Double(finalX), digits: 1)) Y:\(format(Double(finalY), digits: 1))  R:\(format(Double(roll), digits: 3))  样本:\(sampleCount)
+        """
+    }
+
+    private func format(_ value: Double, digits: Int) -> String {
+        String(format: "%.\(digits)f", value)
+    }
+}
+
 private final class MotionTrajectoryStabilizer {
     private var lastPreference: StabilizationPreference?
     private var lastFrameTime: TimeInterval?
@@ -231,6 +265,7 @@ private final class MotionTrajectoryStabilizer {
     private var filteredDirectY: CGFloat = 0
     private var filteredDirectRoll: CGFloat = 0
     private var lastTransform = PreviewRenderTransform.identity
+    private(set) var debugSnapshot: StabilizationDebugSnapshot?
 
     func reset() {
         lastPreference = nil
@@ -239,6 +274,7 @@ private final class MotionTrajectoryStabilizer {
         smoothedTrajectory = .zero
         resetDirectGyroCorrection()
         lastTransform = .identity
+        debugSnapshot = nil
     }
 
     func transform(
@@ -298,7 +334,8 @@ private final class MotionTrajectoryStabilizer {
         }
 
         lastFrameTime = timestamp
-        let isStill = averageAngularVelocity(samples: samples) < tuning.stillnessAngularVelocityFloor
+        let averageAngularVelocity = averageAngularVelocity(samples: samples)
+        let isStill = averageAngularVelocity < tuning.stillnessAngularVelocityFloor
         if isStill {
             releaseTrajectory(deltaTime: deltaTime, tuning: tuning)
         }
@@ -324,6 +361,8 @@ private final class MotionTrajectoryStabilizer {
         let gain = tuning.trajectoryGain
         var translationX = clamp(CGFloat(compensation.pitch) * gain, min: -maxX, max: maxX)
         var translationY = clamp(CGFloat(-compensation.yaw) * gain, min: -maxY, max: maxY)
+        let trajectoryX = translationX
+        let trajectoryY = translationY
         let rollLimit = tuning.rollLimit
         var roll = clamp(
             CGFloat(-compensation.roll) * tuning.trajectoryRollGain,
@@ -344,6 +383,24 @@ private final class MotionTrajectoryStabilizer {
         translationX = clamp(translationX + direct.x, min: -maxX, max: maxX)
         translationY = clamp(translationY + direct.y, min: -maxY, max: maxY)
         roll = clamp(roll + direct.roll, min: -rollLimit, max: rollLimit)
+
+        debugSnapshot = StabilizationDebugSnapshot(
+            timestamp: timestamp,
+            strength: tuning.strength,
+            displayZoomFactor: tuning.displayZoomFactor,
+            cropScale: scale,
+            sampleCount: samples.count,
+            averageAngularVelocity: averageAngularVelocity,
+            stillnessFloor: tuning.stillnessAngularVelocityFloor,
+            isStill: isStill,
+            trajectoryX: trajectoryX,
+            trajectoryY: trajectoryY,
+            directX: direct.x,
+            directY: direct.y,
+            finalX: translationX,
+            finalY: translationY,
+            roll: roll
+        )
 
         lastTransform = PreviewRenderTransform(
             scale: scale,
@@ -491,12 +548,14 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let cropWindowView = UIView()
     private let cropCenterHorizontalView = UIView()
     private let cropCenterVerticalView = UIView()
+    private let debugOverlayLabel = UILabel()
     private let viewportLock = NSLock()
     private let preferenceLock = NSLock()
     private let trajectoryLock = NSLock()
     private var viewportSize = CGSize.zero
     private var stabilizationPreference: StabilizationPreference = .off
     private var stabilizationTuning = StabilizationTuning(strength: 0)
+    private var systemStabilizationModeName = "未知"
     private weak var motionMonitor: MotionStabilityMonitor?
     private var trajectoryStabilizer = MotionTrajectoryStabilizer()
     private var latestCropCorrection = PreviewVisualCorrection.identity
@@ -504,6 +563,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var cropTrajectory = CropWindowTrajectoryState()
     private var overviewImageAspectRatio: CGFloat = 1
     private var lastOverviewUpdateTime: TimeInterval = 0
+    private var lastDebugOverlayUpdateTime: TimeInterval = 0
 
     override init(frame: CGRect) {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -532,6 +592,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
         addSubview(metalView)
         configureOverview()
+        configureDebugOverlay()
     }
 
     required init?(coder: NSCoder) {
@@ -542,6 +603,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         super.layoutSubviews()
         metalView.frame = bounds
         layoutOverview()
+        layoutDebugOverlay()
         viewportLock.lock()
         viewportSize = bounds.size
         viewportLock.unlock()
@@ -561,7 +623,8 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     func updateStabilizationSettings(
         preference: StabilizationPreference,
         strength: Double,
-        displayZoomFactor: CGFloat
+        displayZoomFactor: CGFloat,
+        systemModeName: String
     ) {
         let tuning = StabilizationTuning(
             strength: strength,
@@ -572,6 +635,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         let oldTuning = stabilizationTuning
         stabilizationPreference = preference
         stabilizationTuning = tuning
+        systemStabilizationModeName = systemModeName
         preferenceLock.unlock()
 
         visualAnalyzer.setPreference(preference)
@@ -646,9 +710,11 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         at timestamp: CMTime
     ) {
         guard let motionTime = frameClockMapper.motionTime(for: timestamp) else { return }
-        let transform = trajectoryTransform(at: motionTime)
+        let result = trajectoryTransform(at: motionTime)
+        let transform = result.transform
         let viewportSize = currentViewportSize
         applyPreviewTransform(transform, at: motionTime)
+        updateDebugOverlay(result.debug, systemModeName: result.systemModeName)
         updateMotionCropCorrection(
             PreviewVisualCorrection(
                 normalizedX: viewportSize.width > 1 ? transform.translationX / viewportSize.width : 0,
@@ -662,10 +728,13 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         updateOverviewThumbnailIfNeeded(pixelBuffer: pixelBuffer, motionTime: motionTime)
     }
 
-    private func trajectoryTransform(at motionTime: TimeInterval) -> PreviewRenderTransform {
+    private func trajectoryTransform(
+        at motionTime: TimeInterval
+    ) -> (transform: PreviewRenderTransform, debug: StabilizationDebugSnapshot?, systemModeName: String) {
         preferenceLock.lock()
         let preference = stabilizationPreference
         let tuning = stabilizationTuning
+        let systemModeName = systemStabilizationModeName
         preferenceLock.unlock()
 
         guard preference.usesElectronicPreviewStabilization,
@@ -675,7 +744,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             trajectoryLock.lock()
             trajectoryStabilizer.reset()
             trajectoryLock.unlock()
-            return .identity
+            return (.identity, nil, systemModeName)
         }
 
         let sampleWindow = motionMonitor.latestSampleWindow(duration: tuning.sampleWindowDuration)
@@ -689,8 +758,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             tuning: tuning,
             viewportSize: currentViewportSize
         )
+        let debug = trajectoryStabilizer.debugSnapshot
         trajectoryLock.unlock()
-        return transform
+        return (transform, debug, systemModeName)
     }
 
     func cameraController(
@@ -737,6 +807,20 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         addSubview(overviewContainer)
     }
 
+    private func configureDebugOverlay() {
+        debugOverlayLabel.numberOfLines = 0
+        debugOverlayLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .medium)
+        debugOverlayLabel.textColor = .white
+        debugOverlayLabel.backgroundColor = UIColor.black.withAlphaComponent(0.56)
+        debugOverlayLabel.layer.cornerRadius = 7
+        debugOverlayLabel.layer.borderWidth = 1
+        debugOverlayLabel.layer.borderColor = UIColor.white.withAlphaComponent(0.20).cgColor
+        debugOverlayLabel.clipsToBounds = true
+        debugOverlayLabel.text = "防抖调试\n等待传感器数据"
+        debugOverlayLabel.isUserInteractionEnabled = false
+        addSubview(debugOverlayLabel)
+    }
+
     private func layoutOverview() {
         let width = min(max(bounds.width * 0.28, 92), 128)
         let height = width * 1.34
@@ -749,6 +833,17 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         )
         overviewImageView.frame = overviewContainer.bounds
         layoutCropWindow(correction: combinedCropCorrection())
+    }
+
+    private func layoutDebugOverlay() {
+        let width = min(max(bounds.width * 0.58, 244), 360)
+        let topInset = max(safeAreaInsets.top + 58, 82)
+        debugOverlayLabel.frame = CGRect(
+            x: 12,
+            y: topInset,
+            width: width,
+            height: 118
+        )
     }
 
     private func applyVisualCropCorrection(_ correction: PreviewVisualCorrection) {
@@ -781,6 +876,28 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             guard let self else { return }
             self.latestMotionCorrection = correction
             self.layoutCropWindow(correction: self.combinedCropCorrection())
+        }
+    }
+
+    private func updateDebugOverlay(
+        _ debug: StabilizationDebugSnapshot?,
+        systemModeName: String
+    ) {
+        let now = CACurrentMediaTime()
+        guard now - lastDebugOverlayUpdateTime >= 0.10 else { return }
+        lastDebugOverlayUpdateTime = now
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let debug {
+                self.debugOverlayLabel.text = debug.overlayText(systemModeName: systemModeName)
+            } else {
+                self.debugOverlayLabel.text = """
+                防抖调试  系统:\(systemModeName)
+                数字稳定:关闭
+                强度:\(StabilizationTuning(strength: 0).percentText)
+                """
+            }
         }
     }
 
@@ -2235,6 +2352,7 @@ struct CameraPreviewView: UIViewRepresentable {
     let stabilizationPreference: StabilizationPreference
     let stabilizationStrength: Double
     let displayZoomFactor: CGFloat
+    let systemStabilizationModeName: String
     let visualState: PreviewStabilizationState
 
     func makeCoordinator() -> Coordinator {
@@ -2246,7 +2364,8 @@ struct CameraPreviewView: UIViewRepresentable {
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
             strength: stabilizationStrength,
-            displayZoomFactor: displayZoomFactor
+            displayZoomFactor: displayZoomFactor,
+            systemModeName: systemStabilizationModeName
         )
         context.coordinator.attach(
             to: view,
@@ -2262,7 +2381,8 @@ struct CameraPreviewView: UIViewRepresentable {
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
             strength: stabilizationStrength,
-            displayZoomFactor: displayZoomFactor
+            displayZoomFactor: displayZoomFactor,
+            systemModeName: systemStabilizationModeName
         )
         context.coordinator.update(
             preference: stabilizationPreference,
