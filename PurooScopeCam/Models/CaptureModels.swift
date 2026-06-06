@@ -402,20 +402,15 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
     }
 
     var requestedModes: [AVCaptureVideoStabilizationMode] {
-        Self.preferredSystemStabilizationModes
+        Self.lowLatencySystemStabilizationModes
     }
 
     var requestedPreviewModes: [AVCaptureVideoStabilizationMode] {
-        Self.preferredSystemStabilizationModes
+        Self.lowLatencySystemStabilizationModes
     }
 
-    private static var preferredSystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
-        var modes: [AVCaptureVideoStabilizationMode] = []
-        if #available(iOS 18.0, *) {
-            modes.append(.cinematicExtendedEnhanced)
-        }
-        modes.append(contentsOf: [.cinematicExtended, .cinematic, .standard, .auto])
-        return modes
+    private static var lowLatencySystemStabilizationModes: [AVCaptureVideoStabilizationMode] {
+        [.standard, .auto]
     }
 }
 
@@ -437,66 +432,66 @@ struct StabilizationTuning: Equatable {
     var previewCropScale: CGFloat {
         guard usesDigitalStabilization else { return 1 }
         let value = CGFloat(strength)
-        return 1.30 + value * 0.60
+        return 1.18 + value * 0.52
     }
 
     var previewCropTravelFactor: CGFloat {
         let value = CGFloat(strength)
-        return 0.72 + value * 0.22
+        return 0.68 + value * 0.18
     }
 
     var sampleWindowDuration: TimeInterval {
-        0.14 + strength * 0.10
+        0.06 + strength * 0.06
     }
 
     var trajectoryGain: CGFloat {
         let value = CGFloat(strength)
-        return 5000 + value * 22000
+        return 2500 + value * 9000
     }
 
     var trajectorySmoothingAlpha: Double {
-        0.982 + strength * 0.015
+        0.86 + strength * 0.10
     }
 
     var trajectoryRollGain: CGFloat {
         let value = CGFloat(strength)
-        return 0.35 + value * 0.65
+        return 0.18 + value * 0.42
     }
 
     var directSampleCount: Int {
-        Int((12 + strength * 12).rounded())
+        Int((4 + strength * 6).rounded())
     }
 
     var directNoiseFloor: Double {
-        0.010 - strength * 0.005
+        0.014 - strength * 0.006
     }
 
     var directGain: CGFloat {
         let value = CGFloat(strength)
-        return 150 + value * 1450
+        return 80 + value * 900
     }
 
     var directRollGain: CGFloat {
         let value = CGFloat(strength)
-        return 0.002 + value * 0.010
+        return 0.001 + value * 0.006
     }
 
     var directResponseRate: Double {
-        8 + strength * 22
+        20 + strength * 40
     }
 
     var directLimitFraction: CGFloat {
         let value = CGFloat(strength)
-        return 0.035 + value * 0.20
+        return 0.020 + value * 0.11
     }
 
     var directMaximumStepFraction: CGFloat {
         let value = CGFloat(strength)
-        return 0.55 + value * 1.60
+        return 1.80 + value * 3.00
     }
 
     var rollLimit: CGFloat {
-        let denominator = 64 - CGFloat(strength) * 24
+        let denominator = 78 - CGFloat(strength) * 28
         return .pi / denominator
     }
 }
