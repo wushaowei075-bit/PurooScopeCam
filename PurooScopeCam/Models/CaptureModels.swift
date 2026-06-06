@@ -416,9 +416,11 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
 struct StabilizationTuning: Equatable {
     var strength: Double
+    var displayZoomFactor: CGFloat
 
-    init(strength: Double) {
+    init(strength: Double, displayZoomFactor: CGFloat = 1) {
         self.strength = Swift.min(Swift.max(strength, 0), 1)
+        self.displayZoomFactor = Swift.min(Swift.max(displayZoomFactor, 1), 6)
     }
 
     var percentText: String {
@@ -446,7 +448,7 @@ struct StabilizationTuning: Equatable {
 
     var trajectoryGain: CGFloat {
         let value = CGFloat(strength)
-        return 2500 + value * 9000
+        return (2500 + value * 9000) * (1 + zoomBoost * 0.18)
     }
 
     var trajectorySmoothingAlpha: Double {
@@ -463,12 +465,12 @@ struct StabilizationTuning: Equatable {
     }
 
     var directNoiseFloor: Double {
-        0.014 - strength * 0.006
+        Swift.max(0.0055, 0.014 - strength * 0.006 - Double(zoomBoost) * 0.002)
     }
 
     var directGain: CGFloat {
         let value = CGFloat(strength)
-        return 80 + value * 900
+        return (80 + value * 900) * (1 + zoomBoost * 0.85)
     }
 
     var directRollGain: CGFloat {
@@ -482,7 +484,7 @@ struct StabilizationTuning: Equatable {
 
     var directLimitFraction: CGFloat {
         let value = CGFloat(strength)
-        return 0.020 + value * 0.11
+        return (0.020 + value * 0.11) * (1 + zoomBoost * 0.45)
     }
 
     var directMaximumStepFraction: CGFloat {
@@ -493,6 +495,11 @@ struct StabilizationTuning: Equatable {
     var rollLimit: CGFloat {
         let denominator = 78 - CGFloat(strength) * 28
         return .pi / denominator
+    }
+
+    private var zoomBoost: CGFloat {
+        let normalized = (displayZoomFactor - 1.5) / 4.5
+        return Swift.min(Swift.max(normalized, 0), 1)
     }
 }
 

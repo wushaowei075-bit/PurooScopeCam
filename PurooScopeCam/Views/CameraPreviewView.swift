@@ -514,9 +514,13 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
     func updateStabilizationSettings(
         preference: StabilizationPreference,
-        strength: Double
+        strength: Double,
+        displayZoomFactor: CGFloat
     ) {
-        let tuning = StabilizationTuning(strength: strength)
+        let tuning = StabilizationTuning(
+            strength: strength,
+            displayZoomFactor: displayZoomFactor
+        )
         preferenceLock.lock()
         let oldPreference = stabilizationPreference
         let oldTuning = stabilizationTuning
@@ -2184,6 +2188,7 @@ struct CameraPreviewView: UIViewRepresentable {
     let motionMonitor: MotionStabilityMonitor
     let stabilizationPreference: StabilizationPreference
     let stabilizationStrength: Double
+    let displayZoomFactor: CGFloat
     let visualState: PreviewStabilizationState
 
     func makeCoordinator() -> Coordinator {
@@ -2194,7 +2199,8 @@ struct CameraPreviewView: UIViewRepresentable {
         let view = PreviewContainerView()
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
-            strength: stabilizationStrength
+            strength: stabilizationStrength,
+            displayZoomFactor: displayZoomFactor
         )
         context.coordinator.attach(
             to: view,
@@ -2209,7 +2215,8 @@ struct CameraPreviewView: UIViewRepresentable {
     func updateUIView(_ view: PreviewContainerView, context: Context) {
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
-            strength: stabilizationStrength
+            strength: stabilizationStrength,
+            displayZoomFactor: displayZoomFactor
         )
         context.coordinator.update(
             preference: stabilizationPreference,

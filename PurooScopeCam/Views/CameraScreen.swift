@@ -13,6 +13,7 @@ struct CameraScreen: View {
                 motionMonitor: motionMonitor,
                 stabilizationPreference: camera.stabilizationPreference,
                 stabilizationStrength: camera.stabilizationStrength,
+                displayZoomFactor: camera.zoomFactor,
                 visualState: camera.previewStabilizationState
             )
                 .ignoresSafeArea()
