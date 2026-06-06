@@ -472,12 +472,26 @@ struct StabilizationTuning: Equatable {
         0.009 + effectiveStrength * 0.006
     }
 
-    var stillnessAngularVelocityFloor: Double {
+    var centerLockAngularVelocityFloor: Double {
+        0.0045 + effectiveStrength * 0.0008
+    }
+
+    var microJitterAngularVelocityFloor: Double {
         0.024 + effectiveStrength * 0.010
     }
 
-    var stillnessReleaseRate: Double {
-        10 + effectiveStrength * 10
+    var microJitterDirectNoiseFloor: Double {
+        0.0035 + effectiveStrength * 0.0018 - Double(zoomBoost) * 0.0006
+    }
+
+    var microJitterDirectGainMultiplier: CGFloat {
+        let value = CGFloat(effectiveStrength)
+        return 1.20 + value * 0.55
+    }
+
+    var microJitterDirectLimitMultiplier: CGFloat {
+        let value = CGFloat(effectiveStrength)
+        return 0.65 + value * 0.35
     }
 
     var directGain: CGFloat {

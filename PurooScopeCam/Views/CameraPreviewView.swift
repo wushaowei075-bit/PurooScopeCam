@@ -222,6 +222,23 @@ private struct GyroRotation {
     }
 }
 
+private enum StabilizationMotionState {
+    case centerLocked
+    case microJitter
+    case moving
+
+    var title: String {
+        switch self {
+        case .centerLocked:
+            return "完全静止"
+        case .microJitter:
+            return "手持微抖"
+        case .moving:
+            return "运动"
+        }
+    }
+}
+
 private struct StabilizationDebugSnapshot {
     var timestamp: TimeInterval
     var strength: Double
@@ -229,8 +246,9 @@ private struct StabilizationDebugSnapshot {
     var cropScale: CGFloat
     var sampleCount: Int
     var averageAngularVelocity: Double
-    var stillnessFloor: Double
-    var isStill: Bool
+    var centerLockFloor: Double
+    var microJitterFloor: Double
+    var motionState: StabilizationMotionState
     var trajectoryX: CGFloat
     var trajectoryY: CGFloat
     var directX: CGFloat
@@ -239,15 +257,25 @@ private struct StabilizationDebugSnapshot {
     var finalY: CGFloat
     var roll: CGFloat
 
-    func overlayText(systemModeName: String) -> String {
-        let state = isStill ? "静止" : "运动"
+    func overlayText(
+        systemModeName: String,
+        visualCorrection: PreviewVisualCorrection,
+        motionCorrection: PreviewVisualCorrection,
+        combinedCorrection: PreviewVisualCorrection,
+        isVisualCorrectionIsolated: Bool
+    ) -> String {
+        let visualState = isVisualCorrectionIsolated ? "隔离" : "启用"
         return """
         防抖调试  系统:\(systemModeName)
         强度:\(format(strength * 100, digits: 0))%  变焦:\(format(Double(displayZoomFactor), digits: 1))x  裁切:\(format(Double(cropScale), digits: 2))x
-        角速:\(format(averageAngularVelocity, digits: 4)) / 阈:\(format(stillnessFloor, digits: 4))  \(state)
+        状态:\(motionState.title)  角速:\(format(averageAngularVelocity, digits: 4))
+        锁阈:\(format(centerLockFloor, digits: 4))  微抖阈:\(format(microJitterFloor, digits: 4))
         轨迹 X:\(format(Double(trajectoryX), digits: 1)) Y:\(format(Double(trajectoryY), digits: 1))
         直驱 X:\(format(Double(directX), digits: 1)) Y:\(format(Double(directY), digits: 1))
-        最终 X:\(format(Double(finalX), digits: 1)) Y:\(format(Double(finalY), digits: 1))  R:\(format(Double(roll), digits: 3))  样本:\(sampleCount)
+        陀螺最终 X:\(format(Double(finalX), digits: 1)) Y:\(format(Double(finalY), digits: 1))  R:\(format(Double(roll), digits: 3))
+        运动框 X:\(format(Double(motionCorrection.normalizedX), digits: 4)) Y:\(format(Double(motionCorrection.normalizedY), digits: 4))
+        视觉(\(visualState)) X:\(format(Double(visualCorrection.normalizedX), digits: 4)) Y:\(format(Double(visualCorrection.normalizedY), digits: 4))
+        框合成 X:\(format(Double(combinedCorrection.normalizedX), digits: 4)) Y:\(format(Double(combinedCorrection.normalizedY), digits: 4))  样本:\(sampleCount)
         """
     }
 
@@ -335,8 +363,11 @@ private final class MotionTrajectoryStabilizer {
 
         lastFrameTime = timestamp
         let averageAngularVelocity = averageAngularVelocity(samples: samples)
-        let isStill = averageAngularVelocity < tuning.stillnessAngularVelocityFloor
-        if isStill {
+        let motionState = motionState(
+            averageAngularVelocity: averageAngularVelocity,
+            tuning: tuning
+        )
+        if motionState == .centerLocked {
             resetTrajectory()
             resetDirectGyroCorrection()
             let centeredTransform = PreviewRenderTransform(
@@ -352,8 +383,9 @@ private final class MotionTrajectoryStabilizer {
                 cropScale: tuning.previewCropScale,
                 sampleCount: samples.count,
                 averageAngularVelocity: averageAngularVelocity,
-                stillnessFloor: tuning.stillnessAngularVelocityFloor,
-                isStill: true,
+                centerLockFloor: tuning.centerLockAngularVelocityFloor,
+                microJitterFloor: tuning.microJitterAngularVelocityFloor,
+                motionState: motionState,
                 trajectoryX: 0,
                 trajectoryY: 0,
                 directX: 0,
@@ -364,6 +396,56 @@ private final class MotionTrajectoryStabilizer {
             )
             lastTransform = centeredTransform
             return centeredTransform
+        }
+
+        let scale = tuning.previewCropScale
+        let maxX = max(12, viewportSize.width * (scale - 1) * tuning.previewCropTravelFactor)
+        let maxY = max(12, viewportSize.height * (scale - 1) * tuning.previewCropTravelFactor)
+        let rollLimit = tuning.rollLimit
+
+        if motionState == .microJitter {
+            resetTrajectory()
+            let direct = smoothedGyroCorrection(
+                samples: samples,
+                tuning: tuning,
+                maxX: maxX,
+                maxY: maxY,
+                rollLimit: rollLimit,
+                deltaTime: deltaTime,
+                noiseFloor: tuning.microJitterDirectNoiseFloor,
+                gainMultiplier: tuning.microJitterDirectGainMultiplier,
+                limitMultiplier: tuning.microJitterDirectLimitMultiplier
+            )
+            let translationX = clamp(direct.x, min: -maxX, max: maxX)
+            let translationY = clamp(direct.y, min: -maxY, max: maxY)
+            let roll = clamp(direct.roll, min: -rollLimit, max: rollLimit)
+
+            debugSnapshot = StabilizationDebugSnapshot(
+                timestamp: timestamp,
+                strength: tuning.strength,
+                displayZoomFactor: tuning.displayZoomFactor,
+                cropScale: scale,
+                sampleCount: samples.count,
+                averageAngularVelocity: averageAngularVelocity,
+                centerLockFloor: tuning.centerLockAngularVelocityFloor,
+                microJitterFloor: tuning.microJitterAngularVelocityFloor,
+                motionState: motionState,
+                trajectoryX: 0,
+                trajectoryY: 0,
+                directX: direct.x,
+                directY: direct.y,
+                finalX: translationX,
+                finalY: translationY,
+                roll: roll
+            )
+
+            lastTransform = PreviewRenderTransform(
+                scale: scale,
+                rotationRadians: roll,
+                translationX: translationX,
+                translationY: translationY
+            )
+            return lastTransform
         }
 
         let delta = integrate(
@@ -381,31 +463,25 @@ private final class MotionTrajectoryStabilizer {
         smoothedTrajectory.roll = smoothedTrajectory.roll * alpha + rawTrajectory.roll * (1 - alpha)
 
         let compensation = rawTrajectory - smoothedTrajectory
-        let scale = tuning.previewCropScale
-        let maxX = max(12, viewportSize.width * (scale - 1) * tuning.previewCropTravelFactor)
-        let maxY = max(12, viewportSize.height * (scale - 1) * tuning.previewCropTravelFactor)
         let gain = tuning.trajectoryGain
         var translationX = clamp(CGFloat(compensation.pitch) * gain, min: -maxX, max: maxX)
         var translationY = clamp(CGFloat(-compensation.yaw) * gain, min: -maxY, max: maxY)
         let trajectoryX = translationX
         let trajectoryY = translationY
-        let rollLimit = tuning.rollLimit
         var roll = clamp(
             CGFloat(-compensation.roll) * tuning.trajectoryRollGain,
             min: -rollLimit,
             max: rollLimit
         )
 
-        let direct = isStill
-            ? releaseDirectGyroCorrection(deltaTime: deltaTime, tuning: tuning)
-            : smoothedGyroCorrection(
-                samples: samples,
-                tuning: tuning,
-                maxX: maxX,
-                maxY: maxY,
-                rollLimit: rollLimit,
-                deltaTime: deltaTime
-            )
+        let direct = smoothedGyroCorrection(
+            samples: samples,
+            tuning: tuning,
+            maxX: maxX,
+            maxY: maxY,
+            rollLimit: rollLimit,
+            deltaTime: deltaTime
+        )
         translationX = clamp(translationX + direct.x, min: -maxX, max: maxX)
         translationY = clamp(translationY + direct.y, min: -maxY, max: maxY)
         roll = clamp(roll + direct.roll, min: -rollLimit, max: rollLimit)
@@ -417,8 +493,9 @@ private final class MotionTrajectoryStabilizer {
             cropScale: scale,
             sampleCount: samples.count,
             averageAngularVelocity: averageAngularVelocity,
-            stillnessFloor: tuning.stillnessAngularVelocityFloor,
-            isStill: isStill,
+            centerLockFloor: tuning.centerLockAngularVelocityFloor,
+            microJitterFloor: tuning.microJitterAngularVelocityFloor,
+            motionState: motionState,
             trajectoryX: trajectoryX,
             trajectoryY: trajectoryY,
             directX: direct.x,
@@ -476,6 +553,19 @@ private final class MotionTrajectoryStabilizer {
         return total / Double(samples.count)
     }
 
+    private func motionState(
+        averageAngularVelocity: Double,
+        tuning: StabilizationTuning
+    ) -> StabilizationMotionState {
+        if averageAngularVelocity < tuning.centerLockAngularVelocityFloor {
+            return .centerLocked
+        }
+        if averageAngularVelocity < tuning.microJitterAngularVelocityFloor {
+            return .microJitter
+        }
+        return .moving
+    }
+
     private func resetTrajectory() {
         rawTrajectory = .zero
         smoothedTrajectory = .zero
@@ -487,7 +577,10 @@ private final class MotionTrajectoryStabilizer {
         maxX: CGFloat,
         maxY: CGFloat,
         rollLimit: CGFloat,
-        deltaTime: TimeInterval
+        deltaTime: TimeInterval,
+        noiseFloor: Double? = nil,
+        gainMultiplier: CGFloat = 1,
+        limitMultiplier: CGFloat = 1
     ) -> (x: CGFloat, y: CGFloat, roll: CGFloat) {
         guard tuning.usesDigitalStabilization else {
             resetDirectGyroCorrection()
@@ -502,8 +595,8 @@ private final class MotionTrajectoryStabilizer {
         let rateX = recent.reduce(0) { $0 + $1.rotationX } / divisor
         let rateY = recent.reduce(0) { $0 + $1.rotationY } / divisor
         let rateZ = recent.reduce(0) { $0 + $1.rotationZ } / divisor
-        let floor = tuning.directNoiseFloor
-        let gain = tuning.directGain
+        let floor = noiseFloor ?? tuning.directNoiseFloor
+        let gain = tuning.directGain * gainMultiplier
         let rollGain = tuning.directRollGain
         let responseRate = tuning.directResponseRate
         let maximumStepFraction = tuning.directMaximumStepFraction
@@ -512,7 +605,7 @@ private final class MotionTrajectoryStabilizer {
         let yRate = deadzone(rateY, floor: floor)
         let zRate = deadzone(rateZ, floor: floor)
 
-        let limitFraction = tuning.directLimitFraction
+        let limitFraction = min(tuning.directLimitFraction * limitMultiplier, 0.16)
         let targetX = clamp(CGFloat(xRate) * gain, min: -maxX * limitFraction, max: maxX * limitFraction)
         let targetY = clamp(CGFloat(-yRate) * gain, min: -maxY * limitFraction, max: maxY * limitFraction)
         let targetRoll = clamp(CGFloat(-zRate) * rollGain, min: -rollLimit * limitFraction, max: rollLimit * limitFraction)
@@ -527,17 +620,6 @@ private final class MotionTrajectoryStabilizer {
         filteredDirectY += clamp((targetY - filteredDirectY) * alpha, min: -maxStepY, max: maxStepY)
         filteredDirectRoll += clamp((targetRoll - filteredDirectRoll) * alpha, min: -maxStepRoll, max: maxStepRoll)
 
-        return (filteredDirectX, filteredDirectY, filteredDirectRoll)
-    }
-
-    private func releaseDirectGyroCorrection(
-        deltaTime: TimeInterval,
-        tuning: StabilizationTuning
-    ) -> (x: CGFloat, y: CGFloat, roll: CGFloat) {
-        let alpha = CGFloat(exp(-deltaTime * tuning.stillnessReleaseRate))
-        filteredDirectX *= alpha
-        filteredDirectY *= alpha
-        filteredDirectRoll *= alpha
         return (filteredDirectX, filteredDirectY, filteredDirectRoll)
     }
 
@@ -562,6 +644,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let metalView: MTKView
     private let renderer: StabilizedMetalPreviewRenderer
     private let visualAnalyzer = PreviewFrameMotionAnalyzer()
+    private let isVisualCorrectionIsolated = true
     private let frameClockMapper = PreviewFrameClockMapper()
     private let overviewCIContext = CIContext()
     private let overviewContainer = UIView()
@@ -580,6 +663,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private weak var motionMonitor: MotionStabilityMonitor?
     private var trajectoryStabilizer = MotionTrajectoryStabilizer()
     private var latestCropCorrection = PreviewVisualCorrection.identity
+    private var latestVisualObservation = PreviewVisualCorrection.identity
     private var latestMotionCorrection = PreviewVisualCorrection.identity
     private var cropTrajectory = CropWindowTrajectoryState()
     private var overviewImageAspectRatio: CGFloat = 1
@@ -660,7 +744,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         preferenceLock.unlock()
 
         visualAnalyzer.setPreference(preference)
-        renderer.setPreviewDelayFrames(preference.visualPreviewDelayFrames)
+        renderer.setPreviewDelayFrames(isVisualCorrectionIsolated ? 0 : preference.visualPreviewDelayFrames)
         renderer.setCropWindowScale(tuning.usesDigitalStabilization ? tuning.previewCropScale : 1)
         if oldPreference != preference ||
             oldTuning.usesDigitalStabilization != tuning.usesDigitalStabilization {
@@ -674,6 +758,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
                 oldTuning.usesDigitalStabilization != tuning.usesDigitalStabilization {
                 self.cropTrajectory.reset()
                 self.latestCropCorrection = .identity
+                self.latestVisualObservation = .identity
                 self.latestMotionCorrection = .identity
                 self.renderer.setVisualCorrection(.identity)
             }
@@ -697,6 +782,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             guard let self else { return }
             self.cropTrajectory.reset()
             self.latestCropCorrection = .identity
+            self.latestVisualObservation = .identity
             self.latestMotionCorrection = .identity
             self.overviewContainer.isHidden = true
             self.layoutCropWindow(correction: .identity)
@@ -837,7 +923,10 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         debugOverlayLabel.layer.borderWidth = 1
         debugOverlayLabel.layer.borderColor = UIColor.white.withAlphaComponent(0.20).cgColor
         debugOverlayLabel.clipsToBounds = true
-        debugOverlayLabel.text = "防抖调试\n等待传感器数据"
+        debugOverlayLabel.text = [
+            "防抖调试",
+            "等待传感器数据"
+        ].joined(separator: "\n")
         debugOverlayLabel.isUserInteractionEnabled = false
         addSubview(debugOverlayLabel)
     }
@@ -857,22 +946,32 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     }
 
     private func layoutDebugOverlay() {
-        let width = min(max(bounds.width * 0.58, 244), 360)
+        let width = min(max(bounds.width * 0.78, 300), max(bounds.width - 24, 244))
         let topInset = max(safeAreaInsets.top + 58, 82)
         debugOverlayLabel.frame = CGRect(
             x: 12,
             y: topInset,
             width: width,
-            height: 118
+            height: 166
         )
     }
 
     private func applyVisualCropCorrection(_ correction: PreviewVisualCorrection) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.latestVisualObservation = correction
+            if self.isVisualCorrectionIsolated {
+                self.cropTrajectory.reset()
+                self.latestCropCorrection = .identity
+                self.renderer.setVisualCorrection(.identity)
+                self.layoutCropWindow(correction: self.combinedCropCorrection())
+                return
+            }
+
             if correction == .identity {
                 self.cropTrajectory.reset()
                 self.latestCropCorrection = .identity
+                self.latestVisualObservation = .identity
                 self.renderer.setVisualCorrection(.identity)
                 self.layoutCropWindow(correction: self.combinedCropCorrection())
                 return
@@ -911,11 +1010,21 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if let debug {
-                self.debugOverlayLabel.text = debug.overlayText(systemModeName: systemModeName)
+                let visualCorrection = self.latestVisualObservation
+                let motionCorrection = self.latestMotionCorrection
+                let combinedCorrection = self.combinedCropCorrection()
+                self.debugOverlayLabel.text = debug.overlayText(
+                    systemModeName: systemModeName,
+                    visualCorrection: visualCorrection,
+                    motionCorrection: motionCorrection,
+                    combinedCorrection: combinedCorrection,
+                    isVisualCorrectionIsolated: self.isVisualCorrectionIsolated
+                )
             } else {
                 self.debugOverlayLabel.text = """
                 防抖调试  系统:\(systemModeName)
                 数字稳定:关闭
+                视觉:\(self.isVisualCorrectionIsolated ? "隔离" : "启用")
                 强度:\(StabilizationTuning(strength: 0).percentText)
                 """
             }
