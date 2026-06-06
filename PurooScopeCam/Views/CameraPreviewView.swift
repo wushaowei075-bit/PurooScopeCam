@@ -337,7 +337,33 @@ private final class MotionTrajectoryStabilizer {
         let averageAngularVelocity = averageAngularVelocity(samples: samples)
         let isStill = averageAngularVelocity < tuning.stillnessAngularVelocityFloor
         if isStill {
-            releaseTrajectory(deltaTime: deltaTime, tuning: tuning)
+            resetTrajectory()
+            resetDirectGyroCorrection()
+            let centeredTransform = PreviewRenderTransform(
+                scale: tuning.previewCropScale,
+                rotationRadians: 0,
+                translationX: 0,
+                translationY: 0
+            )
+            debugSnapshot = StabilizationDebugSnapshot(
+                timestamp: timestamp,
+                strength: tuning.strength,
+                displayZoomFactor: tuning.displayZoomFactor,
+                cropScale: tuning.previewCropScale,
+                sampleCount: samples.count,
+                averageAngularVelocity: averageAngularVelocity,
+                stillnessFloor: tuning.stillnessAngularVelocityFloor,
+                isStill: true,
+                trajectoryX: 0,
+                trajectoryY: 0,
+                directX: 0,
+                directY: 0,
+                finalX: 0,
+                finalY: 0,
+                roll: 0
+            )
+            lastTransform = centeredTransform
+            return centeredTransform
         }
 
         let delta = integrate(
@@ -450,14 +476,9 @@ private final class MotionTrajectoryStabilizer {
         return total / Double(samples.count)
     }
 
-    private func releaseTrajectory(deltaTime: TimeInterval, tuning: StabilizationTuning) {
-        let alpha = exp(-deltaTime * tuning.stillnessReleaseRate)
-        rawTrajectory.pitch *= alpha
-        rawTrajectory.yaw *= alpha
-        rawTrajectory.roll *= alpha
-        smoothedTrajectory.pitch *= alpha
-        smoothedTrajectory.yaw *= alpha
-        smoothedTrajectory.roll *= alpha
+    private func resetTrajectory() {
+        rawTrajectory = .zero
+        smoothedTrajectory = .zero
     }
 
     private func smoothedGyroCorrection(

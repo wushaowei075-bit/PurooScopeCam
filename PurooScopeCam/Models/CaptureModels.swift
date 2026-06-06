@@ -434,7 +434,7 @@ struct StabilizationTuning: Equatable {
     var previewCropScale: CGFloat {
         guard usesDigitalStabilization else { return 1 }
         let value = CGFloat(effectiveStrength)
-        return 1.16 + value * 0.78
+        return 1.36 + value * 0.10
     }
 
     var previewCropTravelFactor: CGFloat {
