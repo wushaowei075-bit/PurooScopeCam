@@ -669,7 +669,8 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let metalView: MTKView
     private let renderer: StabilizedMetalPreviewRenderer
     private let visualAnalyzer = PreviewFrameMotionAnalyzer()
-    private let isVisualCorrectionIsolated = true
+    private let isVisualCorrectionIsolated = false
+    private let useDirectVisualResidualCorrection = true
     private let frameClockMapper = PreviewFrameClockMapper()
     private let overviewCIContext = CIContext()
     private let overviewContainer = UIView()
@@ -1011,6 +1012,14 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
                 self.latestCropCorrection = .identity
                 self.latestVisualObservation = .identity
                 self.renderer.setVisualCorrection(.identity)
+                self.layoutCropWindow(correction: self.combinedCropCorrection())
+                return
+            }
+
+            if self.useDirectVisualResidualCorrection {
+                self.cropTrajectory.reset()
+                self.latestCropCorrection = correction
+                self.renderer.setVisualCorrection(correction)
                 self.layoutCropWindow(correction: self.combinedCropCorrection())
                 return
             }

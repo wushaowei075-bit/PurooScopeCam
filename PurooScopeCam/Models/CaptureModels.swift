@@ -158,29 +158,53 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 
     var visualHighPassCorrectionGain: CGFloat {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off:
             return 0
+        case .auto:
+            return 1.45
+        case .balanced:
+            return 1.85
+        case .strong:
+            return 2.20
         }
     }
 
     var visualHighPassLeakRate: Double {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off:
             return 0
+        case .auto:
+            return 12
+        case .balanced:
+            return 16
+        case .strong:
+            return 20
         }
     }
 
     var visualHighPassResponseRate: Double {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off:
             return 0
+        case .auto:
+            return 70
+        case .balanced:
+            return 95
+        case .strong:
+            return 120
         }
     }
 
     var visualHighPassMaximumOffset: CGFloat {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off:
             return 0
+        case .auto:
+            return 0.036
+        case .balanced:
+            return 0.052
+        case .strong:
+            return 0.070
         }
     }
 
@@ -196,29 +220,45 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off:
             return .infinity
-        case .auto, .balanced, .strong:
-            return .greatestFiniteMagnitude
+        case .auto:
+            return 0.28
+        case .balanced:
+            return 0.16
+        case .strong:
+            return 0.08
         }
     }
 
     var visualCorrectionMaximumStep: CGFloat {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off:
             return 0
+        case .auto:
+            return 0.007
+        case .balanced:
+            return 0.012
+        case .strong:
+            return 0.018
         }
     }
 
     var visualAnalysisMinimumInterval: TimeInterval {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off:
             return .infinity
+        case .auto:
+            return 1.0 / 45.0
+        case .balanced, .strong:
+            return 1.0 / 60.0
         }
     }
 
     var visualCorrectionSign: CGFloat {
         switch self {
-        case .off, .auto, .balanced, .strong:
+        case .off:
             return 0
+        case .auto, .balanced, .strong:
+            return 1
         }
     }
 
