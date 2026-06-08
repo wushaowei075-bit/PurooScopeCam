@@ -13,6 +13,8 @@ struct CameraScreen: View {
                 motionMonitor: motionMonitor,
                 stabilizationPreference: camera.stabilizationPreference,
                 stabilizationStrength: camera.stabilizationStrength,
+                stabilizationTimeOffset: camera.stabilizationTimeOffset,
+                gyroAxisMapping: camera.gyroAxisMapping,
                 displayZoomFactor: camera.zoomFactor,
                 systemStabilizationModeName: camera.status.activePreviewStabilizationMode.scopeDisplayName,
                 visualState: camera.previewStabilizationState

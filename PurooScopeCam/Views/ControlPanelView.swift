@@ -6,6 +6,7 @@ struct ControlPanelView: View {
     var body: some View {
         VStack(spacing: 12) {
             stabilizationStrengthControl
+            stabilizationCalibrationControl
             qualityPicker
 
             HStack(spacing: 12) {
@@ -129,6 +130,47 @@ struct ControlPanelView: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 38)
+        .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var stabilizationCalibrationControl: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Label("同步", systemImage: "timer")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.86))
+
+                    Spacer(minLength: 0)
+
+                    Text("\(Int((camera.stabilizationTimeOffset * 1000).rounded()))ms")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.82))
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { camera.stabilizationTimeOffset * 1000 },
+                        set: { camera.setStabilizationTimeOffsetMilliseconds($0) }
+                    ),
+                    in: -80...80
+                )
+            }
+
+            Menu {
+                ForEach(GyroAxisMapping.allCases) { mapping in
+                    Button(mapping.debugTitle) {
+                        camera.setGyroAxisMapping(mapping)
+                    }
+                }
+            } label: {
+                Label(camera.gyroAxisMapping.title, systemImage: "arrow.triangle.swap")
+                    .frame(width: 86)
+            }
+            .buttonStyle(ScopeButtonStyle())
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
         .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 

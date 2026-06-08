@@ -249,6 +249,8 @@ private struct StabilizationDebugSnapshot {
     var centerLockFloor: Double
     var microJitterFloor: Double
     var motionState: StabilizationMotionState
+    var timeOffsetMilliseconds: Double
+    var axisMappingTitle: String
     var trajectoryX: CGFloat
     var trajectoryY: CGFloat
     var directX: CGFloat
@@ -269,6 +271,7 @@ private struct StabilizationDebugSnapshot {
         防抖调试  系统:\(systemModeName)
         强度:\(format(strength * 100, digits: 0))%  变焦:\(format(Double(displayZoomFactor), digits: 1))x  裁切:\(format(Double(cropScale), digits: 2))x
         状态:\(motionState.title)  角速:\(format(averageAngularVelocity, digits: 4))
+        同步:\(format(timeOffsetMilliseconds, digits: 0))ms  轴:\(axisMappingTitle)
         锁阈:\(format(centerLockFloor, digits: 4))  微抖阈:\(format(microJitterFloor, digits: 4))
         轨迹 X:\(format(Double(trajectoryX), digits: 1)) Y:\(format(Double(trajectoryY), digits: 1))
         直驱 X:\(format(Double(directX), digits: 1)) Y:\(format(Double(directY), digits: 1))
@@ -292,6 +295,7 @@ private final class MotionTrajectoryStabilizer {
     private var filteredDirectX: CGFloat = 0
     private var filteredDirectY: CGFloat = 0
     private var filteredDirectRoll: CGFloat = 0
+    private var centerLockActive = false
     private var lastTransform = PreviewRenderTransform.identity
     private(set) var debugSnapshot: StabilizationDebugSnapshot?
 
@@ -301,6 +305,7 @@ private final class MotionTrajectoryStabilizer {
         rawTrajectory = .zero
         smoothedTrajectory = .zero
         resetDirectGyroCorrection()
+        centerLockActive = false
         lastTransform = .identity
         debugSnapshot = nil
     }
@@ -328,6 +333,7 @@ private final class MotionTrajectoryStabilizer {
             rawTrajectory = .zero
             smoothedTrajectory = .zero
             resetDirectGyroCorrection()
+            centerLockActive = false
             lastTransform = PreviewRenderTransform(
                 scale: tuning.previewCropScale,
                 rotationRadians: 0,
@@ -352,6 +358,7 @@ private final class MotionTrajectoryStabilizer {
             rawTrajectory = .zero
             smoothedTrajectory = .zero
             resetDirectGyroCorrection()
+            centerLockActive = false
             lastTransform = PreviewRenderTransform(
                 scale: tuning.previewCropScale,
                 rotationRadians: 0,
@@ -386,6 +393,8 @@ private final class MotionTrajectoryStabilizer {
                 centerLockFloor: tuning.centerLockAngularVelocityFloor,
                 microJitterFloor: tuning.microJitterAngularVelocityFloor,
                 motionState: motionState,
+                timeOffsetMilliseconds: tuning.motionTimeOffsetMilliseconds,
+                axisMappingTitle: tuning.gyroAxisMapping.title,
                 trajectoryX: 0,
                 trajectoryY: 0,
                 directX: 0,
@@ -430,6 +439,8 @@ private final class MotionTrajectoryStabilizer {
                 centerLockFloor: tuning.centerLockAngularVelocityFloor,
                 microJitterFloor: tuning.microJitterAngularVelocityFloor,
                 motionState: motionState,
+                timeOffsetMilliseconds: tuning.motionTimeOffsetMilliseconds,
+                axisMappingTitle: tuning.gyroAxisMapping.title,
                 trajectoryX: 0,
                 trajectoryY: 0,
                 directX: direct.x,
@@ -463,9 +474,13 @@ private final class MotionTrajectoryStabilizer {
         smoothedTrajectory.roll = smoothedTrajectory.roll * alpha + rawTrajectory.roll * (1 - alpha)
 
         let compensation = rawTrajectory - smoothedTrajectory
+        let mappedCompensation = tuning.gyroAxisMapping.map(
+            x: compensation.pitch,
+            y: compensation.yaw
+        )
         let gain = tuning.trajectoryGain
-        var translationX = clamp(CGFloat(compensation.pitch) * gain, min: -maxX, max: maxX)
-        var translationY = clamp(CGFloat(-compensation.yaw) * gain, min: -maxY, max: maxY)
+        var translationX = clamp(CGFloat(mappedCompensation.horizontal) * gain, min: -maxX, max: maxX)
+        var translationY = clamp(CGFloat(mappedCompensation.vertical) * gain, min: -maxY, max: maxY)
         let trajectoryX = translationX
         let trajectoryY = translationY
         var roll = clamp(
@@ -496,6 +511,8 @@ private final class MotionTrajectoryStabilizer {
             centerLockFloor: tuning.centerLockAngularVelocityFloor,
             microJitterFloor: tuning.microJitterAngularVelocityFloor,
             motionState: motionState,
+            timeOffsetMilliseconds: tuning.motionTimeOffsetMilliseconds,
+            axisMappingTitle: tuning.gyroAxisMapping.title,
             trajectoryX: trajectoryX,
             trajectoryY: trajectoryY,
             directX: direct.x,
@@ -557,7 +574,14 @@ private final class MotionTrajectoryStabilizer {
         averageAngularVelocity: Double,
         tuning: StabilizationTuning
     ) -> StabilizationMotionState {
+        if centerLockActive {
+            if averageAngularVelocity < tuning.microJitterAngularVelocityFloor {
+                return .centerLocked
+            }
+            centerLockActive = false
+        }
         if averageAngularVelocity < tuning.centerLockAngularVelocityFloor {
+            centerLockActive = true
             return .centerLocked
         }
         if averageAngularVelocity < tuning.microJitterAngularVelocityFloor {
@@ -604,10 +628,11 @@ private final class MotionTrajectoryStabilizer {
         let xRate = deadzone(rateX, floor: floor)
         let yRate = deadzone(rateY, floor: floor)
         let zRate = deadzone(rateZ, floor: floor)
+        let mappedRate = tuning.gyroAxisMapping.map(x: xRate, y: yRate)
 
         let limitFraction = min(tuning.directLimitFraction * limitMultiplier, 0.16)
-        let targetX = clamp(CGFloat(xRate) * gain, min: -maxX * limitFraction, max: maxX * limitFraction)
-        let targetY = clamp(CGFloat(-yRate) * gain, min: -maxY * limitFraction, max: maxY * limitFraction)
+        let targetX = clamp(CGFloat(mappedRate.horizontal) * gain, min: -maxX * limitFraction, max: maxX * limitFraction)
+        let targetY = clamp(CGFloat(mappedRate.vertical) * gain, min: -maxY * limitFraction, max: maxY * limitFraction)
         let targetRoll = clamp(CGFloat(-zRate) * rollGain, min: -rollLimit * limitFraction, max: rollLimit * limitFraction)
 
         let dt = clamp(CGFloat(deltaTime), min: 1.0 / 300.0, max: 1.0 / 30.0)
@@ -728,12 +753,16 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     func updateStabilizationSettings(
         preference: StabilizationPreference,
         strength: Double,
+        timeOffset: TimeInterval,
+        axisMapping: GyroAxisMapping,
         displayZoomFactor: CGFloat,
         systemModeName: String
     ) {
         let tuning = StabilizationTuning(
             strength: strength,
-            displayZoomFactor: displayZoomFactor
+            displayZoomFactor: displayZoomFactor,
+            motionTimeOffset: timeOffset,
+            gyroAxisMapping: axisMapping
         )
         preferenceLock.lock()
         let oldPreference = stabilizationPreference
@@ -746,16 +775,19 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         visualAnalyzer.setPreference(preference)
         renderer.setPreviewDelayFrames(isVisualCorrectionIsolated ? 0 : preference.visualPreviewDelayFrames)
         renderer.setCropWindowScale(tuning.usesDigitalStabilization ? tuning.previewCropScale : 1)
-        if oldPreference != preference ||
-            oldTuning.usesDigitalStabilization != tuning.usesDigitalStabilization {
+        let shouldResetTrajectory = oldPreference != preference ||
+            oldTuning.usesDigitalStabilization != tuning.usesDigitalStabilization ||
+            oldTuning.gyroAxisMapping != tuning.gyroAxisMapping ||
+            abs(oldTuning.motionTimeOffset - tuning.motionTimeOffset) > 0.010
+
+        if shouldResetTrajectory {
             trajectoryLock.lock()
             trajectoryStabilizer.reset()
             trajectoryLock.unlock()
         }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if oldPreference != preference ||
-                oldTuning.usesDigitalStabilization != tuning.usesDigitalStabilization {
+            if shouldResetTrajectory {
                 self.cropTrajectory.reset()
                 self.latestCropCorrection = .identity
                 self.latestVisualObservation = .identity
@@ -854,9 +886,15 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             return (.identity, nil, systemModeName)
         }
 
-        let sampleWindow = motionMonitor.latestSampleWindow(duration: tuning.sampleWindowDuration)
-        let trajectoryTime = sampleWindow?.timestamp ?? motionTime
-        let samples = sampleWindow?.samples ?? motionMonitor.samples(from: motionTime - tuning.sampleWindowDuration, to: motionTime)
+        let trajectoryTime = motionTime + tuning.motionTimeOffset
+        var samples = motionMonitor.samples(
+            from: trajectoryTime - tuning.sampleWindowDuration,
+            to: trajectoryTime
+        )
+        if samples.isEmpty,
+           let latestWindow = motionMonitor.latestSampleWindow(duration: tuning.sampleWindowDuration) {
+            samples = latestWindow.samples
+        }
         trajectoryLock.lock()
         let transform = trajectoryStabilizer.transform(
             at: trajectoryTime,
@@ -952,7 +990,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             x: 12,
             y: topInset,
             width: width,
-            height: 166
+            height: 184
         )
     }
 
@@ -2481,6 +2519,8 @@ struct CameraPreviewView: UIViewRepresentable {
     let motionMonitor: MotionStabilityMonitor
     let stabilizationPreference: StabilizationPreference
     let stabilizationStrength: Double
+    let stabilizationTimeOffset: TimeInterval
+    let gyroAxisMapping: GyroAxisMapping
     let displayZoomFactor: CGFloat
     let systemStabilizationModeName: String
     let visualState: PreviewStabilizationState
@@ -2494,6 +2534,8 @@ struct CameraPreviewView: UIViewRepresentable {
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
             strength: stabilizationStrength,
+            timeOffset: stabilizationTimeOffset,
+            axisMapping: gyroAxisMapping,
             displayZoomFactor: displayZoomFactor,
             systemModeName: systemStabilizationModeName
         )
@@ -2511,6 +2553,8 @@ struct CameraPreviewView: UIViewRepresentable {
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
             strength: stabilizationStrength,
+            timeOffset: stabilizationTimeOffset,
+            axisMapping: gyroAxisMapping,
             displayZoomFactor: displayZoomFactor,
             systemModeName: systemStabilizationModeName
         )

@@ -120,12 +120,8 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         switch self {
         case .off:
             return 1
-        case .auto:
-            return 1.55
-        case .balanced:
-            return 1.65
-        case .strong:
-            return 1.75
+        case .auto, .balanced, .strong:
+            return 1.50
         }
     }
 
@@ -414,13 +410,70 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
     }
 }
 
+enum GyroAxisMapping: String, CaseIterable, Identifiable, Equatable {
+    case xPositive
+    case xNegative
+    case yPositive
+    case yNegative
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .xPositive:
+            return "X正"
+        case .xNegative:
+            return "X反"
+        case .yPositive:
+            return "YX正"
+        case .yNegative:
+            return "YX反"
+        }
+    }
+
+    var debugTitle: String {
+        switch self {
+        case .xPositive:
+            return "X→横 -Y→竖"
+        case .xNegative:
+            return "-X→横 Y→竖"
+        case .yPositive:
+            return "Y→横 -X→竖"
+        case .yNegative:
+            return "-Y→横 X→竖"
+        }
+    }
+
+    func map(x: Double, y: Double) -> (horizontal: Double, vertical: Double) {
+        switch self {
+        case .xPositive:
+            return (x, -y)
+        case .xNegative:
+            return (-x, y)
+        case .yPositive:
+            return (y, -x)
+        case .yNegative:
+            return (-y, x)
+        }
+    }
+}
+
 struct StabilizationTuning: Equatable {
     var strength: Double
     var displayZoomFactor: CGFloat
+    var motionTimeOffset: TimeInterval
+    var gyroAxisMapping: GyroAxisMapping
 
-    init(strength: Double, displayZoomFactor: CGFloat = 1) {
+    init(
+        strength: Double,
+        displayZoomFactor: CGFloat = 1,
+        motionTimeOffset: TimeInterval = 0,
+        gyroAxisMapping: GyroAxisMapping = .xPositive
+    ) {
         self.strength = Swift.min(Swift.max(strength, 0), 1)
         self.displayZoomFactor = Swift.min(Swift.max(displayZoomFactor, 1), 6)
+        self.motionTimeOffset = Swift.min(Swift.max(motionTimeOffset, -0.08), 0.08)
+        self.gyroAxisMapping = gyroAxisMapping
     }
 
     var percentText: String {
@@ -433,8 +486,11 @@ struct StabilizationTuning: Equatable {
 
     var previewCropScale: CGFloat {
         guard usesDigitalStabilization else { return 1 }
-        let value = CGFloat(effectiveStrength)
-        return 1.36 + value * 0.10
+        return 1.50
+    }
+
+    var motionTimeOffsetMilliseconds: Double {
+        motionTimeOffset * 1000
     }
 
     var previewCropTravelFactor: CGFloat {
@@ -473,11 +529,11 @@ struct StabilizationTuning: Equatable {
     }
 
     var centerLockAngularVelocityFloor: Double {
-        0.0045 + effectiveStrength * 0.0008
+        0.018 + effectiveStrength * 0.006
     }
 
     var microJitterAngularVelocityFloor: Double {
-        0.024 + effectiveStrength * 0.010
+        0.065 + effectiveStrength * 0.025
     }
 
     var microJitterDirectNoiseFloor: Double {
