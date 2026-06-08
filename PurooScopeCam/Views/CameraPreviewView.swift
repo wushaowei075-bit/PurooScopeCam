@@ -773,8 +773,13 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         systemStabilizationModeName = systemModeName
         preferenceLock.unlock()
 
-        visualAnalyzer.setPreference(preference)
-        renderer.setPreviewDelayFrames(isVisualCorrectionIsolated ? 0 : preference.visualPreviewDelayFrames)
+        visualAnalyzer.setPreference(tuning.usesDigitalStabilization ? preference : .off)
+        visualAnalyzer.setStrength(strength)
+        renderer.setPreviewDelayFrames(
+            isVisualCorrectionIsolated || !tuning.usesDigitalStabilization
+                ? 0
+                : preference.visualPreviewDelayFrames
+        )
         renderer.setCropWindowScale(tuning.usesDigitalStabilization ? tuning.previewCropScale : 1)
         let shouldResetTrajectory = oldPreference != preference ||
             oldTuning.usesDigitalStabilization != tuning.usesDigitalStabilization ||
@@ -803,6 +808,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
     func stopVisualAnalysis() {
         visualAnalyzer.setPreference(.off)
+        visualAnalyzer.setStrength(0)
         renderer.setVisualCorrection(.identity)
         renderer.setCropWindowScale(1)
         preferenceLock.lock()
@@ -1920,6 +1926,7 @@ private final class PreviewFrameMotionAnalyzer {
     private var accumulatedY: CGFloat = 0
     private var correction = PreviewVisualCorrection.identity
     private var recentShifts: [VisualShift] = []
+    private var strength: CGFloat = 0
 
     func setPreference(_ nextPreference: StabilizationPreference) {
         queue.async { [weak self] in
@@ -1927,6 +1934,21 @@ private final class PreviewFrameMotionAnalyzer {
             self.preference = nextPreference
             self.resetAnalysisState()
             self.emit(.identity)
+        }
+    }
+
+    func setStrength(_ nextStrength: Double) {
+        let clamped = CGFloat(min(max(nextStrength, 0), 1))
+        queue.async { [weak self] in
+            guard let self else { return }
+            let wasActive = self.strength > 0.01
+            self.strength = clamped
+            if clamped <= 0.01 {
+                self.resetAnalysisState()
+                self.emit(.identity)
+            } else if !wasActive {
+                self.resetAnalysisState()
+            }
         }
     }
 
@@ -1951,7 +1973,8 @@ private final class PreviewFrameMotionAnalyzer {
 
     private func process(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) {
         guard preference.usesCropWindowStabilization,
-              preference.visualAnalysisMinimumInterval.isFinite
+              preference.visualAnalysisMinimumInterval.isFinite,
+              strength > 0.01
         else {
             resetAnalysisState()
             emit(.identity)
@@ -1998,16 +2021,16 @@ private final class PreviewFrameMotionAnalyzer {
     }
 
     private func apply(shift: VisualShift, deltaTime: TimeInterval, timestamp: TimeInterval) {
-        let leak = CGFloat(exp(-deltaTime * preference.visualHighPassLeakRate))
+        let leak = CGFloat(exp(-deltaTime * preference.visualHighPassLeakRate * visualLeakMultiplier))
         accumulatedX = (accumulatedX + shift.dx * shift.confidence) * leak
         accumulatedY = (accumulatedY + shift.dy * shift.confidence) * leak
 
-        let maximumGridOffset = CGFloat(gridSize) * preference.visualHighPassMaximumOffset
+        let maximumOffset = preference.visualHighPassMaximumOffset * visualOffsetMultiplier
+        let maximumGridOffset = CGFloat(gridSize) * maximumOffset
         accumulatedX = clamp(accumulatedX, min: -maximumGridOffset, max: maximumGridOffset)
         accumulatedY = clamp(accumulatedY, min: -maximumGridOffset, max: maximumGridOffset)
 
-        let gain = preference.visualHighPassCorrectionGain
-        let maximumOffset = preference.visualHighPassMaximumOffset
+        let gain = preference.visualHighPassCorrectionGain * visualGainMultiplier
         let targetX = clamp(
             -accumulatedX / CGFloat(gridSize) * gain,
             min: -maximumOffset,
@@ -2018,7 +2041,7 @@ private final class PreviewFrameMotionAnalyzer {
             min: -maximumOffset,
             max: maximumOffset
         )
-        let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate))
+        let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate * visualResponseMultiplier))
         let stepLimit = correctionStepLimit(deltaTime: deltaTime)
         let nextX = limitedCorrection(
             current: correction.normalizedX,
@@ -2044,7 +2067,7 @@ private final class PreviewFrameMotionAnalyzer {
 
     private func deadzoned(_ shift: VisualShift) -> VisualShift {
         let magnitude = (shift.dx * shift.dx + shift.dy * shift.dy).squareRoot()
-        let deadZone = preference.visualShiftDeadZone
+        let deadZone = preference.visualShiftDeadZone * visualDeadZoneMultiplier
         guard magnitude > deadZone else {
             return VisualShift(dx: 0, dy: 0, confidence: shift.confidence * 0.35)
         }
@@ -2065,13 +2088,13 @@ private final class PreviewFrameMotionAnalyzer {
     }
 
     private func decayCorrection(deltaTime: TimeInterval, timestamp: TimeInterval) {
-        let leak = CGFloat(exp(-deltaTime * preference.visualHighPassLeakRate))
+        let leak = CGFloat(exp(-deltaTime * preference.visualHighPassLeakRate * visualLeakMultiplier))
         accumulatedX *= leak
         accumulatedY *= leak
 
-        let targetX = -accumulatedX / CGFloat(gridSize) * preference.visualHighPassCorrectionGain
-        let targetY = -accumulatedY / CGFloat(gridSize) * preference.visualHighPassCorrectionGain
-        let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate))
+        let targetX = -accumulatedX / CGFloat(gridSize) * preference.visualHighPassCorrectionGain * visualGainMultiplier
+        let targetY = -accumulatedY / CGFloat(gridSize) * preference.visualHighPassCorrectionGain * visualGainMultiplier
+        let response = CGFloat(1 - exp(-deltaTime * preference.visualHighPassResponseRate * visualResponseMultiplier))
         let stepLimit = correctionStepLimit(deltaTime: deltaTime)
         let nextX = limitedCorrection(
             current: correction.normalizedX,
@@ -2097,7 +2120,31 @@ private final class PreviewFrameMotionAnalyzer {
 
     private func correctionStepLimit(deltaTime: TimeInterval) -> CGFloat {
         let scale = clamp(CGFloat(deltaTime / (1.0 / 60.0)), min: 0.5, max: 8.0)
-        return preference.visualCorrectionMaximumStep * scale
+        return preference.visualCorrectionMaximumStep * visualStepMultiplier * scale
+    }
+
+    private var visualGainMultiplier: CGFloat {
+        0.05 + strength * 2.25
+    }
+
+    private var visualOffsetMultiplier: CGFloat {
+        0.30 + strength * 1.70
+    }
+
+    private var visualStepMultiplier: CGFloat {
+        0.20 + strength * 2.80
+    }
+
+    private var visualDeadZoneMultiplier: CGFloat {
+        max(0.25, 1.40 - strength * 1.15)
+    }
+
+    private var visualLeakMultiplier: Double {
+        Double(0.70 + strength * 0.80)
+    }
+
+    private var visualResponseMultiplier: Double {
+        Double(0.75 + strength * 0.75)
     }
 
     private func limitedCorrection(
