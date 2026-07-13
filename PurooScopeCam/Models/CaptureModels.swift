@@ -367,7 +367,7 @@ extension AVCaptureVideoStabilizationMode {
             return "扩展"
         case .auto:
             return "自动"
-        @unknown default:
+        default:
             return "未知"
         }
     }

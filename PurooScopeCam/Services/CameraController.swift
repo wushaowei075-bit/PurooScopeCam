@@ -496,8 +496,8 @@ final class CameraController: NSObject, ObservableObject {
 
     private func configureVideoOutputConnection() {
         guard let connection = videoOutput.connection(with: .video) else { return }
-        if connection.isVideoOrientationSupported {
-            connection.videoOrientation = .portrait
+        if connection.isVideoRotationAngleSupported(90) {
+            connection.videoRotationAngle = 90
         }
         if connection.isVideoMirroringSupported {
             connection.isVideoMirrored = false
@@ -813,7 +813,7 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         ), let data = attachment as? Data,
            data.count >= MemoryLayout<matrix_float3x3>.size {
             var matrix = matrix_identity_float3x3
-            withUnsafeMutableBytes(of: &matrix) { destination in
+            _ = withUnsafeMutableBytes(of: &matrix) { destination in
                 data.copyBytes(to: destination)
             }
             let focalX = CGFloat(matrix.columns.0.x)
