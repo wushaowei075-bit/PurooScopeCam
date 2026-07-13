@@ -126,6 +126,7 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
 }
 
 enum GyroAxisMapping: String, CaseIterable, Identifiable, Equatable {
+    case measuredPortrait
     case xPositive
     case xNegative
     case yPositive
@@ -135,6 +136,8 @@ enum GyroAxisMapping: String, CaseIterable, Identifiable, Equatable {
 
     var title: String {
         switch self {
+        case .measuredPortrait:
+            return "实测"
         case .xPositive:
             return "X正"
         case .xNegative:
@@ -148,6 +151,8 @@ enum GyroAxisMapping: String, CaseIterable, Identifiable, Equatable {
 
     var debugTitle: String {
         switch self {
+        case .measuredPortrait:
+            return "Y→横 X→竖"
         case .xPositive:
             return "X→横 -Y→竖"
         case .xNegative:
@@ -161,6 +166,8 @@ enum GyroAxisMapping: String, CaseIterable, Identifiable, Equatable {
 
     func map(x: Double, y: Double) -> (horizontal: Double, vertical: Double) {
         switch self {
+        case .measuredPortrait:
+            return (y, x)
         case .xPositive:
             return (x, -y)
         case .xNegative:
@@ -183,7 +190,7 @@ struct StabilizationTuning: Equatable {
         strength: Double,
         displayZoomFactor: CGFloat = 1,
         motionTimeOffset: TimeInterval = 0,
-        gyroAxisMapping: GyroAxisMapping = .xPositive
+        gyroAxisMapping: GyroAxisMapping = .measuredPortrait
     ) {
         self.strength = Swift.min(Swift.max(strength, 0), 1)
         self.displayZoomFactor = Swift.min(Swift.max(displayZoomFactor, 1), 6)
@@ -224,17 +231,22 @@ struct StabilizationTuning: Equatable {
         0.055
     }
 
-    var stabilizationAmount: CGFloat {
+    var highFrequencyCompensationAmount: CGFloat {
         guard usesDigitalStabilization else { return 0 }
-        return min(1, 0.18 + CGFloat(effectiveStrength) * 0.82)
+        return min(0.90, 0.35 + CGFloat(effectiveStrength) * 0.55)
+    }
+
+    var lowFrequencyStabilizationAmount: CGFloat {
+        guard usesDigitalStabilization else { return 0 }
+        return min(0.50, 0.12 + CGFloat(effectiveStrength) * 0.38)
     }
 
     var staticFollowFrequency: Double {
-        4.8 - effectiveStrength * 4.2
+        3.0 - effectiveStrength * 1.4
     }
 
     var panFollowFrequency: Double {
-        12.0 - effectiveStrength * 3.0
+        7.5 - effectiveStrength * 1.5
     }
 
     var complementaryCutoffFrequency: Double {
@@ -242,7 +254,7 @@ struct StabilizationTuning: Equatable {
     }
 
     var panActivationSpeed: CGFloat {
-        0.026 + CGFloat(effectiveStrength) * 0.012
+        0.018 + CGFloat(effectiveStrength) * 0.012
     }
 
     var safeCropOffsetFraction: CGFloat {
@@ -250,19 +262,27 @@ struct StabilizationTuning: Equatable {
     }
 
     var maximumCropOffsetFraction: CGFloat {
-        safeCropOffsetFraction * (0.72 + CGFloat(effectiveStrength) * 0.28)
+        safeCropOffsetFraction * (0.70 + CGFloat(effectiveStrength) * 0.20)
+    }
+
+    var highFrequencyMemory: Double {
+        0.85 + effectiveStrength * 0.45
+    }
+
+    var boundaryFollowFrequency: Double {
+        8.0
     }
 
     var maximumTrajectoryVelocity: CGFloat {
-        1.4
+        0.9
     }
 
     var maximumTrajectoryAcceleration: CGFloat {
-        10
+        6
     }
 
     var maximumTrajectoryJerk: CGFloat {
-        120
+        60
     }
 
     private var effectiveStrength: Double {

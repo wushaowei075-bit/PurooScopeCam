@@ -59,7 +59,7 @@ final class CameraController: NSObject, ObservableObject {
     }
     @Published private(set) var stabilizationStrength: Double = 0.30
     @Published private(set) var stabilizationTimeOffset: TimeInterval = 0
-    @Published private(set) var gyroAxisMapping: GyroAxisMapping = .xPositive
+    @Published private(set) var gyroAxisMapping: GyroAxisMapping = .measuredPortrait
     @Published var zoomFactor: CGFloat = 1
     @Published var exposureBias: Float = 0
     @Published var captureQualityPreference: CaptureQualityOption = .automatic {

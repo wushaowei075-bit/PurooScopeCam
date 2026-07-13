@@ -143,7 +143,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         stabilizationEngine.reset()
         if monitor != nil {
             StabilizationTraceRecorder.shared.startSession(metadata: [
-                "pipeline": "subpixel-quaternion-virtual-camera-v2",
+                "pipeline": "constrained-gyro-visual-anchor-v3",
                 "motion_rate_hz": 240,
                 "visual_grid": 192,
                 "preview_delay_frames": 1
@@ -473,6 +473,15 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     ]
     private var previewDelayFrames = 0
     private var cropWindowScale: CGFloat = 1
+    private var enqueuedFrameCount: Int64 = 0
+    private var readyFrameCount: Int64 = 0
+    private var displayedFrameCount: Int64 = 0
+    private var queueDropCount: Int64 = 0
+    private var skippedReadyFrameCount: Int64 = 0
+    private var longDisplayGapCount: Int64 = 0
+    private var displayedIntervalTotal: TimeInterval = 0
+    private var displayedIntervalCount: Int64 = 0
+    private var lastDisplayedSourceTimestamp: TimeInterval?
 
     init(device: MTLDevice) {
         guard let commandQueue = device.makeCommandQueue() else {
@@ -497,6 +506,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     ) {
         guard motionTime.isFinite, sourceTimestamp.isFinite else { return }
         stateLock.lock()
+        enqueuedFrameCount += 1
         frameQueue.append(
             QueuedPreviewFrame(
                 pixelBuffer: pixelBuffer,
@@ -507,7 +517,9 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         )
         let maximumFrameCount = max(previewDelayFrames + 10, 14)
         if frameQueue.count > maximumFrameCount {
-            frameQueue.removeFirst(frameQueue.count - maximumFrameCount)
+            let removalCount = frameQueue.count - maximumFrameCount
+            queueDropCount += Int64(removalCount)
+            frameQueue.removeFirst(removalCount)
         }
         stateLock.unlock()
     }
@@ -529,7 +541,10 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     func markFrameReady(at timestamp: TimeInterval) {
         stateLock.lock()
         if let index = frameQueue.lastIndex(where: { abs($0.motionTime - timestamp) < 0.0005 }) {
-            frameQueue[index].isReady = true
+            if !frameQueue[index].isReady {
+                frameQueue[index].isReady = true
+                readyFrameCount += 1
+            }
         }
         stateLock.unlock()
     }
@@ -550,6 +565,15 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         stateLock.lock()
         frameQueue.removeAll(keepingCapacity: true)
         renderTransformHistory = [TimedRenderTransform(transform: .identity, timestamp: 0)]
+        enqueuedFrameCount = 0
+        readyFrameCount = 0
+        displayedFrameCount = 0
+        queueDropCount = 0
+        skippedReadyFrameCount = 0
+        longDisplayGapCount = 0
+        displayedIntervalTotal = 0
+        displayedIntervalCount = 0
+        lastDisplayedSourceTimestamp = nil
         stateLock.unlock()
     }
 
@@ -575,11 +599,33 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
+        let recording = recorder.isRecording
         stateLock.lock()
-        let queuedFrame = nextFrameForDisplay()
+        let queuedFrame = nextFrameForDisplay(preferOldestReady: recording)
         let transform = queuedFrame.map { renderTransformForFrame(at: $0.motionTime) } ?? .identity
         let cropScale = cropWindowScale
+        let telemetry: [String: Any]?
+        if queuedFrame != nil, displayedFrameCount > 0, displayedFrameCount.isMultiple(of: 120) {
+            let measuredFPS = displayedIntervalTotal > 0
+                ? Double(displayedIntervalCount) / displayedIntervalTotal
+                : 0
+            telemetry = [
+                "enqueued": enqueuedFrameCount,
+                "ready": readyFrameCount,
+                "displayed": displayedFrameCount,
+                "queue_drops": queueDropCount,
+                "skipped_ready": skippedReadyFrameCount,
+                "gaps_over_25ms": longDisplayGapCount,
+                "measured_source_fps": measuredFPS,
+                "recording": recording
+            ]
+        } else {
+            telemetry = nil
+        }
         stateLock.unlock()
+        if let telemetry {
+            StabilizationTraceRecorder.shared.recordControl("renderer_stats", values: telemetry)
+        }
         guard let queuedFrame,
               let drawable = view.currentDrawable,
               let commandBuffer = commandQueue.makeCommandBuffer()
@@ -601,7 +647,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
             )
         )
 
-        if recorder.isRecording {
+        if recording {
             let recordingSize = CGSize(
                 width: CVPixelBufferGetWidth(queuedFrame.pixelBuffer),
                 height: CVPixelBufferGetHeight(queuedFrame.pixelBuffer)
@@ -635,11 +681,16 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         commandBuffer.commit()
     }
 
-    private func nextFrameForDisplay() -> QueuedPreviewFrame? {
+    private func nextFrameForDisplay(preferOldestReady: Bool) -> QueuedPreviewFrame? {
         guard frameQueue.count > previewDelayFrames else { return nil }
         let maximumIndex = frameQueue.count - 1 - previewDelayFrames
         var selectedIndex: Int?
-        if maximumIndex >= 0 {
+        if preferOldestReady {
+            for index in 0...maximumIndex where frameQueue[index].isReady {
+                selectedIndex = index
+                break
+            }
+        } else {
             for index in stride(from: maximumIndex, through: 0, by: -1) {
                 if frameQueue[index].isReady {
                     selectedIndex = index
@@ -649,6 +700,26 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         }
         guard let selectedIndex else { return nil }
         let frame = frameQueue[selectedIndex]
+        if selectedIndex > 0 {
+            let skipped = frameQueue[..<selectedIndex].reduce(into: 0) { count, queuedFrame in
+                if queuedFrame.isReady {
+                    count += 1
+                }
+            }
+            skippedReadyFrameCount += Int64(skipped)
+        }
+        if let previousTimestamp = lastDisplayedSourceTimestamp {
+            let interval = frame.sourceTimestamp - previousTimestamp
+            if interval > 0 {
+                displayedIntervalTotal += interval
+                displayedIntervalCount += 1
+                if interval > 0.025 {
+                    longDisplayGapCount += 1
+                }
+            }
+        }
+        lastDisplayedSourceTimestamp = frame.sourceTimestamp
+        displayedFrameCount += 1
         frameQueue.removeFirst(selectedIndex + 1)
         return frame
     }
@@ -744,6 +815,12 @@ private final class StabilizedPreviewRecorder {
     private var outputHeight = 0
     private var targetFrameRate = 60
     private var pendingAppendCount = 0
+    private var attemptedFrameCount: Int64 = 0
+    private var pendingDropCount: Int64 = 0
+    private var writerNotReadyDropCount: Int64 = 0
+    private var timestampDropCount: Int64 = 0
+    private var pixelBufferFailureCount: Int64 = 0
+    private var appendFailureCount: Int64 = 0
 
     var isRecording: Bool {
         lock.lock()
@@ -774,6 +851,12 @@ private final class StabilizedPreviewRecorder {
         lastPresentationTime = nil
         recordingFrameRate = targetFrameRate
         pendingAppendCount = 0
+        attemptedFrameCount = 0
+        pendingDropCount = 0
+        writerNotReadyDropCount = 0
+        timestampDropCount = 0
+        pixelBufferFailureCount = 0
+        appendFailureCount = 0
         state = .waitingForFirstFrame
         lock.unlock()
         StabilizationTraceRecorder.shared.recordControl("recording_start")
@@ -800,9 +883,14 @@ private final class StabilizedPreviewRecorder {
     ) {
         lock.lock()
         guard state == .waitingForFirstFrame || state == .recording,
-              sourceTimestamp.isFinite,
-              pendingAppendCount < 3
+              sourceTimestamp.isFinite
         else {
+            lock.unlock()
+            return
+        }
+        attemptedFrameCount += 1
+        guard pendingAppendCount < 6 else {
+            pendingDropCount += 1
             lock.unlock()
             return
         }
@@ -859,8 +947,7 @@ private final class StabilizedPreviewRecorder {
               let writer,
               let input,
               let adaptor,
-              let pixelBufferPool = adaptor.pixelBufferPool,
-              input.isReadyForMoreMediaData
+              let pixelBufferPool = adaptor.pixelBufferPool
         else {
             lock.unlock()
             return
@@ -870,7 +957,13 @@ private final class StabilizedPreviewRecorder {
             finishLocked(result: .failure(error))
             return
         }
+        guard input.isReadyForMoreMediaData else {
+            writerNotReadyDropCount += 1
+            lock.unlock()
+            return
+        }
         if let lastSourceTimestamp, sourceTimestamp <= lastSourceTimestamp + 0.00001 {
+            timestampDropCount += 1
             lock.unlock()
             return
         }
@@ -883,6 +976,7 @@ private final class StabilizedPreviewRecorder {
         )
         if let lastPresentationTime,
            CMTimeCompare(presentationTime, lastPresentationTime) <= 0 {
+            timestampDropCount += 1
             lock.unlock()
             return
         }
@@ -894,6 +988,7 @@ private final class StabilizedPreviewRecorder {
         let createResult = CVPixelBufferPoolCreatePixelBuffer(nil, pixelBufferPool, &pixelBuffer)
         guard createResult == kCVReturnSuccess, let pixelBuffer else {
             lock.lock()
+            pixelBufferFailureCount += 1
             finishLocked(result: .failure(StabilizedPreviewRecorderError.pixelBufferUnavailable))
             return
         }
@@ -915,6 +1010,7 @@ private final class StabilizedPreviewRecorder {
             return
         }
         if !adaptor.append(pixelBuffer, withPresentationTime: presentationTime) {
+            appendFailureCount += 1
             let error = writer.error ?? StabilizedPreviewRecorderError.appendFailed
             finishLocked(result: .failure(error))
             return
@@ -1019,6 +1115,13 @@ private final class StabilizedPreviewRecorder {
         input.markAsFinished()
         let completion = self.completion
         let frameCount = writtenFrameCount
+        let attemptedCount = attemptedFrameCount
+        let pendingDrops = pendingDropCount
+        let writerNotReadyDrops = writerNotReadyDropCount
+        let timestampDrops = timestampDropCount
+        let pixelBufferFailures = pixelBufferFailureCount
+        let appendFailures = appendFailureCount
+        let sourceDuration = max((lastSourceTimestamp ?? 0) - (firstSourceTimestamp ?? 0), 0)
         resetWriterReferencesLocked(keepState: .finishing)
         lock.unlock()
         writer.finishWriting {
@@ -1033,7 +1136,17 @@ private final class StabilizedPreviewRecorder {
             self.lock.unlock()
             StabilizationTraceRecorder.shared.recordControl(
                 "recording_finish",
-                values: ["frames": frameCount, "success": writer.status == .completed]
+                values: [
+                    "frames": frameCount,
+                    "attempted": attemptedCount,
+                    "pending_drops": pendingDrops,
+                    "writer_not_ready_drops": writerNotReadyDrops,
+                    "timestamp_drops": timestampDrops,
+                    "pixel_buffer_failures": pixelBufferFailures,
+                    "append_failures": appendFailures,
+                    "source_duration": sourceDuration,
+                    "success": writer.status == .completed
+                ]
             )
             completion?(result)
         }

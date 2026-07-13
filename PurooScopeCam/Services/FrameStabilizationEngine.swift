@@ -21,16 +21,23 @@ struct StabilizationDebugSnapshot {
     var visualTexture: CGFloat
     var fusedDeltaX: CGFloat
     var fusedDeltaY: CGFloat
+    var lowFrequencyDeltaX: CGFloat
+    var lowFrequencyDeltaY: CGFloat
+    var highFrequencyDeltaX: CGFloat
+    var highFrequencyDeltaY: CGFloat
     var correctionX: CGFloat
     var correctionY: CGFloat
     var gyroTrust: CGFloat
     var automaticTimeOffsetMilliseconds: Double
-    var calibrationXX: CGFloat
-    var calibrationXY: CGFloat
-    var calibrationYX: CGFloat
-    var calibrationYY: CGFloat
+    var gyroGainX: CGFloat
+    var gyroGainY: CGFloat
+    var gyroCorrelationX: CGFloat
+    var gyroCorrelationY: CGFloat
+    var gyroNormalizedError: CGFloat
+    var isGyroCalibrationValid: Bool
     var isIntentionalPan: Bool
     var cropUsage: CGFloat
+    var boundaryPressure: CGFloat
     var analysisMilliseconds: Double
     var droppedAnalysisFrames: Int
     var motionSampleCount: Int
@@ -41,8 +48,10 @@ struct StabilizationDebugSnapshot {
         强度:\(format(strength * 100, digits: 0))%  裁切:\(format(Double(cropScale), digits: 2))x  状态:\(isIntentionalPan ? "平移" : "稳像")
         视觉 X:\(format(Double(visualDeltaX), digits: 5)) Y:\(format(Double(visualDeltaY), digits: 5)) C:\(format(Double(visualConfidence), digits: 2)) V:\(visualVectorCount)
         融合 X:\(format(Double(fusedDeltaX), digits: 5)) Y:\(format(Double(fusedDeltaY), digits: 5))  陀螺信任:\(format(Double(gyroTrust), digits: 2))
-        裁切 X:\(format(Double(correctionX), digits: 4)) Y:\(format(Double(correctionY), digits: 4)) 使用:\(format(Double(cropUsage * 100), digits: 0))%
-        自动同步:\(format(automaticTimeOffsetMilliseconds, digits: 0))ms  矩阵:\(format(Double(calibrationXX), digits: 2)),\(format(Double(calibrationXY), digits: 2)),\(format(Double(calibrationYX), digits: 2)),\(format(Double(calibrationYY), digits: 2))
+        高频 X:\(format(Double(highFrequencyDeltaX), digits: 5)) Y:\(format(Double(highFrequencyDeltaY), digits: 5))  低频 X:\(format(Double(lowFrequencyDeltaX), digits: 5)) Y:\(format(Double(lowFrequencyDeltaY), digits: 5))
+        裁切 X:\(format(Double(correctionX), digits: 4)) Y:\(format(Double(correctionY), digits: 4)) 使用:\(format(Double(cropUsage * 100), digits: 0))% 压力:\(format(Double(boundaryPressure * 100), digits: 0))%
+        自动同步:\(format(automaticTimeOffsetMilliseconds, digits: 0))ms  增益:\(format(Double(gyroGainX), digits: 2)),\(format(Double(gyroGainY), digits: 2))
+        相关:\(format(Double(gyroCorrelationX), digits: 2)),\(format(Double(gyroCorrelationY), digits: 2))  误差:\(format(Double(gyroNormalizedError), digits: 2))  标定:\(isGyroCalibrationValid ? "有效" : "等待")
         分析:\(format(analysisMilliseconds, digits: 1))ms  丢弃:\(droppedAnalysisFrames)  IMU:\(motionSampleCount)  纹理:\(format(Double(visualTexture), digits: 1))
         """
     }
@@ -96,7 +105,7 @@ final class StabilizationTraceRecorder {
                 var header = metadata
                 header["type"] = "session"
                 header["created_at"] = ISO8601DateFormatter().string(from: Date())
-                header["format_version"] = 2
+                header["format_version"] = 3
                 self.appendJSONObject(header)
                 self.flushIfNeeded(force: true)
             } catch {
@@ -157,11 +166,22 @@ final class StabilizationTraceRecorder {
                 "visual_vectors": debug.visualVectorCount,
                 "fused_dx": debug.fusedDeltaX,
                 "fused_dy": debug.fusedDeltaY,
+                "low_dx": debug.lowFrequencyDeltaX,
+                "low_dy": debug.lowFrequencyDeltaY,
+                "high_dx": debug.highFrequencyDeltaX,
+                "high_dy": debug.highFrequencyDeltaY,
                 "crop_x": debug.correctionX,
                 "crop_y": debug.correctionY,
                 "crop_usage": debug.cropUsage,
+                "boundary_pressure": debug.boundaryPressure,
                 "pan": debug.isIntentionalPan,
                 "gyro_trust": debug.gyroTrust,
+                "gyro_gain_x": debug.gyroGainX,
+                "gyro_gain_y": debug.gyroGainY,
+                "gyro_correlation_x": debug.gyroCorrelationX,
+                "gyro_correlation_y": debug.gyroCorrelationY,
+                "gyro_nrmse": debug.gyroNormalizedError,
+                "gyro_calibration_valid": debug.isGyroCalibrationValid,
                 "auto_offset_ms": debug.automaticTimeOffsetMilliseconds,
                 "analysis_ms": debug.analysisMilliseconds,
                 "analysis_drops": debug.droppedAnalysisFrames,
@@ -347,8 +367,10 @@ final class FrameStabilizationEngine {
         )
         let crop = trajectory.update(
             timestamp: input.timestamp,
-            deltaX: fused.deltaX,
-            deltaY: fused.deltaY,
+            lowFrequencyDeltaX: fused.lowFrequencyDeltaX,
+            lowFrequencyDeltaY: fused.lowFrequencyDeltaY,
+            highFrequencyDeltaX: fused.highFrequencyDeltaX,
+            highFrequencyDeltaY: fused.highFrequencyDeltaY,
             confidence: fused.confidence,
             tuning: input.tuning
         )
@@ -374,16 +396,23 @@ final class FrameStabilizationEngine {
             visualTexture: visual?.texture ?? 0,
             fusedDeltaX: fused.deltaX,
             fusedDeltaY: fused.deltaY,
+            lowFrequencyDeltaX: fused.lowFrequencyDeltaX,
+            lowFrequencyDeltaY: fused.lowFrequencyDeltaY,
+            highFrequencyDeltaX: fused.highFrequencyDeltaX,
+            highFrequencyDeltaY: fused.highFrequencyDeltaY,
             correctionX: crop.correctionX,
             correctionY: crop.correctionY,
             gyroTrust: fused.gyroTrust,
             automaticTimeOffsetMilliseconds: fused.automaticOffset * 1000,
-            calibrationXX: fused.calibrationXX,
-            calibrationXY: fused.calibrationXY,
-            calibrationYX: fused.calibrationYX,
-            calibrationYY: fused.calibrationYY,
+            gyroGainX: fused.gyroGainX,
+            gyroGainY: fused.gyroGainY,
+            gyroCorrelationX: fused.gyroCorrelationX,
+            gyroCorrelationY: fused.gyroCorrelationY,
+            gyroNormalizedError: fused.gyroNormalizedError,
+            isGyroCalibrationValid: fused.isGyroCalibrationValid,
             isIntentionalPan: crop.isIntentionalPan,
             cropUsage: crop.cropUsage,
+            boundaryPressure: crop.boundaryPressure,
             analysisMilliseconds: analysisMilliseconds,
             droppedAnalysisFrames: droppedFrames,
             motionSampleCount: input.motionSamples.count
@@ -1075,42 +1104,68 @@ private final class QuaternionMotionEstimator {
 private struct FusedMotionDelta {
     var deltaX: CGFloat
     var deltaY: CGFloat
+    var lowFrequencyDeltaX: CGFloat
+    var lowFrequencyDeltaY: CGFloat
+    var highFrequencyDeltaX: CGFloat
+    var highFrequencyDeltaY: CGFloat
     var confidence: CGFloat
     var gyroTrust: CGFloat
     var automaticOffset: TimeInterval
-    var calibrationXX: CGFloat
-    var calibrationXY: CGFloat
-    var calibrationYX: CGFloat
-    var calibrationYY: CGFloat
+    var gyroGainX: CGFloat
+    var gyroGainY: CGFloat
+    var gyroCorrelationX: CGFloat
+    var gyroCorrelationY: CGFloat
+    var gyroNormalizedError: CGFloat
+    var isGyroCalibrationValid: Bool
 }
 
 private final class ComplementaryMotionFusion {
     private struct LagCorrelation {
-        var crossXX: CGFloat = 0
-        var crossXY: CGFloat = 0
-        var crossYX: CGFloat = 0
-        var crossYY: CGFloat = 0
-        var visualEnergy: CGFloat = 0
-        var gyroEnergy: CGFloat = 0
+        var crossX: CGFloat = 0
+        var crossY: CGFloat = 0
+        var visualEnergyX: CGFloat = 0
+        var visualEnergyY: CGFloat = 0
+        var gyroEnergyX: CGFloat = 0
+        var gyroEnergyY: CGFloat = 0
         var sampleCount: Int = 0
 
-        var score: CGFloat {
-            let crossEnergy = sqrt(
-                crossXX * crossXX + crossXY * crossXY +
-                    crossYX * crossYX + crossYY * crossYY
+        var gainX: CGFloat {
+            crossX / max(gyroEnergyX, 0.0000000001)
+        }
+
+        var gainY: CGFloat {
+            crossY / max(gyroEnergyY, 0.0000000001)
+        }
+
+        var correlationX: CGFloat {
+            crossX / sqrt(max(visualEnergyX * gyroEnergyX, 0.0000000001))
+        }
+
+        var correlationY: CGFloat {
+            crossY / sqrt(max(visualEnergyY * gyroEnergyY, 0.0000000001))
+        }
+
+        var normalizedError: CGFloat {
+            let residualX = max(visualEnergyX - crossX * crossX / max(gyroEnergyX, 0.0000000001), 0)
+            let residualY = max(visualEnergyY - crossY * crossY / max(gyroEnergyY, 0.0000000001), 0)
+            return sqrt(
+                (residualX + residualY) /
+                    max(visualEnergyX + visualEnergyY, 0.0000000001)
             )
-            let denominator = sqrt(max(visualEnergy * gyroEnergy, 0.0000000001))
-            return min(crossEnergy / denominator, 1)
+        }
+
+        var score: CGFloat {
+            let axisAgreement = max(min(correlationX, correlationY), 0)
+            let residualQuality = max(1 - normalizedError, 0)
+            return min(axisAgreement * residualQuality, 1)
         }
     }
 
     private var correlations: [Int: LagCorrelation] = [:]
     private var selectedOffsetKey = 0
-    private var calibrationXX: CGFloat = 0
-    private var calibrationXY: CGFloat = 0
-    private var calibrationYX: CGFloat = 0
-    private var calibrationYY: CGFloat = 0
-    private var calibrationCount = 0
+    private var gyroGainX: CGFloat = 1
+    private var gyroGainY: CGFloat = 1
+    private var hasInitializedGains = false
     private var visualLowVelocityX: CGFloat = 0
     private var visualLowVelocityY: CGFloat = 0
     private var gyroLowVelocityX: CGFloat = 0
@@ -1126,11 +1181,9 @@ private final class ComplementaryMotionFusion {
         if !keepCalibration {
             correlations.removeAll(keepingCapacity: true)
             selectedOffsetKey = 0
-            calibrationXX = 0
-            calibrationXY = 0
-            calibrationYX = 0
-            calibrationYY = 0
-            calibrationCount = 0
+            gyroGainX = 1
+            gyroGainY = 1
+            hasInitializedGains = false
         }
     }
 
@@ -1153,24 +1206,16 @@ private final class ComplementaryMotionFusion {
             selectBestOffsetIfReady()
         }
         let selected = selectedCandidate(from: gyroCandidates)
-        if let visual, let selected {
-            updateCalibration(visual: visual, gyro: selected)
-        }
+        let calibration = updateGainsFromSelectedCorrelation()
+        let gyroTrust = calibration.trust
 
-        let selectedScore = correlations[selectedOffsetKey]?.score ?? 0
-        let trainingProgress = min(CGFloat(calibrationCount) / 120, 1)
-        let gyroTrust = min(
-            0.90,
-            trainingProgress * clamp((selectedScore - 0.12) / 0.58, min: 0, max: 1)
-        )
-
-        let visualVelocityX = (visual?.deltaX ?? 0) / dt
-        let visualVelocityY = (visual?.deltaY ?? 0) / dt
+        let visualVelocityX = visual.map { $0.deltaX / dt }
+        let visualVelocityY = visual.map { $0.deltaY / dt }
         let predictedGyroX: CGFloat
         let predictedGyroY: CGFloat
         if let selected {
-            predictedGyroX = calibrationXX * selected.deltaX + calibrationXY * selected.deltaY
-            predictedGyroY = calibrationYX * selected.deltaX + calibrationYY * selected.deltaY
+            predictedGyroX = gyroGainX * selected.deltaX
+            predictedGyroY = gyroGainY * selected.deltaY
         } else {
             predictedGyroX = 0
             predictedGyroY = 0
@@ -1180,38 +1225,62 @@ private final class ComplementaryMotionFusion {
 
         let cutoff = tuning.complementaryCutoffFrequency
         let alpha = CGFloat(1 - exp(-2 * Double.pi * cutoff * Double(dt)))
-        visualLowVelocityX += (visualVelocityX - visualLowVelocityX) * alpha
-        visualLowVelocityY += (visualVelocityY - visualLowVelocityY) * alpha
+        if let visualVelocityX, let visualVelocityY {
+            visualLowVelocityX += (visualVelocityX - visualLowVelocityX) * alpha
+            visualLowVelocityY += (visualVelocityY - visualLowVelocityY) * alpha
+        } else {
+            visualLowVelocityX *= 1 - alpha
+            visualLowVelocityY *= 1 - alpha
+        }
         gyroLowVelocityX += (gyroVelocityX - gyroLowVelocityX) * alpha
         gyroLowVelocityY += (gyroVelocityY - gyroLowVelocityY) * alpha
 
-        let visualHighX = visualVelocityX - visualLowVelocityX
-        let visualHighY = visualVelocityY - visualLowVelocityY
+        let visualHighX = (visualVelocityX ?? visualLowVelocityX) - visualLowVelocityX
+        let visualHighY = (visualVelocityY ?? visualLowVelocityY) - visualLowVelocityY
         let gyroHighX = gyroVelocityX - gyroLowVelocityX
         let gyroHighY = gyroVelocityY - gyroLowVelocityY
-        let fusedVelocityX: CGFloat
-        let fusedVelocityY: CGFloat
+        let lowVelocityX: CGFloat
+        let lowVelocityY: CGFloat
+        let highVelocityX: CGFloat
+        let highVelocityY: CGFloat
         if visual != nil {
-            fusedVelocityX = visualLowVelocityX + visualHighX * (1 - gyroTrust) + gyroHighX * gyroTrust
-            fusedVelocityY = visualLowVelocityY + visualHighY * (1 - gyroTrust) + gyroHighY * gyroTrust
-        } else if gyroTrust > 0.15 {
-            fusedVelocityX = gyroVelocityX
-            fusedVelocityY = gyroVelocityY
+            lowVelocityX = visualLowVelocityX
+            lowVelocityY = visualLowVelocityY
+            highVelocityX = visualHighX * (1 - gyroTrust) + gyroHighX * gyroTrust
+            highVelocityY = visualHighY * (1 - gyroTrust) + gyroHighY * gyroTrust
+        } else if gyroTrust > 0.20 {
+            lowVelocityX = 0
+            lowVelocityY = 0
+            highVelocityX = gyroHighX * gyroTrust
+            highVelocityY = gyroHighY * gyroTrust
         } else {
-            fusedVelocityX = 0
-            fusedVelocityY = 0
+            lowVelocityX = 0
+            lowVelocityY = 0
+            highVelocityX = 0
+            highVelocityY = 0
         }
 
+        let lowDeltaX = clamp(lowVelocityX * dt, min: -0.025, max: 0.025)
+        let lowDeltaY = clamp(lowVelocityY * dt, min: -0.025, max: 0.025)
+        let highDeltaX = clamp(highVelocityX * dt, min: -0.025, max: 0.025)
+        let highDeltaY = clamp(highVelocityY * dt, min: -0.025, max: 0.025)
+
         return FusedMotionDelta(
-            deltaX: clamp(fusedVelocityX * dt, min: -0.05, max: 0.05),
-            deltaY: clamp(fusedVelocityY * dt, min: -0.05, max: 0.05),
+            deltaX: clamp(lowDeltaX + highDeltaX, min: -0.04, max: 0.04),
+            deltaY: clamp(lowDeltaY + highDeltaY, min: -0.04, max: 0.04),
+            lowFrequencyDeltaX: lowDeltaX,
+            lowFrequencyDeltaY: lowDeltaY,
+            highFrequencyDeltaX: highDeltaX,
+            highFrequencyDeltaY: highDeltaY,
             confidence: visual?.confidence ?? gyroTrust,
             gyroTrust: gyroTrust,
             automaticOffset: TimeInterval(selectedOffsetKey) / 1000,
-            calibrationXX: calibrationXX,
-            calibrationXY: calibrationXY,
-            calibrationYX: calibrationYX,
-            calibrationYY: calibrationYY
+            gyroGainX: gyroGainX,
+            gyroGainY: gyroGainY,
+            gyroCorrelationX: calibration.correlationX,
+            gyroCorrelationY: calibration.correlationY,
+            gyroNormalizedError: calibration.normalizedError,
+            isGyroCalibrationValid: calibration.isValid
         )
     }
 
@@ -1219,28 +1288,36 @@ private final class ComplementaryMotionFusion {
         visual: VisualMotionObservation,
         candidates: [GyroMotionCandidate]
     ) {
-        let decay: CGFloat = 0.975
+        guard visual.confidence >= 0.55, visual.vectorCount >= 6 else { return }
+        let decay: CGFloat = 0.985
+        let weight = visual.confidence * visual.confidence
+        let visualX = clamp(visual.deltaX, min: -0.03, max: 0.03)
+        let visualY = clamp(visual.deltaY, min: -0.03, max: 0.03)
         for candidate in candidates {
             let key = Int((candidate.automaticOffset * 1000).rounded())
             var correlation = correlations[key] ?? LagCorrelation()
-            correlation.crossXX = correlation.crossXX * decay + visual.deltaX * candidate.deltaX
-            correlation.crossXY = correlation.crossXY * decay + visual.deltaX * candidate.deltaY
-            correlation.crossYX = correlation.crossYX * decay + visual.deltaY * candidate.deltaX
-            correlation.crossYY = correlation.crossYY * decay + visual.deltaY * candidate.deltaY
-            correlation.visualEnergy = correlation.visualEnergy * decay +
-                visual.deltaX * visual.deltaX + visual.deltaY * visual.deltaY
-            correlation.gyroEnergy = correlation.gyroEnergy * decay +
-                candidate.deltaX * candidate.deltaX + candidate.deltaY * candidate.deltaY
-            correlation.sampleCount += 1
+            let gyroX = clamp(candidate.deltaX, min: -0.03, max: 0.03)
+            let gyroY = clamp(candidate.deltaY, min: -0.03, max: 0.03)
+            correlation.crossX = correlation.crossX * decay + weight * visualX * gyroX
+            correlation.crossY = correlation.crossY * decay + weight * visualY * gyroY
+            correlation.visualEnergyX = correlation.visualEnergyX * decay + weight * visualX * visualX
+            correlation.visualEnergyY = correlation.visualEnergyY * decay + weight * visualY * visualY
+            correlation.gyroEnergyX = correlation.gyroEnergyX * decay + weight * gyroX * gyroX
+            correlation.gyroEnergyY = correlation.gyroEnergyY * decay + weight * gyroY * gyroY
+            correlation.sampleCount = min(correlation.sampleCount + 1, 10_000)
             correlations[key] = correlation
         }
     }
 
     private func selectBestOffsetIfReady() {
-        let candidates = correlations.filter { $0.value.sampleCount >= 24 }
+        let candidates = correlations.filter {
+            $0.value.sampleCount >= 48 &&
+                $0.value.correlationX > 0.40 &&
+                $0.value.correlationY > 0.40
+        }
         guard let best = candidates.max(by: { $0.value.score < $1.value.score }) else { return }
         let currentScore = correlations[selectedOffsetKey]?.score ?? 0
-        if best.key == selectedOffsetKey || best.value.score >= currentScore + 0.025 {
+        if best.key == selectedOffsetKey || best.value.score >= currentScore + 0.04 {
             selectedOffsetKey = best.key
         }
     }
@@ -1252,29 +1329,85 @@ private final class ComplementaryMotionFusion {
         }
     }
 
-    private func updateCalibration(
-        visual: VisualMotionObservation,
-        gyro: GyroMotionCandidate
+    private func updateGainsFromSelectedCorrelation() -> (
+        trust: CGFloat,
+        correlationX: CGFloat,
+        correlationY: CGFloat,
+        normalizedError: CGFloat,
+        isValid: Bool
     ) {
-        guard visual.confidence >= 0.30 else { return }
-        let energy = gyro.deltaX * gyro.deltaX + gyro.deltaY * gyro.deltaY
-        guard energy >= 0.00000004 else { return }
+        guard let correlation = correlations[selectedOffsetKey] else {
+            return (0, 0, 0, 1, false)
+        }
+        let targetGainX = correlation.gainX
+        let targetGainY = correlation.gainY
+        let targetsAreUsable = targetGainX >= 0.25 && targetGainX <= 32 &&
+            targetGainY >= 0.25 && targetGainY <= 32
+        guard correlation.sampleCount >= 48, targetsAreUsable else {
+            return (
+                0,
+                correlation.correlationX,
+                correlation.correlationY,
+                correlation.normalizedError,
+                false
+            )
+        }
 
-        let predictedX = calibrationXX * gyro.deltaX + calibrationXY * gyro.deltaY
-        let predictedY = calibrationYX * gyro.deltaX + calibrationYY * gyro.deltaY
-        let errorX = visual.deltaX - predictedX
-        let errorY = visual.deltaY - predictedY
-        let learningRate = CGFloat(0.018) * visual.confidence
-        let denominator = energy + 0.0000002
-        let stepXX = clamp(learningRate * errorX * gyro.deltaX / denominator, min: -0.04, max: 0.04)
-        let stepXY = clamp(learningRate * errorX * gyro.deltaY / denominator, min: -0.04, max: 0.04)
-        let stepYX = clamp(learningRate * errorY * gyro.deltaX / denominator, min: -0.04, max: 0.04)
-        let stepYY = clamp(learningRate * errorY * gyro.deltaY / denominator, min: -0.04, max: 0.04)
-        calibrationXX = clamp(calibrationXX + stepXX, min: -2, max: 2)
-        calibrationXY = clamp(calibrationXY + stepXY, min: -2, max: 2)
-        calibrationYX = clamp(calibrationYX + stepYX, min: -2, max: 2)
-        calibrationYY = clamp(calibrationYY + stepYY, min: -2, max: 2)
-        calibrationCount += 1
+        if !hasInitializedGains {
+            gyroGainX = targetGainX
+            gyroGainY = targetGainY
+            hasInitializedGains = true
+        } else {
+            gyroGainX += clamp((targetGainX - gyroGainX) * 0.08, min: -0.30, max: 0.30)
+            gyroGainY += clamp((targetGainY - gyroGainY) * 0.08, min: -0.30, max: 0.30)
+        }
+        gyroGainX = clamp(gyroGainX, min: 0.25, max: 32)
+        gyroGainY = clamp(gyroGainY, min: 0.25, max: 32)
+
+        let gainMismatch = max(
+            abs(gyroGainX - targetGainX) / max(targetGainX, 0.25),
+            abs(gyroGainY - targetGainY) / max(targetGainY, 0.25)
+        )
+        let axisCorrelation = min(correlation.correlationX, correlation.correlationY)
+        let hasHeadroom = targetGainX < 30 && targetGainY < 30
+        let isValid = correlation.sampleCount >= 72 &&
+            axisCorrelation >= 0.72 &&
+            correlation.normalizedError <= 0.60 &&
+            gainMismatch <= 0.20 &&
+            hasHeadroom
+        guard isValid else {
+            return (
+                0,
+                correlation.correlationX,
+                correlation.correlationY,
+                correlation.normalizedError,
+                false
+            )
+        }
+
+        let trainingProgress = clamp(
+            CGFloat(correlation.sampleCount - 72) / 48,
+            min: 0,
+            max: 1
+        )
+        let correlationQuality = clamp((axisCorrelation - 0.65) / 0.25, min: 0, max: 1)
+        let residualQuality = clamp(
+            (0.60 - correlation.normalizedError) / 0.30,
+            min: 0,
+            max: 1
+        )
+        let convergenceQuality = clamp((0.20 - gainMismatch) / 0.15, min: 0, max: 1)
+        let trust = min(
+            0.90,
+            0.90 * trainingProgress * correlationQuality * residualQuality * convergenceQuality
+        )
+        return (
+            trust,
+            correlation.correlationX,
+            correlation.correlationY,
+            correlation.normalizedError,
+            true
+        )
     }
 
     private func clamp<T: Comparable>(_ value: T, min minimum: T, max maximum: T) -> T {
@@ -1287,11 +1420,14 @@ private struct VirtualCameraCropResult {
     var correctionY: CGFloat
     var isIntentionalPan: Bool
     var cropUsage: CGFloat
+    var boundaryPressure: CGFloat
 }
 
 private final class VirtualCameraTrajectoryController {
-    private var rawX: CGFloat = 0
-    private var rawY: CGFloat = 0
+    private var lowPathX: CGFloat = 0
+    private var lowPathY: CGFloat = 0
+    private var highOffsetX: CGFloat = 0
+    private var highOffsetY: CGFloat = 0
     private var desiredX: CGFloat = 0
     private var desiredY: CGFloat = 0
     private var velocityX: CGFloat = 0
@@ -1300,10 +1436,15 @@ private final class VirtualCameraTrajectoryController {
     private var accelerationY: CGFloat = 0
     private var lastTimestamp: TimeInterval?
     private var recentVelocities: [CGPoint] = []
+    private var isPanning = false
+    private var panEnterCount = 0
+    private var panExitCount = 0
 
     func reset() {
-        rawX = 0
-        rawY = 0
+        lowPathX = 0
+        lowPathY = 0
+        highOffsetX = 0
+        highOffsetY = 0
         desiredX = 0
         desiredY = 0
         velocityX = 0
@@ -1312,12 +1453,17 @@ private final class VirtualCameraTrajectoryController {
         accelerationY = 0
         lastTimestamp = nil
         recentVelocities.removeAll(keepingCapacity: true)
+        isPanning = false
+        panEnterCount = 0
+        panExitCount = 0
     }
 
     func update(
         timestamp: TimeInterval,
-        deltaX: CGFloat,
-        deltaY: CGFloat,
+        lowFrequencyDeltaX: CGFloat,
+        lowFrequencyDeltaY: CGFloat,
+        highFrequencyDeltaX: CGFloat,
+        highFrequencyDeltaY: CGFloat,
         confidence: CGFloat,
         tuning: StabilizationTuning
     ) -> VirtualCameraCropResult {
@@ -1327,7 +1473,8 @@ private final class VirtualCameraTrajectoryController {
                 correctionX: 0,
                 correctionY: 0,
                 isIntentionalPan: false,
-                cropUsage: 0
+                cropUsage: 0,
+                boundaryPressure: 0
             )
         }
 
@@ -1340,60 +1487,61 @@ private final class VirtualCameraTrajectoryController {
                 correctionX: 0,
                 correctionY: 0,
                 isIntentionalPan: false,
-                cropUsage: 0
+                cropUsage: 0,
+                boundaryPressure: 0
             )
         }
         let dt = CGFloat(min(max(elapsed, 1.0 / 120.0), 1.0 / 20.0))
-        let measurementWeight = clamp(0.35 + confidence * 0.65, min: 0.35, max: 1)
-        let measuredDeltaX = deltaX * measurementWeight
-        let measuredDeltaY = deltaY * measurementWeight
-        rawX += measuredDeltaX
-        rawY += measuredDeltaY
+        let lowFrequencyWeight = clamp(0.65 + confidence * 0.35, min: 0.65, max: 1)
+        let measuredLowDeltaX = lowFrequencyDeltaX * lowFrequencyWeight
+        let measuredLowDeltaY = lowFrequencyDeltaY * lowFrequencyWeight
+        lowPathX += measuredLowDeltaX
+        lowPathY += measuredLowDeltaY
+
+        let highMemory = max(tuning.highFrequencyMemory, 0.25)
+        let highLeak = CGFloat(exp(-Double(dt) / highMemory))
+        highOffsetX = highOffsetX * highLeak + highFrequencyDeltaX
+        highOffsetY = highOffsetY * highLeak + highFrequencyDeltaY
 
         let panState = updatePanState(
-            velocityX: measuredDeltaX / dt,
-            velocityY: measuredDeltaY / dt,
+            velocityX: measuredLowDeltaX / dt,
+            velocityY: measuredLowDeltaY / dt,
             threshold: tuning.panActivationSpeed
         )
         let hardLimit = max(tuning.maximumCropOffsetFraction, 0.001)
-        let preCorrectionX = desiredX - rawX
-        let preCorrectionY = desiredY - rawY
+        let lowAmount = tuning.lowFrequencyStabilizationAmount
+        let highAmount = tuning.highFrequencyCompensationAmount
+        let preCorrectionX = (desiredX - lowPathX) * lowAmount - highOffsetX * highAmount
+        let preCorrectionY = (desiredY - lowPathY) * lowAmount - highOffsetY * highAmount
         let preUsage = max(abs(preCorrectionX), abs(preCorrectionY)) / hardLimit
 
-        var followFrequency = panState
+        let baseFollowFrequency = panState
             ? tuning.panFollowFrequency
             : tuning.staticFollowFrequency
-        if preUsage > 0.72 {
-            followFrequency = max(followFrequency, 6 + Double(preUsage) * 6)
-        }
+        let boundaryPressure = smoothstep(
+            lower: 0.45,
+            upper: 0.92,
+            value: preUsage
+        )
+        let followFrequency = baseFollowFrequency +
+            (tuning.boundaryFollowFrequency - baseFollowFrequency) * Double(boundaryPressure)
         advanceDesiredPath(
             deltaTime: dt,
             followFrequency: followFrequency,
             tuning: tuning
         )
 
-        let amount = tuning.stabilizationAmount
-        var correctionX = (desiredX - rawX) * amount
-        var correctionY = (desiredY - rawY) * amount
-        correctionX = clamp(correctionX, min: -hardLimit, max: hardLimit)
-        correctionY = clamp(correctionY, min: -hardLimit, max: hardLimit)
-
-        if amount > 0.001 {
-            if abs(correctionX) >= hardLimit * 0.999 {
-                desiredX = rawX + correctionX / amount
-                velocityX *= 0.65
-            }
-            if abs(correctionY) >= hardLimit * 0.999 {
-                desiredY = rawY + correctionY / amount
-                velocityY *= 0.65
-            }
-        }
+        var correctionX = (desiredX - lowPathX) * lowAmount - highOffsetX * highAmount
+        var correctionY = (desiredY - lowPathY) * lowAmount - highOffsetY * highAmount
+        correctionX = softLimit(correctionX, limit: hardLimit)
+        correctionY = softLimit(correctionY, limit: hardLimit)
         let usage = max(abs(correctionX), abs(correctionY)) / hardLimit
         return VirtualCameraCropResult(
             correctionX: correctionX,
             correctionY: correctionY,
             isIntentionalPan: panState,
-            cropUsage: clamp(usage, min: 0, max: 1)
+            cropUsage: clamp(usage, min: 0, max: 1),
+            boundaryPressure: boundaryPressure
         )
     }
 
@@ -1403,10 +1551,10 @@ private final class VirtualCameraTrajectoryController {
         threshold: CGFloat
     ) -> Bool {
         recentVelocities.append(CGPoint(x: velocityX, y: velocityY))
-        if recentVelocities.count > 8 {
-            recentVelocities.removeFirst(recentVelocities.count - 8)
+        if recentVelocities.count > 12 {
+            recentVelocities.removeFirst(recentVelocities.count - 12)
         }
-        guard recentVelocities.count >= 5 else { return false }
+        guard recentVelocities.count >= 6 else { return isPanning }
 
         var directionX: CGFloat = 0
         var directionY: CGFloat = 0
@@ -1420,10 +1568,33 @@ private final class VirtualCameraTrajectoryController {
             speedTotal += speed
             movingCount += 1
         }
-        guard movingCount >= 4 else { return false }
-        let coherence = hypot(directionX, directionY) / movingCount
-        let meanSpeed = speedTotal / movingCount
-        return coherence >= 0.82 && meanSpeed >= threshold
+        let coherence = movingCount >= 4 ? hypot(directionX, directionY) / movingCount : 0
+        let meanSpeed = movingCount > 0 ? speedTotal / movingCount : 0
+
+        if isPanning {
+            if coherence < 0.55 || meanSpeed < threshold * 0.55 {
+                panExitCount += 1
+            } else {
+                panExitCount = 0
+            }
+            if panExitCount >= 10 {
+                isPanning = false
+                panExitCount = 0
+                panEnterCount = 0
+            }
+        } else {
+            if movingCount >= 5, coherence >= 0.78, meanSpeed >= threshold {
+                panEnterCount += 1
+            } else {
+                panEnterCount = max(0, panEnterCount - 1)
+            }
+            if panEnterCount >= 6 {
+                isPanning = true
+                panEnterCount = 0
+                panExitCount = 0
+            }
+        }
+        return isPanning
     }
 
     private func advanceDesiredPath(
@@ -1432,8 +1603,8 @@ private final class VirtualCameraTrajectoryController {
         tuning: StabilizationTuning
     ) {
         let omega = CGFloat(2 * Double.pi * followFrequency)
-        let requestedAccelerationX = omega * omega * (rawX - desiredX) - 2 * omega * velocityX
-        let requestedAccelerationY = omega * omega * (rawY - desiredY) - 2 * omega * velocityY
+        let requestedAccelerationX = omega * omega * (lowPathX - desiredX) - 2 * omega * velocityX
+        let requestedAccelerationY = omega * omega * (lowPathY - desiredY) - 2 * omega * velocityY
         let jerkStep = tuning.maximumTrajectoryJerk * deltaTime
         accelerationX += clamp(
             requestedAccelerationX - accelerationX,
@@ -1469,6 +1640,22 @@ private final class VirtualCameraTrajectoryController {
         )
         desiredX += velocityX * deltaTime
         desiredY += velocityY * deltaTime
+    }
+
+    private func smoothstep(lower: CGFloat, upper: CGFloat, value: CGFloat) -> CGFloat {
+        let amount = clamp((value - lower) / max(upper - lower, 0.0001), min: 0, max: 1)
+        return amount * amount * (3 - 2 * amount)
+    }
+
+    private func softLimit(_ value: CGFloat, limit: CGFloat) -> CGFloat {
+        let knee = limit * 0.72
+        let magnitude = abs(value)
+        guard magnitude > knee else { return value }
+        let room = max(limit - knee, 0.0001)
+        let excess = magnitude - knee
+        let softenedMagnitude = knee + room * CGFloat(1 - exp(-Double(excess / room)))
+        let sign: CGFloat = value < 0 ? -1 : 1
+        return sign * min(softenedMagnitude, limit * 0.995)
     }
 
     private func clamp<T: Comparable>(_ value: T, min minimum: T, max maximum: T) -> T {
