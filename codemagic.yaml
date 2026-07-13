@@ -20,7 +20,7 @@ workflows:
           xcodebuild build \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
-            -destination "platform=iOS Simulator,name=iPhone 16,OS=latest" \
+            -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO
     artifacts:
       - $HOME/Library/Developer/Xcode/DerivedData/**/Build/Products/**/*.app
