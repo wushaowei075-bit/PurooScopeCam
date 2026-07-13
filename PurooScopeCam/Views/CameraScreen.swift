@@ -16,8 +16,7 @@ struct CameraScreen: View {
                 stabilizationTimeOffset: camera.stabilizationTimeOffset,
                 gyroAxisMapping: camera.gyroAxisMapping,
                 displayZoomFactor: camera.zoomFactor,
-                systemStabilizationModeName: camera.status.activePreviewStabilizationMode.scopeDisplayName,
-                visualState: camera.previewStabilizationState
+                systemStabilizationModeName: camera.status.activePreviewStabilizationMode.scopeDisplayName
             )
                 .ignoresSafeArea()
 
@@ -76,9 +75,6 @@ struct CameraScreen: View {
             @unknown default:
                 break
             }
-        }
-        .onChange(of: motionMonitor.displaySample) { _, sample in
-            camera.ingestMotionSample(sample)
         }
     }
 

@@ -1,94 +1,72 @@
-# Phased Execution Plan
+# Stabilization Pipeline V2
 
-## Phase 1: MVP Capture
+This document describes the only active preview and recording stabilization
+pipeline. Earlier mode-specific gyro, integer-pixel visual, and preview-layer
+transform paths have been removed.
 
-Implemented in this scaffold:
+## 1. System Stabilization And Diagnostics
 
-- SwiftUI app shell with a full-screen camera workflow.
-- AVFoundation session using the back wide camera.
-- Photo capture and silent video recording to the Photos library.
-- System stabilization preference selection: Off, Auto, Balanced, Strong.
-- Zoom, exposure bias, focus lock, and exposure lock controls.
-- Core Motion shake score with stable, warning, and heavy shake bands.
-- UI surfaces sized for repeated field use rather than a marketing page.
+- `AVCaptureVideoDataOutput` requests low-latency system stabilization before
+  custom processing. Lens OIS remains device-managed.
+- Camera frames carry presentation time, exposure duration, dimensions, and
+  intrinsic focal lengths into one stabilization engine.
+- Core Motion samples device attitude at 240 Hz and retains a timestamped ring
+  buffer.
+- Each run writes motion and controller output as JSONL under
+  `Documents/PurooStabilizationTraces`. iOS file sharing is enabled so traces
+  can be exported without another debug build.
 
-Primary files:
+## 2. Subpixel Visual Motion And One-Frame Buffer
 
-- `PurooScopeCam/Services/CameraController.swift`
-- `PurooScopeCam/Services/MotionStabilityMonitor.swift`
-- `PurooScopeCam/Views/CameraScreen.swift`
-- `PurooScopeCam/Views/ControlPanelView.swift`
+- The visual tracker samples the luma plane into a 192 x 192 center-weighted
+  grid.
+- Normalized patch correlation, robust inlier rejection, and parabolic peak
+  fitting produce subpixel frame-to-frame translation.
+- Every source frame has a timestamp-matched transform and ready marker.
+- The Metal renderer displays each processed frame once, with a deterministic
+  one-frame look-ahead. Frames skipped by analysis are never paired with a
+  transform from another timestamp.
 
-Validation still needed on macOS/Xcode:
+## 3. Virtual Camera Trajectory
 
-- Build the `PurooScopeCam` scheme.
-- Run on a real iPhone.
-- Confirm which stabilization modes are supported by each target device and
-  selected capture format.
-- Tune the default frame rate and exposure behavior for telescope adapters.
+- Measured motion is integrated into the raw camera path.
+- A critically damped virtual path follows deliberate pans quickly and follows
+  static framing slowly.
+- Direction coherence distinguishes a pan from alternating hand tremor.
+- Velocity, acceleration, jerk, and crop-bound constraints prevent jumps and
+  keep the crop window inside the 1.5x reserve.
+- The overview yellow frame is driven by the same final crop correction used
+  for rendering.
 
-## Phase 2: Strong Real-Time Stabilization
+## 4. Quaternion IMU And Complementary Fusion
 
-Code extension points are present in `FrameStabilizationEngine`:
+- Exposure-midpoint timestamps are used for attitude interpolation.
+- Relative quaternions avoid Euler angle wrap and preserve high-frequency
+  rotation.
+- Candidate IMU offsets are correlated with visual motion to estimate sensor
+  timing automatically.
+- A learned 2 x 2 calibration maps device attitude axes to image axes, including
+  sign, rotation, and cross-axis coupling.
+- Visual low-frequency motion corrects drift while calibrated gyro motion owns
+  the high-frequency band.
 
-- Feed gyro and frame timestamps into a single stabilization estimate.
-- Reserve crop margin from a larger input frame.
-- Smooth the camera path with a low-pass or Kalman-style filter.
-- Add a Metal/Core Image renderer that crops, translates, rotates, and scales
-  each frame into a stabilized preview/output surface.
-- Replace the current preview layer with a processed Metal preview when the
-  custom stabilizer is enabled.
+## 5. Stabilized Recording
 
-Current scaffold status:
+- Preview and recording use the same source frame and final render transform.
+- `AVAssetWriter` receives the original capture presentation timeline relative
+  to the first written frame; no synthetic frame counter is used.
+- Duplicate or non-monotonic timestamps are rejected.
+- Output is H.264 MP4, capped at 1080 x 1920 while preserving source
+  orientation and using the selected capture frame rate as encoder guidance.
 
-- `MotionStabilityMonitor` publishes high-magnification shake samples.
-- `CameraScreen` forwards those samples into `CameraController`.
-- `CameraController` forwards motion samples to `FrameStabilizationEngine`.
-- `FrameStabilizationEngine` emits a placeholder gyro-driven transform that
-  can be applied by a future Metal/Core Image renderer.
-- `CameraPreviewView` applies gyro-driven electronic preview stabilization for
-  the Balanced and Strong modes by cropping and counter-transforming the live
-  preview layer.
+## Real-Device Validation
 
-Current limitation:
-
-- The new electronic stabilization is visible in live preview. Recorded video
-  still uses the system `AVCaptureMovieFileOutput` stabilization path. Strong
-  stabilization in recorded files requires a processed frame pipeline with
-  Metal/Core Image and `AVAssetWriter`.
-
-Next implementation tasks:
-
-1. Add a `CVMetalTextureCache` renderer.
-2. Store a short motion ring buffer keyed by `CMTime`.
-3. Add Vision or custom phase-correlation registration for residual drift.
-4. Export stabilized video with `AVAssetWriter`.
-
-## Phase 3: Burst Photo Alignment
-
-Code extension points are present in `BurstPhotoCoordinator`:
-
-- Capture plan values for frame count and frame interval.
-- A scoring model for sharpness and motion quality.
-- A result model for later alignment/stacking output.
-
-Current scaffold status:
-
-- `CameraController.captureBurst(plan:)` triggers a timed photo sequence.
-- `BurstPhotoCoordinator` contains the selection model for later sharpness and
-  shake scoring.
-
-Next implementation tasks:
-
-1. Capture RAW or high-quality still frames where supported.
-2. Score frames with Laplacian variance or a Metal sharpness kernel.
-3. Align the best frames using translation/homography estimation.
-4. Stack aligned frames to reduce noise and sharpen moon/landscape detail.
-
-## Product Guardrails
-
-- Strong stabilization must visibly crop the field of view.
-- No app-only algorithm can recover detail once exposure blur is baked into a
-  frame.
-- The first supported hardware path should assume a rigid telescope adapter,
-  tripod, and physical shutter trigger or timer.
+1. Hold a detailed target still for at least five seconds so automatic
+   calibration reaches a stable gyro-trust value.
+2. Record ten seconds at 0%, 50%, and 100% strength without changing the scene.
+3. Repeat with one slow horizontal pan and one stop after the pan.
+4. Export the matching JSONL trace with each video and compare visual
+   confidence, gyro trust, crop usage, analysis time, and dropped frames.
+5. Treat a black edge, non-monotonic recording time, or yellow-frame movement
+   that disagrees with the main preview as a pipeline defect rather than a
+   tuning result.

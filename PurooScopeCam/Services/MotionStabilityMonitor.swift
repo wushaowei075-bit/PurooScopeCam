@@ -90,9 +90,15 @@ final class MotionStabilityMonitor: ObservableObject {
                 pitch: motion.attitude.pitch,
                 roll: motion.attitude.roll,
                 yaw: motion.attitude.yaw,
+                quaternionX: motion.attitude.quaternion.x,
+                quaternionY: motion.attitude.quaternion.y,
+                quaternionZ: motion.attitude.quaternion.z,
+                quaternionW: motion.attitude.quaternion.w,
                 score: self.filteredScore,
                 band: band
             )
+
+            StabilizationTraceRecorder.shared.recordMotion(next)
 
             self.observerLock.lock()
             self.sample = next

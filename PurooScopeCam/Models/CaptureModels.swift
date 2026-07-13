@@ -103,337 +103,12 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         }
     }
 
-    var previewStabilizationGain: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 12000
-        case .balanced:
-            return 12000
-        case .strong:
-            return 15000
-        }
-    }
-
     var previewCropScale: CGFloat {
         switch self {
         case .off:
             return 1
         case .auto, .balanced, .strong:
             return 1.50
-        }
-    }
-
-    var previewCropTravelFactor: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0.82
-        case .balanced:
-            return 0.86
-        case .strong:
-            return 0.90
-        }
-    }
-
-    var previewTranslationStepLimitFraction: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0.050
-        case .balanced, .strong:
-            return 0
-        }
-    }
-
-    var visualStabilizationGain: CGFloat {
-        switch self {
-        case .off, .auto, .balanced, .strong:
-            return 0
-        }
-    }
-
-    var visualHighPassCorrectionGain: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 1.45
-        case .balanced:
-            return 1.85
-        case .strong:
-            return 2.20
-        }
-    }
-
-    var visualHighPassLeakRate: Double {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 12
-        case .balanced:
-            return 16
-        case .strong:
-            return 20
-        }
-    }
-
-    var visualHighPassResponseRate: Double {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 70
-        case .balanced:
-            return 95
-        case .strong:
-            return 120
-        }
-    }
-
-    var visualHighPassMaximumOffset: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0.036
-        case .balanced:
-            return 0.052
-        case .strong:
-            return 0.070
-        }
-    }
-
-    var visualMicroJitterCorrectionGain: CGFloat {
-        return 0
-    }
-
-    var visualMicroJitterMaximumOffset: CGFloat {
-        return 0
-    }
-
-    var visualShiftDeadZone: CGFloat {
-        switch self {
-        case .off:
-            return .infinity
-        case .auto:
-            return 0.28
-        case .balanced:
-            return 0.16
-        case .strong:
-            return 0.08
-        }
-    }
-
-    var visualCorrectionMaximumStep: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0.007
-        case .balanced:
-            return 0.012
-        case .strong:
-            return 0.018
-        }
-    }
-
-    var visualAnalysisMinimumInterval: TimeInterval {
-        switch self {
-        case .off:
-            return .infinity
-        case .auto:
-            return 1.0 / 45.0
-        case .balanced, .strong:
-            return 1.0 / 60.0
-        }
-    }
-
-    var visualCorrectionSign: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto, .balanced, .strong:
-            return 1
-        }
-    }
-
-    var visualPreviewDelayFrames: Int {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0
-        case .balanced:
-            return 0
-        case .strong:
-            return 0
-        }
-    }
-
-    var trajectorySmoothingAlpha: Double {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0.985
-        case .balanced:
-            return 0.990
-        case .strong:
-            return 0.992
-        }
-    }
-
-    var trajectoryRollGain: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0.60
-        case .balanced:
-            return 0.75
-        case .strong:
-            return 0.90
-        }
-    }
-
-    var attitudeFollowRate: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 34
-        case .balanced, .strong:
-            return 18
-        }
-    }
-
-    var gyroVelocityLeadGain: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 150
-        case .balanced, .strong:
-            return 260
-        }
-    }
-
-    var gyroVelocityResponseRate: Double {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 55
-        case .balanced, .strong:
-            return 96
-        }
-    }
-
-    var gyroVelocityNoiseFloor: Double {
-        switch self {
-        case .off:
-            return .infinity
-        case .auto:
-            return 0.004
-        case .balanced, .strong:
-            return 0.0015
-        }
-    }
-
-    var rollVelocityLeadGain: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0.018
-        case .balanced:
-            return 0.028
-        case .strong:
-            return -0.028
-        }
-    }
-
-    var previewResponseRate: Double {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 48
-        case .balanced, .strong:
-            return 96
-        }
-    }
-
-    var gyroMicroJitterGain: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 1700
-        case .balanced, .strong:
-            return 3200
-        }
-    }
-
-    var gyroMicroJitterFollowRate: Double {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 8
-        case .balanced, .strong:
-            return 8
-        }
-    }
-
-    var gyroMicroJitterLeakRate: Double {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 3.2
-        case .balanced, .strong:
-            return 3.0
-        }
-    }
-
-    var gyroMicroJitterNoiseFloor: Double {
-        switch self {
-        case .off:
-            return .infinity
-        case .auto:
-            return 0.0025
-        case .balanced, .strong:
-            return 0.0012
-        }
-    }
-
-    var gyroMicroJitterAngleLimit: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0.014
-        case .balanced, .strong:
-            return 0.018
-        }
-    }
-
-    var gyroMicroRollGain: CGFloat {
-        switch self {
-        case .off:
-            return 0
-        case .auto:
-            return 0.18
-        case .balanced:
-            return 0.28
-        case .strong:
-            return -0.28
         }
     }
 
@@ -534,99 +209,65 @@ struct StabilizationTuning: Equatable {
     }
 
     var previewCropTravelFactor: CGFloat {
-        let value = CGFloat(effectiveStrength)
-        return 0.68 + value * 0.24
+        maximumCropOffsetFraction / max((previewCropScale - 1) * 0.5, 0.0001)
     }
 
-    var sampleWindowDuration: TimeInterval {
-        0.075 + effectiveStrength * 0.085
+    var previewDelayFrames: Int {
+        usesDigitalStabilization ? 1 : 0
     }
 
-    var trajectoryGain: CGFloat {
-        let value = CGFloat(effectiveStrength)
-        return (2800 + value * 12000) * (1 + zoomBoost * 0.24)
+    var motionSampleLookback: TimeInterval {
+        0.14
     }
 
-    var trajectorySmoothingAlpha: Double {
-        0.90 + effectiveStrength * 0.07
+    var motionSampleLookahead: TimeInterval {
+        0.055
     }
 
-    var trajectoryRollGain: CGFloat {
-        let value = CGFloat(effectiveStrength)
-        return 0.18 + value * 0.62
+    var stabilizationAmount: CGFloat {
+        guard usesDigitalStabilization else { return 0 }
+        return min(1, 0.18 + CGFloat(effectiveStrength) * 0.82)
     }
 
-    var directSampleCount: Int {
-        Int((10 + effectiveStrength * 14).rounded())
+    var staticFollowFrequency: Double {
+        4.8 - effectiveStrength * 4.2
     }
 
-    var directNoiseFloor: Double {
-        0.012 + effectiveStrength * 0.006 - Double(zoomBoost) * 0.0015
+    var panFollowFrequency: Double {
+        12.0 - effectiveStrength * 3.0
     }
 
-    var trajectoryNoiseFloor: Double {
-        0.009 + effectiveStrength * 0.006
+    var complementaryCutoffFrequency: Double {
+        3.0
     }
 
-    var centerLockAngularVelocityFloor: Double {
-        0.018 + effectiveStrength * 0.006
+    var panActivationSpeed: CGFloat {
+        0.026 + CGFloat(effectiveStrength) * 0.012
     }
 
-    var microJitterAngularVelocityFloor: Double {
-        0.065 + effectiveStrength * 0.025
+    var safeCropOffsetFraction: CGFloat {
+        max(0, (previewCropScale - 1) * 0.5 * 0.80)
     }
 
-    var microJitterDirectNoiseFloor: Double {
-        0.0035 + effectiveStrength * 0.0018 - Double(zoomBoost) * 0.0006
+    var maximumCropOffsetFraction: CGFloat {
+        safeCropOffsetFraction * (0.72 + CGFloat(effectiveStrength) * 0.28)
     }
 
-    var microJitterDirectGainMultiplier: CGFloat {
-        let value = CGFloat(effectiveStrength)
-        return 1.20 + value * 0.55
+    var maximumTrajectoryVelocity: CGFloat {
+        1.4
     }
 
-    var microJitterDirectLimitMultiplier: CGFloat {
-        let value = CGFloat(effectiveStrength)
-        return 0.65 + value * 0.35
+    var maximumTrajectoryAcceleration: CGFloat {
+        10
     }
 
-    var directGain: CGFloat {
-        let value = CGFloat(effectiveStrength)
-        return (70 + value * 620) * (1 + zoomBoost * 0.55)
-    }
-
-    var directRollGain: CGFloat {
-        let value = CGFloat(effectiveStrength)
-        return 0.001 + value * 0.004
-    }
-
-    var directResponseRate: Double {
-        14 + effectiveStrength * 28
-    }
-
-    var directLimitFraction: CGFloat {
-        let value = CGFloat(effectiveStrength)
-        return (0.018 + value * 0.075) * (1 + zoomBoost * 0.35)
-    }
-
-    var directMaximumStepFraction: CGFloat {
-        let value = CGFloat(effectiveStrength)
-        return 0.85 + value * 1.65
-    }
-
-    var rollLimit: CGFloat {
-        let denominator = 72 - CGFloat(effectiveStrength) * 34
-        return .pi / denominator
+    var maximumTrajectoryJerk: CGFloat {
+        120
     }
 
     private var effectiveStrength: Double {
         guard strength > 0 else { return 0 }
-        return Swift.min(1, pow(strength, 0.90) * 1.08)
-    }
-
-    private var zoomBoost: CGFloat {
-        let normalized = (displayZoomFactor - 1.5) / 4.5
-        return Swift.min(Swift.max(normalized, 0), 1)
+        return Swift.min(1, pow(strength, 0.55))
     }
 }
 
@@ -659,6 +300,10 @@ struct StabilitySample: Equatable {
     var pitch: Double
     var roll: Double
     var yaw: Double
+    var quaternionX: Double
+    var quaternionY: Double
+    var quaternionZ: Double
+    var quaternionW: Double
     var score: Double
     var band: StabilityBand
 
@@ -671,22 +316,12 @@ struct StabilitySample: Equatable {
         pitch: 0,
         roll: 0,
         yaw: 0,
+        quaternionX: 0,
+        quaternionY: 0,
+        quaternionZ: 0,
+        quaternionW: 1,
         score: 0,
         band: .unavailable
-    )
-}
-
-struct PreviewStabilizationState: Equatable {
-    var normalizedX: CGFloat
-    var normalizedY: CGFloat
-    var confidence: CGFloat
-    var timestamp: TimeInterval
-
-    static let identity = PreviewStabilizationState(
-        normalizedX: 0,
-        normalizedY: 0,
-        confidence: 0,
-        timestamp: 0
     )
 }
 

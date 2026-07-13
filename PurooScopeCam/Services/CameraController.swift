@@ -1,13 +1,23 @@
 import AVFoundation
 import Combine
 import Photos
+import simd
 import UIKit
+
+struct CameraFrameMetadata {
+    var presentationTime: CMTime
+    var exposureDuration: TimeInterval
+    var focalLengthPixelsX: CGFloat
+    var focalLengthPixelsY: CGFloat
+    var frameWidth: Int
+    var frameHeight: Int
+}
 
 protocol CameraFrameSink: AnyObject {
     func cameraController(
         _ controller: CameraController,
         didOutput pixelBuffer: CVPixelBuffer,
-        at timestamp: CMTime
+        metadata: CameraFrameMetadata
     )
 
     func cameraController(
@@ -40,10 +50,6 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var status = CaptureStatus()
     @Published var stabilizationPreference: StabilizationPreference = .balanced {
         didSet {
-            videoOutputQueue.async { [weak self] in
-                self?.stabilizationEngine.reset()
-                self?.publishPreviewStabilizationState(.identity)
-            }
             applySelectedStabilizationMode()
             let desiredZoomFactor = requestedZoomFactor
             sessionQueue.async { [weak self] in
@@ -66,14 +72,12 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var activeCaptureQuality: CaptureQualityOption = .automatic
     @Published private(set) var focusLocked = false
     @Published private(set) var exposureLocked = false
-    @Published private(set) var previewStabilizationState: PreviewStabilizationState = .identity
 
     private let sessionQueue = DispatchQueue(label: "com.puroo.scope.camera.session")
     private let videoOutputQueue = DispatchQueue(label: "com.puroo.scope.camera.videoOutput", qos: .userInteractive)
     private let videoOutput = AVCaptureVideoDataOutput()
     private let photoOutput = AVCapturePhotoOutput()
     private let movieOutput = AVCaptureMovieFileOutput()
-    private let stabilizationEngine = FrameStabilizationEngine()
 
     private var videoDeviceInput: AVCaptureDeviceInput?
     private weak var previewFrameSink: CameraFrameSink?
@@ -133,21 +137,11 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
-    func ingestMotionSample(_ sample: StabilitySample) {
-        videoOutputQueue.async { [weak self] in
-            self?.stabilizationEngine.ingestMotion(sample)
-        }
-    }
-
     func setStabilizationStrength(_ value: Double) {
         let clamped = min(max(value, 0), 1)
         guard abs(stabilizationStrength - clamped) >= 0.001 else { return }
 
         stabilizationStrength = clamped
-        videoOutputQueue.async { [weak self] in
-            self?.stabilizationEngine.reset()
-            self?.publishPreviewStabilizationState(.identity)
-        }
 
         let desiredZoomFactor = requestedZoomFactor
         sessionQueue.async { [weak self] in
@@ -164,10 +158,6 @@ final class CameraController: NSObject, ObservableObject {
     func setGyroAxisMapping(_ mapping: GyroAxisMapping) {
         guard gyroAxisMapping != mapping else { return }
         gyroAxisMapping = mapping
-        videoOutputQueue.async { [weak self] in
-            self?.stabilizationEngine.reset()
-            self?.publishPreviewStabilizationState(.identity)
-        }
     }
 
     func setZoomFactor(_ value: CGFloat) {
@@ -493,9 +483,9 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     private func configureVideoOutput() {
-        videoOutput.alwaysDiscardsLateVideoFrames = false
+        videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         ]
         videoOutput.setSampleBufferDelegate(self, queue: videoOutputQueue)
         if session.canAddOutput(videoOutput) {
@@ -511,6 +501,9 @@ final class CameraController: NSObject, ObservableObject {
         }
         if connection.isVideoMirroringSupported {
             connection.isVideoMirrored = false
+        }
+        if connection.isCameraIntrinsicMatrixDeliverySupported {
+            connection.isCameraIntrinsicMatrixDeliveryEnabled = true
         }
         applyPreviewStabilization(to: connection)
     }
@@ -734,11 +727,6 @@ final class CameraController: NSObject, ObservableObject {
         return parts.joined(separator: "; ")
     }
 
-    private func publishPreviewStabilizationState(_ state: PreviewStabilizationState) {
-        DispatchQueue.main.async {
-            self.previewStabilizationState = state
-        }
-    }
 }
 
 extension CameraController: AVCapturePhotoCaptureDelegate {
@@ -787,7 +775,58 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     ) {
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-            previewFrameSink?.cameraController(self, didOutput: pixelBuffer, at: timestamp)
+            let width = CVPixelBufferGetWidth(pixelBuffer)
+            let height = CVPixelBufferGetHeight(pixelBuffer)
+            let focalLengths = cameraIntrinsicFocalLengths(
+                from: sampleBuffer,
+                width: width,
+                height: height
+            )
+            let exposureDuration = videoDeviceInput.map {
+                CMTimeGetSeconds($0.device.exposureDuration)
+            } ?? 0
+            let metadata = CameraFrameMetadata(
+                presentationTime: timestamp,
+                exposureDuration: exposureDuration.isFinite ? exposureDuration : 0,
+                focalLengthPixelsX: focalLengths.x,
+                focalLengthPixelsY: focalLengths.y,
+                frameWidth: width,
+                frameHeight: height
+            )
+            previewFrameSink?.cameraController(
+                self,
+                didOutput: pixelBuffer,
+                metadata: metadata
+            )
         }
+    }
+
+    private func cameraIntrinsicFocalLengths(
+        from sampleBuffer: CMSampleBuffer,
+        width: Int,
+        height: Int
+    ) -> (x: CGFloat, y: CGFloat) {
+        if let attachment = CMGetAttachment(
+            sampleBuffer,
+            key: kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix,
+            attachmentModeOut: nil
+        ), let data = attachment as? Data,
+           data.count >= MemoryLayout<matrix_float3x3>.size {
+            var matrix = matrix_identity_float3x3
+            withUnsafeMutableBytes(of: &matrix) { destination in
+                data.copyBytes(to: destination)
+            }
+            let focalX = CGFloat(matrix.columns.0.x)
+            let focalY = CGFloat(matrix.columns.1.y)
+            if focalX.isFinite, focalY.isFinite, focalX > 1, focalY > 1 {
+                return (focalX, focalY)
+            }
+        }
+
+        let fieldOfViewDegrees = videoDeviceInput?.device.activeFormat.videoFieldOfView ?? 60
+        let fieldOfViewRadians = CGFloat(fieldOfViewDegrees) * .pi / 180
+        let longDimension = CGFloat(max(width, height))
+        let focalLength = longDimension / max(2 * tan(fieldOfViewRadians * 0.5), 0.001)
+        return (focalLength, focalLength)
     }
 }
