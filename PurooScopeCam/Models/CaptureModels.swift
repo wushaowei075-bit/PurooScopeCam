@@ -242,7 +242,7 @@ struct StabilizationTuning: Equatable {
     }
 
     var staticFollowFrequency: Double {
-        3.0 - effectiveStrength * 1.4
+        0.55 - effectiveStrength * 0.20
     }
 
     var panFollowFrequency: Double {
@@ -266,7 +266,7 @@ struct StabilizationTuning: Equatable {
     }
 
     var highFrequencyMemory: Double {
-        0.85 + effectiveStrength * 0.45
+        0.12 + effectiveStrength * 0.08
     }
 
     var boundaryFollowFrequency: Double {

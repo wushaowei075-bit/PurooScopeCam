@@ -105,7 +105,7 @@ final class StabilizationTraceRecorder {
                 var header = metadata
                 header["type"] = "session"
                 header["created_at"] = ISO8601DateFormatter().string(from: Date())
-                header["format_version"] = 3
+                header["format_version"] = 4
                 self.appendJSONObject(header)
                 self.flushIfNeeded(force: true)
             } catch {
@@ -1000,8 +1000,7 @@ private struct UnitQuaternion {
 }
 
 private final class QuaternionMotionEstimator {
-    private let automaticOffsets: [TimeInterval] = stride(from: -0.04, through: 0.0401, by: 0.01)
-        .map { $0 }
+    private let automaticOffsets: [TimeInterval] = [0]
     private var previousFrameTime: TimeInterval?
 
     func reset() {
@@ -1120,6 +1119,10 @@ private struct FusedMotionDelta {
 }
 
 private final class ComplementaryMotionFusion {
+    private static let referenceGainX: CGFloat = 15.57
+    private static let referenceGainY: CGFloat = 8.90
+    private static let referenceTrust: CGFloat = 0.70
+
     private struct LagCorrelation {
         var crossX: CGFloat = 0
         var crossY: CGFloat = 0
@@ -1154,18 +1157,14 @@ private final class ComplementaryMotionFusion {
             )
         }
 
-        var score: CGFloat {
-            let axisAgreement = max(min(correlationX, correlationY), 0)
-            let residualQuality = max(1 - normalizedError, 0)
-            return min(axisAgreement * residualQuality, 1)
-        }
     }
 
     private var correlations: [Int: LagCorrelation] = [:]
-    private var selectedOffsetKey = 0
-    private var gyroGainX: CGFloat = 1
-    private var gyroGainY: CGFloat = 1
-    private var hasInitializedGains = false
+    private let selectedOffsetKey = 0
+    private var gyroGainX = ComplementaryMotionFusion.referenceGainX
+    private var gyroGainY = ComplementaryMotionFusion.referenceGainY
+    private var calibrationTrust = ComplementaryMotionFusion.referenceTrust
+    private var lastCalibrationSampleCount = 0
     private var visualLowVelocityX: CGFloat = 0
     private var visualLowVelocityY: CGFloat = 0
     private var gyroLowVelocityX: CGFloat = 0
@@ -1180,10 +1179,10 @@ private final class ComplementaryMotionFusion {
         lastTimestamp = nil
         if !keepCalibration {
             correlations.removeAll(keepingCapacity: true)
-            selectedOffsetKey = 0
-            gyroGainX = 1
-            gyroGainY = 1
-            hasInitializedGains = false
+            gyroGainX = Self.referenceGainX
+            gyroGainY = Self.referenceGainY
+            calibrationTrust = Self.referenceTrust
+            lastCalibrationSampleCount = 0
         }
     }
 
@@ -1203,7 +1202,6 @@ private final class ComplementaryMotionFusion {
 
         if let visual {
             updateLagCorrelations(visual: visual, candidates: gyroCandidates)
-            selectBestOffsetIfReady()
         }
         let selected = selectedCandidate(from: gyroCandidates)
         let calibration = updateGainsFromSelectedCorrelation()
@@ -1289,15 +1287,17 @@ private final class ComplementaryMotionFusion {
         candidates: [GyroMotionCandidate]
     ) {
         guard visual.confidence >= 0.55, visual.vectorCount >= 6 else { return }
-        let decay: CGFloat = 0.985
+        let motionMagnitude = hypot(visual.deltaX, visual.deltaY)
+        guard motionMagnitude >= 0.00025, motionMagnitude <= 0.012 else { return }
+        let decay: CGFloat = 0.990
         let weight = visual.confidence * visual.confidence
-        let visualX = clamp(visual.deltaX, min: -0.03, max: 0.03)
-        let visualY = clamp(visual.deltaY, min: -0.03, max: 0.03)
+        let visualX = clamp(visual.deltaX, min: -0.012, max: 0.012)
+        let visualY = clamp(visual.deltaY, min: -0.012, max: 0.012)
         for candidate in candidates {
             let key = Int((candidate.automaticOffset * 1000).rounded())
             var correlation = correlations[key] ?? LagCorrelation()
-            let gyroX = clamp(candidate.deltaX, min: -0.03, max: 0.03)
-            let gyroY = clamp(candidate.deltaY, min: -0.03, max: 0.03)
+            let gyroX = clamp(candidate.deltaX, min: -0.012, max: 0.012)
+            let gyroY = clamp(candidate.deltaY, min: -0.012, max: 0.012)
             correlation.crossX = correlation.crossX * decay + weight * visualX * gyroX
             correlation.crossY = correlation.crossY * decay + weight * visualY * gyroY
             correlation.visualEnergyX = correlation.visualEnergyX * decay + weight * visualX * visualX
@@ -1306,19 +1306,6 @@ private final class ComplementaryMotionFusion {
             correlation.gyroEnergyY = correlation.gyroEnergyY * decay + weight * gyroY * gyroY
             correlation.sampleCount = min(correlation.sampleCount + 1, 10_000)
             correlations[key] = correlation
-        }
-    }
-
-    private func selectBestOffsetIfReady() {
-        let candidates = correlations.filter {
-            $0.value.sampleCount >= 48 &&
-                $0.value.correlationX > 0.40 &&
-                $0.value.correlationY > 0.40
-        }
-        guard let best = candidates.max(by: { $0.value.score < $1.value.score }) else { return }
-        let currentScore = correlations[selectedOffsetKey]?.score ?? 0
-        if best.key == selectedOffsetKey || best.value.score >= currentScore + 0.04 {
-            selectedOffsetKey = best.key
         }
     }
 
@@ -1337,76 +1324,72 @@ private final class ComplementaryMotionFusion {
         isValid: Bool
     ) {
         guard let correlation = correlations[selectedOffsetKey] else {
-            return (0, 0, 0, 1, false)
+            return (calibrationTrust, 0, 0, 0, true)
         }
         let targetGainX = correlation.gainX
         let targetGainY = correlation.gainY
-        let targetsAreUsable = targetGainX >= 0.25 && targetGainX <= 32 &&
-            targetGainY >= 0.25 && targetGainY <= 32
-        guard correlation.sampleCount >= 48, targetsAreUsable else {
+        guard correlation.sampleCount >= 64 else {
             return (
-                0,
+                calibrationTrust,
                 correlation.correlationX,
                 correlation.correlationY,
                 correlation.normalizedError,
-                false
+                true
             )
         }
-
-        if !hasInitializedGains {
-            gyroGainX = targetGainX
-            gyroGainY = targetGainY
-            hasInitializedGains = true
-        } else {
-            gyroGainX += clamp((targetGainX - gyroGainX) * 0.08, min: -0.30, max: 0.30)
-            gyroGainY += clamp((targetGainY - gyroGainY) * 0.08, min: -0.30, max: 0.30)
+        guard correlation.sampleCount > lastCalibrationSampleCount else {
+            return (
+                calibrationTrust,
+                correlation.correlationX,
+                correlation.correlationY,
+                correlation.normalizedError,
+                calibrationTrust >= 0.20
+            )
         }
-        gyroGainX = clamp(gyroGainX, min: 0.25, max: 32)
-        gyroGainY = clamp(gyroGainY, min: 0.25, max: 32)
+        lastCalibrationSampleCount = correlation.sampleCount
 
-        let gainMismatch = max(
-            abs(gyroGainX - targetGainX) / max(targetGainX, 0.25),
-            abs(gyroGainY - targetGainY) / max(targetGainY, 0.25)
-        )
         let axisCorrelation = min(correlation.correlationX, correlation.correlationY)
-        let hasHeadroom = targetGainX < 30 && targetGainY < 30
-        let isValid = correlation.sampleCount >= 72 &&
-            axisCorrelation >= 0.72 &&
-            correlation.normalizedError <= 0.60 &&
-            gainMismatch <= 0.20 &&
-            hasHeadroom
-        guard isValid else {
-            return (
-                0,
-                correlation.correlationX,
-                correlation.correlationY,
-                correlation.normalizedError,
-                false
-            )
-        }
+        let gainsArePlausible = targetGainX >= Self.referenceGainX * 0.65 &&
+            targetGainX <= Self.referenceGainX * 1.35 &&
+            targetGainY >= Self.referenceGainY * 0.65 &&
+            targetGainY <= Self.referenceGainY * 1.35
+        let measurementIsReliable = gainsArePlausible &&
+            axisCorrelation >= 0.78 &&
+            correlation.normalizedError <= 0.55
 
-        let trainingProgress = clamp(
-            CGFloat(correlation.sampleCount - 72) / 48,
-            min: 0,
-            max: 1
-        )
-        let correlationQuality = clamp((axisCorrelation - 0.65) / 0.25, min: 0, max: 1)
-        let residualQuality = clamp(
-            (0.60 - correlation.normalizedError) / 0.30,
-            min: 0,
-            max: 1
-        )
-        let convergenceQuality = clamp((0.20 - gainMismatch) / 0.15, min: 0, max: 1)
-        let trust = min(
-            0.90,
-            0.90 * trainingProgress * correlationQuality * residualQuality * convergenceQuality
-        )
+        if measurementIsReliable {
+            gyroGainX += clamp((targetGainX - gyroGainX) * 0.025, min: -0.05, max: 0.05)
+            gyroGainY += clamp((targetGainY - gyroGainY) * 0.025, min: -0.05, max: 0.05)
+            gyroGainX = clamp(
+                gyroGainX,
+                min: Self.referenceGainX * 0.75,
+                max: Self.referenceGainX * 1.25
+            )
+            gyroGainY = clamp(
+                gyroGainY,
+                min: Self.referenceGainY * 0.75,
+                max: Self.referenceGainY * 1.25
+            )
+            let correlationQuality = clamp((axisCorrelation - 0.72) / 0.23, min: 0, max: 1)
+            let residualQuality = clamp(
+                (0.58 - correlation.normalizedError) / 0.34,
+                min: 0,
+                max: 1
+            )
+            let targetTrust = 0.70 + 0.15 * correlationQuality * residualQuality
+            calibrationTrust += (targetTrust - calibrationTrust) * 0.04
+        } else if axisCorrelation < 0.25 || correlation.normalizedError > 0.90 {
+            calibrationTrust += (0 - calibrationTrust) * 0.08
+        } else {
+            calibrationTrust += (0.35 - calibrationTrust) * 0.01
+        }
+        calibrationTrust = clamp(calibrationTrust, min: 0, max: 0.85)
         return (
-            trust,
+            calibrationTrust,
             correlation.correlationX,
             correlation.correlationY,
             correlation.normalizedError,
-            true
+            calibrationTrust >= 0.20
         )
     }
 
@@ -1498,16 +1481,23 @@ private final class VirtualCameraTrajectoryController {
         lowPathX += measuredLowDeltaX
         lowPathY += measuredLowDeltaY
 
-        let highMemory = max(tuning.highFrequencyMemory, 0.25)
+        let highMemory = max(tuning.highFrequencyMemory, 0.08)
         let highLeak = CGFloat(exp(-Double(dt) / highMemory))
         highOffsetX = highOffsetX * highLeak + highFrequencyDeltaX
         highOffsetY = highOffsetY * highLeak + highFrequencyDeltaY
 
+        let wasPanning = isPanning
         let panState = updatePanState(
             velocityX: measuredLowDeltaX / dt,
             velocityY: measuredLowDeltaY / dt,
             threshold: tuning.panActivationSpeed
         )
+        if wasPanning, !panState {
+            velocityX *= 0.30
+            velocityY *= 0.30
+            accelerationX *= 0.20
+            accelerationY *= 0.20
+        }
         let hardLimit = max(tuning.maximumCropOffsetFraction, 0.001)
         let lowAmount = tuning.lowFrequencyStabilizationAmount
         let highAmount = tuning.highFrequencyCompensationAmount
