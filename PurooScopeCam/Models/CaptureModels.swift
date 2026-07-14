@@ -241,10 +241,6 @@ struct StabilizationTuning: Equatable {
         return min(0.50, 0.12 + CGFloat(effectiveStrength) * 0.38)
     }
 
-    var staticFollowFrequency: Double {
-        0.55 - effectiveStrength * 0.20
-    }
-
     var panFollowFrequency: Double {
         7.5 - effectiveStrength * 1.5
     }
@@ -266,23 +262,11 @@ struct StabilizationTuning: Equatable {
     }
 
     var highFrequencyMemory: Double {
-        0.12 + effectiveStrength * 0.08
+        0.08 + effectiveStrength * 0.04
     }
 
     var boundaryFollowFrequency: Double {
         8.0
-    }
-
-    var maximumTrajectoryVelocity: CGFloat {
-        0.9
-    }
-
-    var maximumTrajectoryAcceleration: CGFloat {
-        6
-    }
-
-    var maximumTrajectoryJerk: CGFloat {
-        60
     }
 
     private var effectiveStrength: Double {

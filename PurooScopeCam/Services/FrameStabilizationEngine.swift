@@ -105,7 +105,7 @@ final class StabilizationTraceRecorder {
                 var header = metadata
                 header["type"] = "session"
                 header["created_at"] = ISO8601DateFormatter().string(from: Date())
-                header["format_version"] = 4
+                header["format_version"] = 5
                 self.appendJSONObject(header)
                 self.flushIfNeeded(force: true)
             } catch {
@@ -1413,15 +1413,12 @@ private final class VirtualCameraTrajectoryController {
     private var highOffsetY: CGFloat = 0
     private var desiredX: CGFloat = 0
     private var desiredY: CGFloat = 0
-    private var velocityX: CGFloat = 0
-    private var velocityY: CGFloat = 0
-    private var accelerationX: CGFloat = 0
-    private var accelerationY: CGFloat = 0
     private var lastTimestamp: TimeInterval?
     private var recentVelocities: [CGPoint] = []
     private var isPanning = false
     private var panEnterCount = 0
     private var panExitCount = 0
+    private var boundaryHoldCount = 0
 
     func reset() {
         lowPathX = 0
@@ -1430,15 +1427,12 @@ private final class VirtualCameraTrajectoryController {
         highOffsetY = 0
         desiredX = 0
         desiredY = 0
-        velocityX = 0
-        velocityY = 0
-        accelerationX = 0
-        accelerationY = 0
         lastTimestamp = nil
         recentVelocities.removeAll(keepingCapacity: true)
         isPanning = false
         panEnterCount = 0
         panExitCount = 0
+        boundaryHoldCount = 0
     }
 
     func update(
@@ -1481,44 +1475,52 @@ private final class VirtualCameraTrajectoryController {
         lowPathX += measuredLowDeltaX
         lowPathY += measuredLowDeltaY
 
-        let highMemory = max(tuning.highFrequencyMemory, 0.08)
+        let highMemory = max(tuning.highFrequencyMemory, 0.06)
         let highLeak = CGFloat(exp(-Double(dt) / highMemory))
         highOffsetX = highOffsetX * highLeak + highFrequencyDeltaX
         highOffsetY = highOffsetY * highLeak + highFrequencyDeltaY
 
-        let wasPanning = isPanning
+        let lowVelocityX = measuredLowDeltaX / dt
+        let lowVelocityY = measuredLowDeltaY / dt
+        let instantaneousVelocityX = (measuredLowDeltaX + highFrequencyDeltaX) / dt
+        let instantaneousVelocityY = (measuredLowDeltaY + highFrequencyDeltaY) / dt
         let panState = updatePanState(
-            velocityX: measuredLowDeltaX / dt,
-            velocityY: measuredLowDeltaY / dt,
+            velocityX: lowVelocityX,
+            velocityY: lowVelocityY,
+            instantaneousVelocityX: instantaneousVelocityX,
+            instantaneousVelocityY: instantaneousVelocityY,
             threshold: tuning.panActivationSpeed
         )
-        if wasPanning, !panState {
-            velocityX *= 0.30
-            velocityY *= 0.30
-            accelerationX *= 0.20
-            accelerationY *= 0.20
-        }
         let hardLimit = max(tuning.maximumCropOffsetFraction, 0.001)
         let lowAmount = tuning.lowFrequencyStabilizationAmount
         let highAmount = tuning.highFrequencyCompensationAmount
-        let preCorrectionX = (desiredX - lowPathX) * lowAmount - highOffsetX * highAmount
-        let preCorrectionY = (desiredY - lowPathY) * lowAmount - highOffsetY * highAmount
-        let preUsage = max(abs(preCorrectionX), abs(preCorrectionY)) / hardLimit
+        let lowCorrectionX = (desiredX - lowPathX) * lowAmount
+        let lowCorrectionY = (desiredY - lowPathY) * lowAmount
+        let preUsage = max(abs(lowCorrectionX), abs(lowCorrectionY)) / hardLimit
 
-        let baseFollowFrequency = panState
-            ? tuning.panFollowFrequency
-            : tuning.staticFollowFrequency
-        let boundaryPressure = smoothstep(
-            lower: 0.45,
-            upper: 0.92,
-            value: preUsage
+        if preUsage >= 0.72 {
+            boundaryHoldCount = min(boundaryHoldCount + 1, 24)
+        } else {
+            boundaryHoldCount = max(boundaryHoldCount - 2, 0)
+        }
+        let sustainedBoundary = clamp(
+            CGFloat(boundaryHoldCount - 5) / 10,
+            min: 0,
+            max: 1
         )
-        let followFrequency = baseFollowFrequency +
-            (tuning.boundaryFollowFrequency - baseFollowFrequency) * Double(boundaryPressure)
-        advanceDesiredPath(
+        let boundaryPressure = smoothstep(
+            lower: 0.72,
+            upper: 0.96,
+            value: preUsage
+        ) * sustainedBoundary
+        let isActivelyPanning = panState &&
+            hypot(instantaneousVelocityX, instantaneousVelocityY) >= tuning.panActivationSpeed * 0.30
+        let followFrequency = isActivelyPanning
+            ? tuning.panFollowFrequency
+            : tuning.boundaryFollowFrequency * Double(boundaryPressure)
+        followDesiredPath(
             deltaTime: dt,
-            followFrequency: followFrequency,
-            tuning: tuning
+            followFrequency: followFrequency
         )
 
         var correctionX = (desiredX - lowPathX) * lowAmount - highOffsetX * highAmount
@@ -1538,6 +1540,8 @@ private final class VirtualCameraTrajectoryController {
     private func updatePanState(
         velocityX: CGFloat,
         velocityY: CGFloat,
+        instantaneousVelocityX: CGFloat,
+        instantaneousVelocityY: CGFloat,
         threshold: CGFloat
     ) -> Bool {
         recentVelocities.append(CGPoint(x: velocityX, y: velocityY))
@@ -1560,14 +1564,17 @@ private final class VirtualCameraTrajectoryController {
         }
         let coherence = movingCount >= 4 ? hypot(directionX, directionY) / movingCount : 0
         let meanSpeed = movingCount > 0 ? speedTotal / movingCount : 0
+        let instantaneousSpeed = hypot(instantaneousVelocityX, instantaneousVelocityY)
 
         if isPanning {
-            if coherence < 0.55 || meanSpeed < threshold * 0.55 {
+            if instantaneousSpeed < threshold * 0.35 ||
+                coherence < 0.55 ||
+                meanSpeed < threshold * 0.55 {
                 panExitCount += 1
             } else {
                 panExitCount = 0
             }
-            if panExitCount >= 10 {
+            if panExitCount >= 3 {
                 isPanning = false
                 panExitCount = 0
                 panEnterCount = 0
@@ -1578,7 +1585,7 @@ private final class VirtualCameraTrajectoryController {
             } else {
                 panEnterCount = max(0, panEnterCount - 1)
             }
-            if panEnterCount >= 6 {
+            if panEnterCount >= 4 {
                 isPanning = true
                 panEnterCount = 0
                 panExitCount = 0
@@ -1587,49 +1594,16 @@ private final class VirtualCameraTrajectoryController {
         return isPanning
     }
 
-    private func advanceDesiredPath(
+    private func followDesiredPath(
         deltaTime: CGFloat,
-        followFrequency: Double,
-        tuning: StabilizationTuning
+        followFrequency: Double
     ) {
-        let omega = CGFloat(2 * Double.pi * followFrequency)
-        let requestedAccelerationX = omega * omega * (lowPathX - desiredX) - 2 * omega * velocityX
-        let requestedAccelerationY = omega * omega * (lowPathY - desiredY) - 2 * omega * velocityY
-        let jerkStep = tuning.maximumTrajectoryJerk * deltaTime
-        accelerationX += clamp(
-            requestedAccelerationX - accelerationX,
-            min: -jerkStep,
-            max: jerkStep
+        guard followFrequency > 0.001 else { return }
+        let amount = CGFloat(
+            1 - exp(-2 * Double.pi * followFrequency * Double(deltaTime))
         )
-        accelerationY += clamp(
-            requestedAccelerationY - accelerationY,
-            min: -jerkStep,
-            max: jerkStep
-        )
-        accelerationX = clamp(
-            accelerationX,
-            min: -tuning.maximumTrajectoryAcceleration,
-            max: tuning.maximumTrajectoryAcceleration
-        )
-        accelerationY = clamp(
-            accelerationY,
-            min: -tuning.maximumTrajectoryAcceleration,
-            max: tuning.maximumTrajectoryAcceleration
-        )
-        velocityX += accelerationX * deltaTime
-        velocityY += accelerationY * deltaTime
-        velocityX = clamp(
-            velocityX,
-            min: -tuning.maximumTrajectoryVelocity,
-            max: tuning.maximumTrajectoryVelocity
-        )
-        velocityY = clamp(
-            velocityY,
-            min: -tuning.maximumTrajectoryVelocity,
-            max: tuning.maximumTrajectoryVelocity
-        )
-        desiredX += velocityX * deltaTime
-        desiredY += velocityY * deltaTime
+        desiredX += (lowPathX - desiredX) * amount
+        desiredY += (lowPathY - desiredY) * amount
     }
 
     private func smoothstep(lower: CGFloat, upper: CGFloat, value: CGFloat) -> CGFloat {
