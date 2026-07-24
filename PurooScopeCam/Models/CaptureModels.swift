@@ -125,77 +125,54 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
     }
 }
 
-enum GyroAxisMapping: String, CaseIterable, Identifiable, Equatable {
-    case measuredPortrait
-    case xPositive
-    case xNegative
-    case yPositive
-    case yNegative
+/// 外接望远镜的角放大倍率。
+///
+/// 相机内参矩阵只描述手机镜头本身，完全感知不到目镜之后的光学系统，
+/// 因此陀螺仪角位移换算成画面位移时必须额外乘上这个倍率。
+struct TelescopeMagnificationOption: Identifiable, Hashable {
+    static let minimum: Double = 1
+    static let maximum: Double = 30
 
-    var id: String { rawValue }
+    static let presets: [TelescopeMagnificationOption] = [
+        TelescopeMagnificationOption(value: 1),
+        TelescopeMagnificationOption(value: 8),
+        TelescopeMagnificationOption(value: 10),
+        TelescopeMagnificationOption(value: 12),
+        TelescopeMagnificationOption(value: 15),
+        TelescopeMagnificationOption(value: 20),
+        TelescopeMagnificationOption(value: 25)
+    ]
+
+    let value: Double
+
+    var id: String { String(format: "%.0f", value) }
 
     var title: String {
-        switch self {
-        case .measuredPortrait:
-            return "实测"
-        case .xPositive:
-            return "X正"
-        case .xNegative:
-            return "X反"
-        case .yPositive:
-            return "YX正"
-        case .yNegative:
-            return "YX反"
-        }
-    }
-
-    var debugTitle: String {
-        switch self {
-        case .measuredPortrait:
-            return "Y→横 X→竖"
-        case .xPositive:
-            return "X→横 -Y→竖"
-        case .xNegative:
-            return "-X→横 Y→竖"
-        case .yPositive:
-            return "Y→横 -X→竖"
-        case .yNegative:
-            return "-Y→横 X→竖"
-        }
-    }
-
-    func map(x: Double, y: Double) -> (horizontal: Double, vertical: Double) {
-        switch self {
-        case .measuredPortrait:
-            return (y, x)
-        case .xPositive:
-            return (x, -y)
-        case .xNegative:
-            return (-x, y)
-        case .yPositive:
-            return (y, -x)
-        case .yNegative:
-            return (-y, x)
-        }
+        value <= 1.0001 ? "裸机" : "\(Int(value.rounded()))x"
     }
 }
 
 struct StabilizationTuning: Equatable {
+    static let defaultOpticalMagnification: Double = 10
+
     var strength: Double
     var displayZoomFactor: CGFloat
     var motionTimeOffset: TimeInterval
-    var gyroAxisMapping: GyroAxisMapping
+    var opticalMagnification: Double
 
     init(
         strength: Double,
         displayZoomFactor: CGFloat = 1,
         motionTimeOffset: TimeInterval = 0,
-        gyroAxisMapping: GyroAxisMapping = .measuredPortrait
+        opticalMagnification: Double = StabilizationTuning.defaultOpticalMagnification
     ) {
         self.strength = Swift.min(Swift.max(strength, 0), 1)
         self.displayZoomFactor = Swift.min(Swift.max(displayZoomFactor, 1), 6)
         self.motionTimeOffset = Swift.min(Swift.max(motionTimeOffset, -0.08), 0.08)
-        self.gyroAxisMapping = gyroAxisMapping
+        self.opticalMagnification = Swift.min(
+            Swift.max(opticalMagnification, TelescopeMagnificationOption.minimum),
+            TelescopeMagnificationOption.maximum
+        )
     }
 
     var percentText: String {
@@ -209,10 +186,6 @@ struct StabilizationTuning: Equatable {
     var previewCropScale: CGFloat {
         guard usesDigitalStabilization else { return 1 }
         return 1.50
-    }
-
-    var motionTimeOffsetMilliseconds: Double {
-        motionTimeOffset * 1000
     }
 
     var previewCropTravelFactor: CGFloat {

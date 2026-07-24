@@ -6,7 +6,7 @@ struct ControlPanelView: View {
     var body: some View {
         VStack(spacing: 12) {
             stabilizationStrengthControl
-            stabilizationCalibrationControl
+            telescopeMagnificationControl
             qualityPicker
 
             HStack(spacing: 12) {
@@ -133,44 +133,34 @@ struct ControlPanelView: View {
         .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var stabilizationCalibrationControl: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Label("同步", systemImage: "timer")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.86))
+    private var telescopeMagnificationControl: some View {
+        HStack(spacing: 10) {
+            Label("望远镜", systemImage: "binoculars")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.86))
 
-                    Spacer(minLength: 0)
-
-                    Text("\(Int((camera.stabilizationTimeOffset * 1000).rounded()))ms")
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.82))
-                }
-
-                Slider(
-                    value: Binding(
-                        get: { camera.stabilizationTimeOffset * 1000 },
-                        set: { camera.setStabilizationTimeOffsetMilliseconds($0) }
-                    ),
-                    in: -80...80
+            Picker(
+                "望远镜倍率",
+                selection: Binding(
+                    get: { camera.telescopeMagnification },
+                    set: { camera.setTelescopeMagnification($0) }
                 )
-            }
-
-            Menu {
-                ForEach(GyroAxisMapping.allCases) { mapping in
-                    Button(mapping.debugTitle) {
-                        camera.setGyroAxisMapping(mapping)
-                    }
+            ) {
+                ForEach(TelescopeMagnificationOption.presets) { option in
+                    Text(option.title).tag(option.value)
                 }
-            } label: {
-                Label(camera.gyroAxisMapping.title, systemImage: "arrow.triangle.swap")
-                    .frame(width: 86)
             }
-            .buttonStyle(ScopeButtonStyle())
+            .pickerStyle(.menu)
+
+            Spacer(minLength: 0)
+
+            Text("陀螺标定基准")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.58))
+                .lineLimit(1)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .frame(height: 38)
         .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 

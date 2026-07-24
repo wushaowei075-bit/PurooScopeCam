@@ -29,8 +29,8 @@ struct StabilizationDebugSnapshot {
     var correctionY: CGFloat
     var gyroTrust: CGFloat
     var automaticTimeOffsetMilliseconds: Double
-    var gyroGainX: CGFloat
-    var gyroGainY: CGFloat
+    var opticalMagnification: CGFloat
+    var referenceMagnification: CGFloat
     var gyroCorrelationX: CGFloat
     var gyroCorrelationY: CGFloat
     var gyroNormalizedError: CGFloat
@@ -41,6 +41,10 @@ struct StabilizationDebugSnapshot {
     var analysisMilliseconds: Double
     var droppedAnalysisFrames: Int
     var motionSampleCount: Int
+    var focalLengthPixelsX: CGFloat
+    var focalLengthPixelsY: CGFloat
+    var frameWidth: Int
+    var frameHeight: Int
 
     func overlayText(systemModeName: String) -> String {
         """
@@ -50,7 +54,7 @@ struct StabilizationDebugSnapshot {
         融合 X:\(format(Double(fusedDeltaX), digits: 5)) Y:\(format(Double(fusedDeltaY), digits: 5))  陀螺信任:\(format(Double(gyroTrust), digits: 2))
         高频 X:\(format(Double(highFrequencyDeltaX), digits: 5)) Y:\(format(Double(highFrequencyDeltaY), digits: 5))  低频 X:\(format(Double(lowFrequencyDeltaX), digits: 5)) Y:\(format(Double(lowFrequencyDeltaY), digits: 5))
         裁切 X:\(format(Double(correctionX), digits: 4)) Y:\(format(Double(correctionY), digits: 4)) 使用:\(format(Double(cropUsage * 100), digits: 0))% 压力:\(format(Double(boundaryPressure * 100), digits: 0))%
-        自动同步:\(format(automaticTimeOffsetMilliseconds, digits: 0))ms  增益:\(format(Double(gyroGainX), digits: 2)),\(format(Double(gyroGainY), digits: 2))
+        倍率:\(format(Double(opticalMagnification), digits: 2))/\(format(Double(referenceMagnification), digits: 0))x  焦距:\(format(Double(focalLengthPixelsX), digits: 0))px  画幅:\(frameWidth)x\(frameHeight)
         相关:\(format(Double(gyroCorrelationX), digits: 2)),\(format(Double(gyroCorrelationY), digits: 2))  误差:\(format(Double(gyroNormalizedError), digits: 2))  标定:\(isGyroCalibrationValid ? "有效" : "等待")
         分析:\(format(analysisMilliseconds, digits: 1))ms  丢弃:\(droppedAnalysisFrames)  IMU:\(motionSampleCount)  纹理:\(format(Double(visualTexture), digits: 1))
         """
@@ -105,7 +109,7 @@ final class StabilizationTraceRecorder {
                 var header = metadata
                 header["type"] = "session"
                 header["created_at"] = ISO8601DateFormatter().string(from: Date())
-                header["format_version"] = 5
+                header["format_version"] = 6
                 self.appendJSONObject(header)
                 self.flushIfNeeded(force: true)
             } catch {
@@ -176,8 +180,12 @@ final class StabilizationTraceRecorder {
                 "boundary_pressure": debug.boundaryPressure,
                 "pan": debug.isIntentionalPan,
                 "gyro_trust": debug.gyroTrust,
-                "gyro_gain_x": debug.gyroGainX,
-                "gyro_gain_y": debug.gyroGainY,
+                "magnification": debug.opticalMagnification,
+                "magnification_ref": debug.referenceMagnification,
+                "focal_px_x": debug.focalLengthPixelsX,
+                "focal_px_y": debug.focalLengthPixelsY,
+                "frame_w": debug.frameWidth,
+                "frame_h": debug.frameHeight,
                 "gyro_correlation_x": debug.gyroCorrelationX,
                 "gyro_correlation_y": debug.gyroCorrelationY,
                 "gyro_nrmse": debug.gyroNormalizedError,
@@ -404,8 +412,8 @@ final class FrameStabilizationEngine {
             correctionY: crop.correctionY,
             gyroTrust: fused.gyroTrust,
             automaticTimeOffsetMilliseconds: fused.automaticOffset * 1000,
-            gyroGainX: fused.gyroGainX,
-            gyroGainY: fused.gyroGainY,
+            opticalMagnification: fused.opticalMagnification,
+            referenceMagnification: fused.referenceMagnification,
             gyroCorrelationX: fused.gyroCorrelationX,
             gyroCorrelationY: fused.gyroCorrelationY,
             gyroNormalizedError: fused.gyroNormalizedError,
@@ -415,7 +423,11 @@ final class FrameStabilizationEngine {
             boundaryPressure: crop.boundaryPressure,
             analysisMilliseconds: analysisMilliseconds,
             droppedAnalysisFrames: droppedFrames,
-            motionSampleCount: input.motionSamples.count
+            motionSampleCount: input.motionSamples.count,
+            focalLengthPixelsX: input.focalLengthPixelsX,
+            focalLengthPixelsY: input.focalLengthPixelsY,
+            frameWidth: CVPixelBufferGetWidth(input.pixelBuffer),
+            frameHeight: CVPixelBufferGetHeight(input.pixelBuffer)
         )
         let result = StabilizationFrameResult(
             timestamp: input.timestamp,
@@ -1033,14 +1045,20 @@ private final class QuaternionMotionEstimator {
             }
             let relative = previous.inverse.multiplied(by: current)
             let rotation = relative.rotationVector
-            let mapped = tuning.gyroAxisMapping.map(x: rotation.x, y: rotation.y)
+            // 竖屏取向下设备 y 轴旋转对应画面水平位移、x 轴旋转对应垂直位移。
+            // 离线标定 (analysis_outputs/20260713_v2/gyro_mapping_fit.json) 中该映射的
+            // 相关系数为 0.965/0.970，其余候选仅 0.43，可辨识性足够，无需运行期切换。
+            let horizontalRotation = rotation.y
+            let verticalRotation = rotation.x
+            // 这里只做手机镜头本身的针孔投影，输出仍是「不含外接光学放大」的归一化位移。
+            // 望远镜倍率由 ComplementaryMotionFusion 统一乘上，不要在此重复。
             let deltaX = clamp(
-                CGFloat(mapped.horizontal) * focalLengthPixelsX / max(frameWidth, 1),
+                CGFloat(horizontalRotation) * focalLengthPixelsX / max(frameWidth, 1),
                 min: -0.06,
                 max: 0.06
             )
             let deltaY = clamp(
-                CGFloat(mapped.vertical) * focalLengthPixelsY / max(frameHeight, 1),
+                CGFloat(verticalRotation) * focalLengthPixelsY / max(frameHeight, 1),
                 min: -0.06,
                 max: 0.06
             )
@@ -1110,8 +1128,8 @@ private struct FusedMotionDelta {
     var confidence: CGFloat
     var gyroTrust: CGFloat
     var automaticOffset: TimeInterval
-    var gyroGainX: CGFloat
-    var gyroGainY: CGFloat
+    var opticalMagnification: CGFloat
+    var referenceMagnification: CGFloat
     var gyroCorrelationX: CGFloat
     var gyroCorrelationY: CGFloat
     var gyroNormalizedError: CGFloat
@@ -1119,9 +1137,9 @@ private struct FusedMotionDelta {
 }
 
 private final class ComplementaryMotionFusion {
-    private static let referenceGainX: CGFloat = 15.57
-    private static let referenceGainY: CGFloat = 8.90
     private static let referenceTrust: CGFloat = 0.70
+    private static let minimumMagnification = CGFloat(TelescopeMagnificationOption.minimum)
+    private static let maximumMagnification = CGFloat(TelescopeMagnificationOption.maximum)
 
     private struct LagCorrelation {
         var crossX: CGFloat = 0
@@ -1132,12 +1150,12 @@ private final class ComplementaryMotionFusion {
         var gyroEnergyY: CGFloat = 0
         var sampleCount: Int = 0
 
-        var gainX: CGFloat {
-            crossX / max(gyroEnergyX, 0.0000000001)
-        }
-
-        var gainY: CGFloat {
-            crossY / max(gyroEnergyY, 0.0000000001)
+        /// 两轴合并的单参数最小二乘解。
+        ///
+        /// 陀螺增量已在投影阶段除以各自的画幅尺寸，因此两轴共享同一个未知量
+        /// （望远镜倍率），合并回归比分轴各拟合一个增益更稳定。
+        var combinedGain: CGFloat {
+            (crossX + crossY) / max(gyroEnergyX + gyroEnergyY, 0.0000000001)
         }
 
         var correlationX: CGFloat {
@@ -1148,21 +1166,24 @@ private final class ComplementaryMotionFusion {
             crossY / sqrt(max(visualEnergyY * gyroEnergyY, 0.0000000001))
         }
 
+        /// 单参数模型的归一化残差，必须与 combinedGain 同口径。
+        ///
+        /// 分轴各拟合一个增益会多出一个自由度，能把倍率或轴映射的错误
+        /// 吸收进去而残差依然很低，从而放行本该判为失败的标定。
         var normalizedError: CGFloat {
-            let residualX = max(visualEnergyX - crossX * crossX / max(gyroEnergyX, 0.0000000001), 0)
-            let residualY = max(visualEnergyY - crossY * crossY / max(gyroEnergyY, 0.0000000001), 0)
-            return sqrt(
-                (residualX + residualY) /
-                    max(visualEnergyX + visualEnergyY, 0.0000000001)
-            )
+            let visualEnergy = max(visualEnergyX + visualEnergyY, 0.0000000001)
+            let gyroEnergy = max(gyroEnergyX + gyroEnergyY, 0.0000000001)
+            let cross = crossX + crossY
+            let residual = max(visualEnergy - cross * cross / gyroEnergy, 0)
+            return sqrt(residual / visualEnergy)
         }
 
     }
 
     private var correlations: [Int: LagCorrelation] = [:]
     private let selectedOffsetKey = 0
-    private var gyroGainX = ComplementaryMotionFusion.referenceGainX
-    private var gyroGainY = ComplementaryMotionFusion.referenceGainY
+    private var estimatedMagnification = CGFloat(StabilizationTuning.defaultOpticalMagnification)
+    private var referenceMagnification = CGFloat(StabilizationTuning.defaultOpticalMagnification)
     private var calibrationTrust = ComplementaryMotionFusion.referenceTrust
     private var lastCalibrationSampleCount = 0
     private var visualLowVelocityX: CGFloat = 0
@@ -1179,11 +1200,25 @@ private final class ComplementaryMotionFusion {
         lastTimestamp = nil
         if !keepCalibration {
             correlations.removeAll(keepingCapacity: true)
-            gyroGainX = Self.referenceGainX
-            gyroGainY = Self.referenceGainY
+            estimatedMagnification = referenceMagnification
             calibrationTrust = Self.referenceTrust
             lastCalibrationSampleCount = 0
         }
+    }
+
+    /// 用户换了另一台望远镜时，之前学到的倍率与相关能量全部作废。
+    private func applyReferenceMagnification(_ requested: CGFloat) {
+        let clamped = clamp(
+            requested,
+            min: Self.minimumMagnification,
+            max: Self.maximumMagnification
+        )
+        guard abs(clamped - referenceMagnification) > 0.01 else { return }
+        referenceMagnification = clamped
+        estimatedMagnification = clamped
+        correlations.removeAll(keepingCapacity: true)
+        calibrationTrust = Self.referenceTrust
+        lastCalibrationSampleCount = 0
     }
 
     func update(
@@ -1192,6 +1227,7 @@ private final class ComplementaryMotionFusion {
         gyroCandidates: [GyroMotionCandidate],
         tuning: StabilizationTuning
     ) -> FusedMotionDelta {
+        applyReferenceMagnification(CGFloat(tuning.opticalMagnification))
         let elapsed = lastTimestamp.map { timestamp - $0 } ?? (1.0 / 60.0)
         lastTimestamp = timestamp
         if !elapsed.isFinite || elapsed <= 0 || elapsed > 0.12 {
@@ -1204,7 +1240,7 @@ private final class ComplementaryMotionFusion {
             updateLagCorrelations(visual: visual, candidates: gyroCandidates)
         }
         let selected = selectedCandidate(from: gyroCandidates)
-        let calibration = updateGainsFromSelectedCorrelation()
+        let calibration = updateMagnificationFromSelectedCorrelation()
         let gyroTrust = calibration.trust
 
         let visualVelocityX = visual.map { $0.deltaX / dt }
@@ -1212,8 +1248,8 @@ private final class ComplementaryMotionFusion {
         let predictedGyroX: CGFloat
         let predictedGyroY: CGFloat
         if let selected {
-            predictedGyroX = gyroGainX * selected.deltaX
-            predictedGyroY = gyroGainY * selected.deltaY
+            predictedGyroX = estimatedMagnification * selected.deltaX
+            predictedGyroY = estimatedMagnification * selected.deltaY
         } else {
             predictedGyroX = 0
             predictedGyroY = 0
@@ -1273,8 +1309,8 @@ private final class ComplementaryMotionFusion {
             confidence: visual?.confidence ?? gyroTrust,
             gyroTrust: gyroTrust,
             automaticOffset: TimeInterval(selectedOffsetKey) / 1000,
-            gyroGainX: gyroGainX,
-            gyroGainY: gyroGainY,
+            opticalMagnification: estimatedMagnification,
+            referenceMagnification: referenceMagnification,
             gyroCorrelationX: calibration.correlationX,
             gyroCorrelationY: calibration.correlationY,
             gyroNormalizedError: calibration.normalizedError,
@@ -1316,7 +1352,7 @@ private final class ComplementaryMotionFusion {
         }
     }
 
-    private func updateGainsFromSelectedCorrelation() -> (
+    private func updateMagnificationFromSelectedCorrelation() -> (
         trust: CGFloat,
         correlationX: CGFloat,
         correlationY: CGFloat,
@@ -1326,8 +1362,7 @@ private final class ComplementaryMotionFusion {
         guard let correlation = correlations[selectedOffsetKey] else {
             return (calibrationTrust, 0, 0, 0, true)
         }
-        let targetGainX = correlation.gainX
-        let targetGainY = correlation.gainY
+        let targetMagnification = correlation.combinedGain
         guard correlation.sampleCount >= 64 else {
             return (
                 calibrationTrust,
@@ -1349,26 +1384,25 @@ private final class ComplementaryMotionFusion {
         lastCalibrationSampleCount = correlation.sampleCount
 
         let axisCorrelation = min(correlation.correlationX, correlation.correlationY)
-        let gainsArePlausible = targetGainX >= Self.referenceGainX * 0.65 &&
-            targetGainX <= Self.referenceGainX * 1.35 &&
-            targetGainY >= Self.referenceGainY * 0.65 &&
-            targetGainY <= Self.referenceGainY * 1.35
-        let measurementIsReliable = gainsArePlausible &&
+        // 可信度只看残差与相关性。不再检查倍率是否接近某个出厂参考值——
+        // 那会让任何非标定倍率的望远镜被误判为标定失败并静默退回纯视觉稳像。
+        let magnificationIsFinite = targetMagnification.isFinite &&
+            targetMagnification >= Self.minimumMagnification * 0.5 &&
+            targetMagnification <= Self.maximumMagnification
+        let measurementIsReliable = magnificationIsFinite &&
             axisCorrelation >= 0.78 &&
             correlation.normalizedError <= 0.55
 
         if measurementIsReliable {
-            gyroGainX += clamp((targetGainX - gyroGainX) * 0.025, min: -0.05, max: 0.05)
-            gyroGainY += clamp((targetGainY - gyroGainY) * 0.025, min: -0.05, max: 0.05)
-            gyroGainX = clamp(
-                gyroGainX,
-                min: Self.referenceGainX * 0.75,
-                max: Self.referenceGainX * 1.25
+            estimatedMagnification += clamp(
+                (targetMagnification - estimatedMagnification) * 0.025,
+                min: -0.05,
+                max: 0.05
             )
-            gyroGainY = clamp(
-                gyroGainY,
-                min: Self.referenceGainY * 0.75,
-                max: Self.referenceGainY * 1.25
+            estimatedMagnification = clamp(
+                estimatedMagnification,
+                min: Self.minimumMagnification,
+                max: Self.maximumMagnification
             )
             let correlationQuality = clamp((axisCorrelation - 0.72) / 0.23, min: 0, max: 1)
             let residualQuality = clamp(

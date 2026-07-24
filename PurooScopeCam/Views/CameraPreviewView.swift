@@ -84,16 +84,14 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     func updateStabilizationSettings(
         preference: StabilizationPreference,
         strength: Double,
-        timeOffset: TimeInterval,
-        axisMapping: GyroAxisMapping,
+        opticalMagnification: Double,
         displayZoomFactor: CGFloat,
         systemModeName: String
     ) {
         let tuning = StabilizationTuning(
             strength: strength,
             displayZoomFactor: displayZoomFactor,
-            motionTimeOffset: timeOffset,
-            gyroAxisMapping: axisMapping
+            opticalMagnification: opticalMagnification
         )
         preferenceLock.lock()
         let oldTuning = stabilizationTuning
@@ -105,8 +103,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         renderer.setPreviewDelayFrames(tuning.previewDelayFrames)
         renderer.setCropWindowScale(tuning.previewCropScale)
         let shouldReset = oldTuning.usesDigitalStabilization != tuning.usesDigitalStabilization ||
-            oldTuning.gyroAxisMapping != tuning.gyroAxisMapping ||
-            abs(oldTuning.motionTimeOffset - tuning.motionTimeOffset) > 0.005
+            abs(oldTuning.opticalMagnification - tuning.opticalMagnification) > 0.01
         if shouldReset {
             stabilizationEngine.reset()
             renderer.resetStabilizationState()
@@ -143,7 +140,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         stabilizationEngine.reset()
         if monitor != nil {
             StabilizationTraceRecorder.shared.startSession(metadata: [
-                "pipeline": "noninertial-virtual-camera-v5",
+                "pipeline": "noninertial-virtual-camera-v6",
                 "motion_rate_hz": 240,
                 "visual_grid": 192,
                 "preview_delay_frames": 1
@@ -1215,8 +1212,7 @@ struct CameraPreviewView: UIViewRepresentable {
     let motionMonitor: MotionStabilityMonitor
     let stabilizationPreference: StabilizationPreference
     let stabilizationStrength: Double
-    let stabilizationTimeOffset: TimeInterval
-    let gyroAxisMapping: GyroAxisMapping
+    let opticalMagnification: Double
     let displayZoomFactor: CGFloat
     let systemStabilizationModeName: String
 
@@ -1229,8 +1225,7 @@ struct CameraPreviewView: UIViewRepresentable {
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
             strength: stabilizationStrength,
-            timeOffset: stabilizationTimeOffset,
-            axisMapping: gyroAxisMapping,
+            opticalMagnification: opticalMagnification,
             displayZoomFactor: displayZoomFactor,
             systemModeName: systemStabilizationModeName
         )
@@ -1246,8 +1241,7 @@ struct CameraPreviewView: UIViewRepresentable {
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
             strength: stabilizationStrength,
-            timeOffset: stabilizationTimeOffset,
-            axisMapping: gyroAxisMapping,
+            opticalMagnification: opticalMagnification,
             displayZoomFactor: displayZoomFactor,
             systemModeName: systemStabilizationModeName
         )

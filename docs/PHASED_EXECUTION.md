@@ -43,10 +43,22 @@ transform paths have been removed.
 - Exposure-midpoint timestamps are used for attitude interpolation.
 - Relative quaternions avoid Euler angle wrap and preserve high-frequency
   rotation.
-- Candidate IMU offsets are correlated with visual motion to estimate sensor
-  timing automatically.
-- A learned 2 x 2 calibration maps device attitude axes to image axes, including
-  sign, rotation, and cross-axis coupling.
+- Device rotation is projected to normalized image motion using the camera
+  intrinsic focal length. The axis mapping is fixed: device y drives horizontal
+  image motion, device x drives vertical image motion. Offline calibration
+  measured 0.965 / 0.970 correlation for this mapping against 0.43 for the
+  alternatives, so it is not runtime selectable.
+- The intrinsic matrix describes the phone lens only and cannot see an external
+  telescope. That optical magnification is therefore an explicit parameter,
+  selected in the control panel and refined online as a single scalar shared by
+  both axes. Projection code must never fold it into the focal length term.
+- Calibration trust derives from residual and correlation only. It never
+  compares the magnification against a factory reference, so changing to a
+  different telescope cannot silently disable the gyro path.
+- The IMU-to-frame time offset is fixed at zero, which offline calibration
+  measured as the optimum. Multi-candidate automatic re-estimation is not active
+  yet; residual grows from 0.25 to 0.39 at only -10 ms, so this is the next
+  calibration item to restore.
 - Visual low-frequency motion corrects drift while calibrated gyro motion owns
   the high-frequency band.
 

@@ -58,8 +58,7 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
     @Published private(set) var stabilizationStrength: Double = 0.30
-    @Published private(set) var stabilizationTimeOffset: TimeInterval = 0
-    @Published private(set) var gyroAxisMapping: GyroAxisMapping = .measuredPortrait
+    @Published private(set) var telescopeMagnification: Double = StabilizationTuning.defaultOpticalMagnification
     @Published var zoomFactor: CGFloat = 1
     @Published var exposureBias: Float = 0
     @Published var captureQualityPreference: CaptureQualityOption = .automatic {
@@ -149,15 +148,17 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
-    func setStabilizationTimeOffsetMilliseconds(_ value: Double) {
-        let clamped = min(max(value, -80), 80) / 1000
-        guard abs(stabilizationTimeOffset - clamped) >= 0.001 else { return }
-        stabilizationTimeOffset = clamped
-    }
-
-    func setGyroAxisMapping(_ mapping: GyroAxisMapping) {
-        guard gyroAxisMapping != mapping else { return }
-        gyroAxisMapping = mapping
+    func setTelescopeMagnification(_ value: Double) {
+        let clamped = min(
+            max(value, TelescopeMagnificationOption.minimum),
+            TelescopeMagnificationOption.maximum
+        )
+        guard abs(telescopeMagnification - clamped) >= 0.001 else { return }
+        telescopeMagnification = clamped
+        StabilizationTraceRecorder.shared.recordControl(
+            "telescope_magnification",
+            values: ["value": clamped]
+        )
     }
 
     func setZoomFactor(_ value: CGFloat) {
