@@ -211,7 +211,10 @@ struct StabilizationTuning: Equatable {
 
     var lowFrequencyStabilizationAmount: CGFloat {
         guard usesDigitalStabilization else { return 0 }
-        return min(0.50, 0.12 + CGFloat(effectiveStrength) * 0.38)
+        // 低频承担 1-3 Hz 的手持抖动，是观感的主要来源。上限 0.50 时实测裁切
+        // 使用率中位只有 2-3%，1.5x 裁切预留的 0.18 余量几乎没被用到，各强度
+        // 档位之间也分辨不出差别。
+        return min(0.85, 0.20 + CGFloat(effectiveStrength) * 0.65)
     }
 
     var panFollowFrequency: Double {

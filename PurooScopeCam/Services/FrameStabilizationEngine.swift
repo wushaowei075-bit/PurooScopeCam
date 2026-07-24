@@ -1283,8 +1283,15 @@ private final class ComplementaryMotionFusion {
             highVelocityX = visualHighX * (1 - gyroTrust) + gyroHighX * gyroTrust
             highVelocityY = visualHighY * (1 - gyroTrust) + gyroHighY * gyroTrust
         } else if gyroTrust > 0.20 {
-            lowVelocityX = 0
-            lowVelocityY = 0
+            // 视觉失效期间低频改由陀螺提供，不能归零。
+            //
+            // 手持抖动的主能量在 1-3 Hz，全部落在低频通道里。实测视觉在望远镜
+            // 画面上只有约 54% 的帧可用（最长一段连续失效 3300 帧），低频一旦
+            // 归零，这个频带在近一半的时间里完全得不到补偿，裁切余量也就只用掉
+            // 了 2-3%。visualLowVelocity 此时仍在按 alpha 衰减，与陀螺分量叠加
+            // 可以让视觉恢复/失效的切换保持平滑。
+            lowVelocityX = visualLowVelocityX * (1 - gyroTrust) + gyroLowVelocityX * gyroTrust
+            lowVelocityY = visualLowVelocityY * (1 - gyroTrust) + gyroLowVelocityY * gyroTrust
             highVelocityX = gyroHighX * gyroTrust
             highVelocityY = gyroHighY * gyroTrust
         } else {
