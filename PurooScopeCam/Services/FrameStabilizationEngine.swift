@@ -26,6 +26,7 @@ struct StabilizationDebugSnapshot {
     var highFrequencyDeltaY: CGFloat
     var correctionX: CGFloat
     var correctionY: CGFloat
+    var correctionRollDegrees: CGFloat
     var gyroTrust: CGFloat
     var automaticTimeOffsetMilliseconds: Double
     var opticalMagnification: CGFloat
@@ -52,7 +53,7 @@ struct StabilizationDebugSnapshot {
         视觉 X:\(format(Double(visualDeltaX), digits: 5)) Y:\(format(Double(visualDeltaY), digits: 5)) C:\(format(Double(visualConfidence), digits: 2)) V:\(visualVectorCount)
         融合 X:\(format(Double(fusedDeltaX), digits: 5)) Y:\(format(Double(fusedDeltaY), digits: 5))  陀螺信任:\(format(Double(gyroTrust), digits: 2))
         高频 X:\(format(Double(highFrequencyDeltaX), digits: 5)) Y:\(format(Double(highFrequencyDeltaY), digits: 5))  低频 X:\(format(Double(lowFrequencyDeltaX), digits: 5)) Y:\(format(Double(lowFrequencyDeltaY), digits: 5))
-        裁切 X:\(format(Double(correctionX), digits: 4)) Y:\(format(Double(correctionY), digits: 4)) 使用:\(format(Double(cropUsage * 100), digits: 0))% 压力:\(format(Double(boundaryPressure * 100), digits: 0))%
+        裁切 X:\(format(Double(correctionX), digits: 4)) Y:\(format(Double(correctionY), digits: 4)) 转:\(format(Double(correctionRollDegrees), digits: 2))° 使用:\(format(Double(cropUsage * 100), digits: 0))%
         倍率:\(format(Double(opticalMagnification), digits: 2))/\(format(Double(referenceMagnification), digits: 0))x  焦距:\(format(Double(focalLengthPixelsX), digits: 0))px  画幅:\(frameWidth)x\(frameHeight)
         相关:\(format(Double(gyroCorrelationX), digits: 2)),\(format(Double(gyroCorrelationY), digits: 2))  误差:\(format(Double(gyroNormalizedError), digits: 2))  标定:\(isGyroCalibrationValid ? "有效" : "等待")
         分析:\(format(analysisMilliseconds, digits: 1))ms  丢弃:\(droppedAnalysisFrames)  IMU:\(motionSampleCount)  纹理:\(format(Double(visualTexture), digits: 1))
@@ -176,6 +177,7 @@ final class StabilizationTraceRecorder {
                 "crop_x": debug.correctionX,
                 "crop_y": debug.correctionY,
                 "crop_usage": debug.cropUsage,
+                "crop_roll_deg": debug.correctionRollDegrees,
                 "boundary_pressure": debug.boundaryPressure,
                 "pan": debug.isIntentionalPan,
                 "gyro_trust": debug.gyroTrust,
@@ -378,6 +380,7 @@ final class FrameStabilizationEngine {
             lowFrequencyDeltaY: fused.lowFrequencyDeltaY,
             highFrequencyDeltaX: fused.highFrequencyDeltaX,
             highFrequencyDeltaY: fused.highFrequencyDeltaY,
+            deltaRoll: fused.deltaRoll,
             confidence: fused.confidence,
             tuning: input.tuning
         )
@@ -389,7 +392,7 @@ final class FrameStabilizationEngine {
 
         let transform = PreviewRenderTransform(
             scale: input.tuning.previewCropScale,
-            rotationRadians: 0,
+            rotationRadians: crop.correctionRoll,
             translationX: crop.correctionX * input.viewportSize.width,
             translationY: crop.correctionY * input.viewportSize.height
         )
@@ -408,6 +411,7 @@ final class FrameStabilizationEngine {
             highFrequencyDeltaY: fused.highFrequencyDeltaY,
             correctionX: crop.correctionX,
             correctionY: crop.correctionY,
+            correctionRollDegrees: crop.correctionRoll * 180 / .pi,
             gyroTrust: fused.gyroTrust,
             automaticTimeOffsetMilliseconds: fused.automaticOffset * 1000,
             opticalMagnification: fused.opticalMagnification,
@@ -946,6 +950,8 @@ private struct GyroMotionCandidate {
     var automaticOffset: TimeInterval
     var deltaX: CGFloat
     var deltaY: CGFloat
+    /// 绕光轴的相对转角，单位弧度。与放大倍率无关。
+    var deltaRoll: CGFloat
 }
 
 private struct UnitQuaternion {
@@ -1072,11 +1078,19 @@ private final class QuaternionMotionEstimator {
                 min: -0.06,
                 max: 0.06
             )
+            // 绕光轴的滚转直接就是画面旋转，不经过焦距投影，也不受望远镜
+            // 放大倍率影响——放大镜筒不会改变转角本身。
+            let deltaRoll = clamp(
+                CGFloat(rotation.z),
+                min: -0.05,
+                max: 0.05
+            )
             output.append(
                 GyroMotionCandidate(
                     automaticOffset: automaticOffset,
                     deltaX: deltaX,
-                    deltaY: deltaY
+                    deltaY: deltaY,
+                    deltaRoll: deltaRoll
                 )
             )
         }
@@ -1135,6 +1149,7 @@ private struct FusedMotionDelta {
     var lowFrequencyDeltaY: CGFloat
     var highFrequencyDeltaX: CGFloat
     var highFrequencyDeltaY: CGFloat
+    var deltaRoll: CGFloat
     var confidence: CGFloat
     var gyroTrust: CGFloat
     var automaticOffset: TimeInterval
@@ -1323,6 +1338,7 @@ private final class ComplementaryMotionFusion {
             lowFrequencyDeltaY: lowDeltaY,
             highFrequencyDeltaX: highDeltaX,
             highFrequencyDeltaY: highDeltaY,
+            deltaRoll: (selected?.deltaRoll ?? 0) * gyroTrust,
             confidence: visual?.confidence ?? gyroTrust,
             gyroTrust: gyroTrust,
             automaticOffset: TimeInterval(selectedOffsetKey) / 1000,
@@ -1452,6 +1468,7 @@ private final class ComplementaryMotionFusion {
 private struct VirtualCameraCropResult {
     var correctionX: CGFloat
     var correctionY: CGFloat
+    var correctionRoll: CGFloat
     var isIntentionalPan: Bool
     var cropUsage: CGFloat
     var boundaryPressure: CGFloat
@@ -1464,6 +1481,8 @@ private final class VirtualCameraTrajectoryController {
     private var highOffsetY: CGFloat = 0
     private var desiredX: CGFloat = 0
     private var desiredY: CGFloat = 0
+    private var rollPath: CGFloat = 0
+    private var desiredRoll: CGFloat = 0
     private var lastTimestamp: TimeInterval?
     private var recentVelocities: [CGPoint] = []
     private var isPanning = false
@@ -1478,6 +1497,8 @@ private final class VirtualCameraTrajectoryController {
         highOffsetY = 0
         desiredX = 0
         desiredY = 0
+        rollPath = 0
+        desiredRoll = 0
         lastTimestamp = nil
         recentVelocities.removeAll(keepingCapacity: true)
         isPanning = false
@@ -1492,6 +1513,7 @@ private final class VirtualCameraTrajectoryController {
         lowFrequencyDeltaY: CGFloat,
         highFrequencyDeltaX: CGFloat,
         highFrequencyDeltaY: CGFloat,
+        deltaRoll: CGFloat,
         confidence: CGFloat,
         tuning: StabilizationTuning
     ) -> VirtualCameraCropResult {
@@ -1500,6 +1522,7 @@ private final class VirtualCameraTrajectoryController {
             return VirtualCameraCropResult(
                 correctionX: 0,
                 correctionY: 0,
+                correctionRoll: 0,
                 isIntentionalPan: false,
                 cropUsage: 0,
                 boundaryPressure: 0
@@ -1514,6 +1537,7 @@ private final class VirtualCameraTrajectoryController {
             return VirtualCameraCropResult(
                 correctionX: 0,
                 correctionY: 0,
+                correctionRoll: 0,
                 isIntentionalPan: false,
                 cropUsage: 0,
                 boundaryPressure: 0
@@ -1525,6 +1549,7 @@ private final class VirtualCameraTrajectoryController {
         let measuredLowDeltaY = lowFrequencyDeltaY * lowFrequencyWeight
         lowPathX += measuredLowDeltaX
         lowPathY += measuredLowDeltaY
+        rollPath += deltaRoll
 
         let highMemory = max(tuning.highFrequencyMemory, 0.06)
         let highLeak = CGFloat(exp(-Double(dt) / highMemory))
@@ -1578,10 +1603,22 @@ private final class VirtualCameraTrajectoryController {
         var correctionY = (desiredY - lowPathY) * lowAmount - highOffsetY * highAmount
         correctionX = softLimit(correctionX, limit: hardLimit)
         correctionY = softLimit(correctionY, limit: hardLimit)
-        let usage = max(abs(correctionX), abs(correctionY)) / hardLimit
+
+        let usage = clamp(max(abs(correctionX), abs(correctionY)) / hardLimit, min: 0, max: 1)
+
+        // 滚转与平移同构：虚拟相机缓慢跟随构图，逐帧抖动被反向抵消。
+        // 可用角度取决于平移剩下多少行程，见 maximumRollRadians 的说明。
+        desiredRoll += (rollPath - desiredRoll) * CGFloat(
+            1 - exp(-2 * Double.pi * tuning.rollFollowFrequency * Double(dt))
+        )
+        let rollLimit = tuning.maximumRollRadians(cropUsage: usage)
+        let correctionRoll = rollLimit > 0
+            ? softLimit((desiredRoll - rollPath) * lowAmount, limit: rollLimit)
+            : 0
         return VirtualCameraCropResult(
             correctionX: correctionX,
             correctionY: correctionY,
+            correctionRoll: correctionRoll,
             isIntentionalPan: panState,
             cropUsage: clamp(usage, min: 0, max: 1),
             boundaryPressure: boundaryPressure

@@ -265,6 +265,27 @@ struct StabilizationTuning: Equatable {
         0.30
     }
 
+    /// 虚拟相机跟随真实滚转的带宽。
+    ///
+    /// 比平移的跟随更慢：握持姿势带来的滚转漂移很缓慢，而抖动部分应当
+    /// 全部抵消。0.4 Hz 约 400 ms，足以跟上有意的转腕，又不会放过手抖。
+    var rollFollowFrequency: Double {
+        guard usesDigitalStabilization else { return 0 }
+        return 0.4
+    }
+
+    /// 旋转补偿的角度上限，取平移未占用的行程。
+    ///
+    /// 旋转会把裁切窗口的包围盒撑大：1.5 倍裁切下 720x1280 的窗口转 3 度，
+    /// 包围盒变成 786x1316。平移未用满时这点富余吃得下，一旦平移逼近
+    /// 0.23 的极限，二者叠加就会越过源图边界露出黑边。按剩余行程线性缩放
+    /// 是保守但可靠的约束——实测滚转补偿量典型在 1 度以内，不会被限制住。
+    func maximumRollRadians(cropUsage: CGFloat) -> CGFloat {
+        guard usesDigitalStabilization else { return 0 }
+        let ceiling = 2.5 * .pi / 180
+        return ceiling * Swift.max(0, 1 - cropUsage)
+    }
+
     /// 触及裁切边界后回收的带宽。
     ///
     /// 补偿加强后会更频繁地压到边界，8 Hz 的回收速度会让画面出现可见的
