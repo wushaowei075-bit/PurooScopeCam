@@ -1599,8 +1599,14 @@ private final class VirtualCameraTrajectoryController {
             followFrequency: followFrequency
         )
 
-        var correctionX = (desiredX - lowPathX) * lowAmount - highOffsetX * highAmount
-        var correctionY = (desiredY - lowPathY) * lowAmount - highOffsetY * highAmount
+        // 路径以画面位移为单位，而 correction 最终作为输出画面中心的归一化
+        // 偏移送进渲染。裁切窗口在源图上只有 1/cropScale 宽，窗口中心移动
+        // 一个单位只能抵消 1/cropScale 个单位的画面位移，因此这里必须放大
+        // cropScale 倍。缺了这一项时补偿只有需要量的 1/1.5，实测输出残余
+        // 达到输入的 52%，而控制器内部看起来抵消得很干净。
+        let renderScale = max(tuning.previewCropScale, 1)
+        var correctionX = ((desiredX - lowPathX) * lowAmount - highOffsetX * highAmount) * renderScale
+        var correctionY = ((desiredY - lowPathY) * lowAmount - highOffsetY * highAmount) * renderScale
         correctionX = softLimit(correctionX, limit: hardLimit)
         correctionY = softLimit(correctionY, limit: hardLimit)
 

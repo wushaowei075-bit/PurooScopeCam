@@ -179,9 +179,14 @@ struct StabilizationTuning: Equatable {
         isEnabled
     }
 
+    /// 裁切预留。
+    ///
+    /// 补偿量按正确的几何放大后，实测 P95 需要的行程超过 1.5 倍预留能提供的
+    /// 上限。提到 1.8 倍把 P95 占用降到 65%，留出应对突发抖动的余量；代价是
+    /// 视场从 67% 收到 56%。
     var previewCropScale: CGFloat {
         guard usesDigitalStabilization else { return 1 }
-        return 1.50
+        return 1.80
     }
 
     var previewCropTravelFactor: CGFloat {
