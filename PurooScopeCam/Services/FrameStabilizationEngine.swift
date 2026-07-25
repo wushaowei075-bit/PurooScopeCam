@@ -1626,7 +1626,9 @@ private final class VirtualCameraTrajectoryController {
             } else {
                 panEnterCount = max(0, panEnterCount - 1)
             }
-            if panEnterCount >= 4 {
+            // 60 fps 下约 150 ms。真实平移会持续得比这久，而手抖的方向
+            // 一致性维持不了这么长，原来的 4 帧（66 ms）挡不住。
+            if panEnterCount >= 9 {
                 isPanning = true
                 panEnterCount = 0
                 panExitCount = 0

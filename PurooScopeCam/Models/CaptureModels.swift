@@ -217,16 +217,30 @@ struct StabilizationTuning: Equatable {
         return min(0.85, 0.20 + CGFloat(effectiveStrength) * 0.65)
     }
 
+    /// 判定为平移后虚拟相机跟随真实路径的带宽。
+    ///
+    /// 原值 6-7.5 Hz 对应 21-26 ms 时间常数，等于瞬间贴合真实路径：
+    /// `desired - lowPath` 立刻趋零，补偿量随之归零。实测平移状态占了
+    /// 83.5% 的时间，稳像因此几乎全程失效。
+    ///
+    /// 平移同样需要稳像——要跟手，但要平滑。1.1-2.2 Hz 对应 72-145 ms，
+    /// 构图跟得上，手抖不会直接透传。
     var panFollowFrequency: Double {
-        7.5 - effectiveStrength * 1.5
+        2.2 - effectiveStrength * 1.1
     }
 
     var complementaryCutoffFrequency: Double {
         3.0
     }
 
+    /// 进入平移状态的画面速度阈值，按光学放大倍率缩放。
+    ///
+    /// 阈值作用在归一化画面速度上，而望远镜把角速度放大了约 11.5 倍，
+    /// 手部漂移在画面上的速度同样被放大。裸机标定出来的固定阈值因此
+    /// 在望远镜下形同虚设，轻微手抖就会被判成有意平移。
     var panActivationSpeed: CGFloat {
-        0.018 + CGFloat(effectiveStrength) * 0.012
+        let base = 0.018 + CGFloat(effectiveStrength) * 0.012
+        return base * CGFloat(max(opticalMagnification, 1))
     }
 
     var safeCropOffsetFraction: CGFloat {
