@@ -514,8 +514,11 @@ private final class SubpixelFrameMotionTracker {
         reference: AnalysisFrame,
         current: AnalysisFrame
     ) -> (dx: CGFloat, dy: CGFloat, confidence: CGFloat, vectorCount: Int, texture: CGFloat)? {
+        // 望远镜画面常有大片低纹理区域，实测视觉只在 25-37% 的帧上可用，
+        // 低频测量因此长期依赖陀螺积分。放宽入口门槛提高可用率，误匹配
+        // 仍由下面的中值内点剔除和残差检查拦截。
         let texture = textureScore(reference)
-        guard texture >= 3.0 else { return nil }
+        guard texture >= 2.0 else { return nil }
         let vectors = patchVectors(reference: reference, current: current)
         guard vectors.count >= 6 else { return nil }
 
@@ -539,7 +542,7 @@ private final class SubpixelFrameMotionTracker {
         let coverage = CGFloat(inliers.count) / CGFloat(vectors.count)
         let matchConfidence = weight / CGFloat(inliers.count)
         let consistency = clamp((0.62 - residual) / 0.62, min: 0, max: 1)
-        let textureConfidence = clamp((texture - 3) / 9, min: 0, max: 1)
+        let textureConfidence = clamp((texture - 2) / 9, min: 0, max: 1)
         let confidence = clamp(
             coverage * 0.25 + matchConfidence * 0.35 + consistency * 0.25 + textureConfidence * 0.15,
             min: 0,
@@ -558,7 +561,7 @@ private final class SubpixelFrameMotionTracker {
                 let index = y * gridSize + x
                 guard reference.roiMask[index],
                       current.roiMask[index],
-                      patchTexture(reference, centerX: x, centerY: y) > 3.2,
+                      patchTexture(reference, centerX: x, centerY: y) > 2.2,
                       let vector = bestPatchVector(
                           reference: reference,
                           current: current,
