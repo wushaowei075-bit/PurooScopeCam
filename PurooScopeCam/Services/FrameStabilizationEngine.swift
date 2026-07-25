@@ -12,7 +12,6 @@ struct StabilizationFrameResult {
 }
 
 struct StabilizationDebugSnapshot {
-    var strength: Double
     var cropScale: CGFloat
     var visualDeltaX: CGFloat
     var visualDeltaY: CGFloat
@@ -49,7 +48,7 @@ struct StabilizationDebugSnapshot {
     func overlayText(systemModeName: String) -> String {
         """
         防抖调试  系统:\(systemModeName)  单链路
-        强度:\(format(strength * 100, digits: 0))%  裁切:\(format(Double(cropScale), digits: 2))x  状态:\(isIntentionalPan ? "平移" : "稳像")
+        裁切:\(format(Double(cropScale), digits: 2))x  状态:\(isIntentionalPan ? "平移" : "稳像")
         视觉 X:\(format(Double(visualDeltaX), digits: 5)) Y:\(format(Double(visualDeltaY), digits: 5)) C:\(format(Double(visualConfidence), digits: 2)) V:\(visualVectorCount)
         融合 X:\(format(Double(fusedDeltaX), digits: 5)) Y:\(format(Double(fusedDeltaY), digits: 5))  陀螺信任:\(format(Double(gyroTrust), digits: 2))
         高频 X:\(format(Double(highFrequencyDeltaX), digits: 5)) Y:\(format(Double(highFrequencyDeltaY), digits: 5))  低频 X:\(format(Double(lowFrequencyDeltaX), digits: 5)) Y:\(format(Double(lowFrequencyDeltaY), digits: 5))
@@ -163,7 +162,7 @@ final class StabilizationTraceRecorder {
             type: "frame",
             timestamp: result.timestamp,
             values: [
-                "strength": debug.strength,
+                "crop_scale": debug.cropScale,
                 "visual_dx": debug.visualDeltaX,
                 "visual_dy": debug.visualDeltaY,
                 "visual_confidence": debug.visualConfidence,
@@ -395,7 +394,6 @@ final class FrameStabilizationEngine {
             translationY: crop.correctionY * input.viewportSize.height
         )
         let debug = StabilizationDebugSnapshot(
-            strength: input.tuning.strength,
             cropScale: input.tuning.previewCropScale,
             visualDeltaX: visual?.deltaX ?? 0,
             visualDeltaY: visual?.deltaY ?? 0,

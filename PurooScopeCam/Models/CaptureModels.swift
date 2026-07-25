@@ -155,18 +155,18 @@ struct TelescopeMagnificationOption: Identifiable, Hashable {
 struct StabilizationTuning: Equatable {
     static let defaultOpticalMagnification: Double = 10
 
-    var strength: Double
+    var isEnabled: Bool
     var displayZoomFactor: CGFloat
     var motionTimeOffset: TimeInterval
     var opticalMagnification: Double
 
     init(
-        strength: Double,
+        isEnabled: Bool,
         displayZoomFactor: CGFloat = 1,
         motionTimeOffset: TimeInterval = 0,
         opticalMagnification: Double = StabilizationTuning.defaultOpticalMagnification
     ) {
-        self.strength = Swift.min(Swift.max(strength, 0), 1)
+        self.isEnabled = isEnabled
         self.displayZoomFactor = Swift.min(Swift.max(displayZoomFactor, 1), 6)
         self.motionTimeOffset = Swift.min(Swift.max(motionTimeOffset, -0.08), 0.08)
         self.opticalMagnification = Swift.min(
@@ -175,12 +175,8 @@ struct StabilizationTuning: Equatable {
         )
     }
 
-    var percentText: String {
-        "\(Int((strength * 100).rounded()))%"
-    }
-
     var usesDigitalStabilization: Bool {
-        strength > 0.01
+        isEnabled
     }
 
     var previewCropScale: CGFloat {
@@ -206,27 +202,25 @@ struct StabilizationTuning: Equatable {
 
     var highFrequencyCompensationAmount: CGFloat {
         guard usesDigitalStabilization else { return 0 }
-        return min(0.90, 0.35 + CGFloat(effectiveStrength) * 0.55)
+        return 1.0
     }
 
+    /// 低频承担 1-3 Hz 的手持抖动，是观感的主要来源。
+    ///
+    /// 全量补偿：残差只由裁切余量和软限幅决定，不再预留系数上的折扣。
     var lowFrequencyStabilizationAmount: CGFloat {
         guard usesDigitalStabilization else { return 0 }
-        // 低频承担 1-3 Hz 的手持抖动，是观感的主要来源。上限 0.50 时实测裁切
-        // 使用率中位只有 2-3%，1.5x 裁切预留的 0.18 余量几乎没被用到，各强度
-        // 档位之间也分辨不出差别。
-        return min(0.85, 0.20 + CGFloat(effectiveStrength) * 0.65)
+        return 1.0
     }
 
     /// 判定为平移后虚拟相机跟随真实路径的带宽。
     ///
-    /// 原值 6-7.5 Hz 对应 21-26 ms 时间常数，等于瞬间贴合真实路径：
-    /// `desired - lowPath` 立刻趋零，补偿量随之归零。实测平移状态占了
-    /// 83.5% 的时间，稳像因此几乎全程失效。
+    /// 6 Hz（26 ms）等于瞬间贴合真实路径：`desired - lowPath` 立刻趋零，
+    /// 补偿量随之归零，稳像在平移期间完全失效。
     ///
-    /// 平移同样需要稳像——要跟手，但要平滑。1.1-2.2 Hz 对应 72-145 ms，
-    /// 构图跟得上，手抖不会直接透传。
+    /// 0.9 Hz 对应约 175 ms，实测平移跟手且平滑，停止时也没有回拉。
     var panFollowFrequency: Double {
-        2.2 - effectiveStrength * 1.1
+        0.9
     }
 
     var complementaryCutoffFrequency: Double {
@@ -239,29 +233,35 @@ struct StabilizationTuning: Equatable {
     /// 手部漂移在画面上的速度同样被放大。裸机标定出来的固定阈值因此
     /// 在望远镜下形同虚设，轻微手抖就会被判成有意平移。
     var panActivationSpeed: CGFloat {
-        let base = 0.018 + CGFloat(effectiveStrength) * 0.012
-        return base * CGFloat(max(opticalMagnification, 1))
+        0.030 * CGFloat(max(opticalMagnification, 1))
     }
 
+    /// 裁切窗口可以移动的范围，占裁切预留的比例。
+    ///
+    /// 1.5x 裁切在每侧留出 0.25 的行程，这里用掉其中 92%，剩余部分
+    /// 作为软限幅的缓冲以免出现黑边。
     var safeCropOffsetFraction: CGFloat {
-        max(0, (previewCropScale - 1) * 0.5 * 0.80)
+        max(0, (previewCropScale - 1) * 0.5 * 0.92)
     }
 
     var maximumCropOffsetFraction: CGFloat {
-        safeCropOffsetFraction * (0.70 + CGFloat(effectiveStrength) * 0.20)
+        safeCropOffsetFraction
     }
 
+    /// 高频补偿的泄漏时间常数。
+    ///
+    /// 0.12 s 下快速振荡正负相消、累积不起来，实测高频分量只贡献了
+    /// 约 0.002 的裁切量。加长到 0.30 s 让一个抖动周期内的补偿真正成形。
     var highFrequencyMemory: Double {
-        0.08 + effectiveStrength * 0.04
+        0.30
     }
 
+    /// 触及裁切边界后回收的带宽。
+    ///
+    /// 补偿加强后会更频繁地压到边界，8 Hz 的回收速度会让画面出现可见的
+    /// 拉回。降到 4 Hz 换取平滑，代价是边界附近的余量恢复得慢一些。
     var boundaryFollowFrequency: Double {
-        8.0
-    }
-
-    private var effectiveStrength: Double {
-        guard strength > 0 else { return 0 }
-        return Swift.min(1, pow(strength, 0.55))
+        4.0
     }
 }
 

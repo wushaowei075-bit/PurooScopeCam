@@ -12,7 +12,7 @@ struct CameraScreen: View {
                 camera: camera,
                 motionMonitor: motionMonitor,
                 stabilizationPreference: camera.stabilizationPreference,
-                stabilizationStrength: camera.stabilizationStrength,
+                isStabilizationEnabled: camera.isStabilizationEnabled,
                 opticalMagnification: camera.telescopeMagnification,
                 displayZoomFactor: camera.zoomFactor,
                 systemStabilizationModeName: camera.status.activePreviewStabilizationMode.scopeDisplayName
@@ -91,7 +91,7 @@ struct CameraScreen: View {
             .foregroundStyle(camera.status.isRecording ? .red : .white)
 
             statusPill(
-                title: "稳\(StabilizationTuning(strength: camera.stabilizationStrength).percentText)",
+                title: camera.isStabilizationEnabled ? "稳开" : "稳关",
                 systemImage: "scope"
             )
 

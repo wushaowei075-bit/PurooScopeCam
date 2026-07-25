@@ -24,7 +24,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let preferenceLock = NSLock()
     private var viewportSize = CGSize.zero
     private var stabilizationPreference: StabilizationPreference = .off
-    private var stabilizationTuning = StabilizationTuning(strength: 0)
+    private var stabilizationTuning = StabilizationTuning(isEnabled: false)
     private var systemStabilizationModeName = "未知"
     private weak var motionMonitor: MotionStabilityMonitor?
     private var latestCorrection = CGPoint.zero
@@ -83,13 +83,13 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
     func updateStabilizationSettings(
         preference: StabilizationPreference,
-        strength: Double,
+        isStabilizationEnabled: Bool,
         opticalMagnification: Double,
         displayZoomFactor: CGFloat,
         systemModeName: String
     ) {
         let tuning = StabilizationTuning(
-            strength: strength,
+            isEnabled: isStabilizationEnabled,
             displayZoomFactor: displayZoomFactor,
             opticalMagnification: opticalMagnification
         )
@@ -1211,7 +1211,7 @@ struct CameraPreviewView: UIViewRepresentable {
     @ObservedObject var camera: CameraController
     let motionMonitor: MotionStabilityMonitor
     let stabilizationPreference: StabilizationPreference
-    let stabilizationStrength: Double
+    let isStabilizationEnabled: Bool
     let opticalMagnification: Double
     let displayZoomFactor: CGFloat
     let systemStabilizationModeName: String
@@ -1224,7 +1224,7 @@ struct CameraPreviewView: UIViewRepresentable {
         let view = PreviewContainerView()
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
-            strength: stabilizationStrength,
+            isStabilizationEnabled: isStabilizationEnabled,
             opticalMagnification: opticalMagnification,
             displayZoomFactor: displayZoomFactor,
             systemModeName: systemStabilizationModeName
@@ -1240,7 +1240,7 @@ struct CameraPreviewView: UIViewRepresentable {
     func updateUIView(_ view: PreviewContainerView, context: Context) {
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
-            strength: stabilizationStrength,
+            isStabilizationEnabled: isStabilizationEnabled,
             opticalMagnification: opticalMagnification,
             displayZoomFactor: displayZoomFactor,
             systemModeName: systemStabilizationModeName

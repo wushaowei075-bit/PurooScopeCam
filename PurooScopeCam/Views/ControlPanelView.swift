@@ -5,7 +5,7 @@ struct ControlPanelView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            stabilizationStrengthControl
+            stabilizationToggle
             telescopeMagnificationControl
             qualityPicker
 
@@ -80,30 +80,18 @@ struct ControlPanelView: View {
         .background(.black.opacity(0.56), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var stabilizationStrengthControl: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 10) {
-                Label("稳定强度", systemImage: "scope")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.86))
-
-                Spacer(minLength: 0)
-
-                Text(StabilizationTuning(strength: camera.stabilizationStrength).percentText)
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.82))
-            }
-
-            Slider(
-                value: Binding(
-                    get: { camera.stabilizationStrength },
-                    set: { camera.setStabilizationStrength($0) }
-                ),
-                in: 0...1
-            )
+    private var stabilizationToggle: some View {
+        Toggle(isOn: Binding(
+            get: { camera.isStabilizationEnabled },
+            set: { camera.setStabilizationEnabled($0) }
+        )) {
+            Label("稳定", systemImage: "scope")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.86))
         }
+        .tint(.green)
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .frame(height: 38)
         .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 

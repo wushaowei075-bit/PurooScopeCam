@@ -57,7 +57,7 @@ final class CameraController: NSObject, ObservableObject {
             }
         }
     }
-    @Published private(set) var stabilizationStrength: Double = 0.30
+    @Published private(set) var isStabilizationEnabled = true
     @Published private(set) var telescopeMagnification: Double = StabilizationTuning.defaultOpticalMagnification
     @Published var zoomFactor: CGFloat = 1
     @Published var exposureBias: Float = 0
@@ -136,11 +136,14 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
-    func setStabilizationStrength(_ value: Double) {
-        let clamped = min(max(value, 0), 1)
-        guard abs(stabilizationStrength - clamped) >= 0.001 else { return }
+    func setStabilizationEnabled(_ enabled: Bool) {
+        guard isStabilizationEnabled != enabled else { return }
 
-        stabilizationStrength = clamped
+        isStabilizationEnabled = enabled
+        StabilizationTraceRecorder.shared.recordControl(
+            "stabilization_enabled",
+            values: ["value": enabled]
+        )
 
         let desiredZoomFactor = requestedZoomFactor
         sessionQueue.async { [weak self] in
@@ -191,7 +194,7 @@ final class CameraController: NSObject, ObservableObject {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
 
-            let tuning = StabilizationTuning(strength: stabilizationStrength)
+            let tuning = StabilizationTuning(isEnabled: isStabilizationEnabled)
             let cropScale = tuning.usesDigitalStabilization ? tuning.previewCropScale : 1
             let deviceMax = min(device.activeFormat.videoMaxZoomFactor, 6)
             let compensatedDeviceZoom = desiredDisplayZoom / max(cropScale, 1)
