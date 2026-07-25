@@ -512,7 +512,11 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 isReady: false
             )
         )
-        let maximumFrameCount = max(previewDelayFrames + 10, 14)
+        // 队列里的每一帧都占着采集输出的像素缓冲池。池子耗尽时相机会直接
+        // 停止回调——实测出现过帧供给中断 4.3 秒，而同期分析耗时最大只有
+        // 7.6 ms，并非处理跟不上。显示只需要 previewDelayFrames + 1 帧，
+        // 其余纯属缓冲，留 3 帧余量即可。
+        let maximumFrameCount = max(previewDelayFrames + 3, 5)
         if frameQueue.count > maximumFrameCount {
             let removalCount = frameQueue.count - maximumFrameCount
             queueDropCount += Int64(removalCount)
@@ -886,7 +890,8 @@ private final class StabilizedPreviewRecorder {
             return
         }
         attemptedFrameCount += 1
-        guard pendingAppendCount < 6 else {
+        // 每个待处理任务都持有一个 CIImage，间接占着来源像素缓冲。
+        guard pendingAppendCount < 3 else {
             pendingDropCount += 1
             lock.unlock()
             return
