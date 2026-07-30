@@ -255,6 +255,8 @@ final class StabilizationTraceRecorder {
 }
 
 final class FrameStabilizationEngine {
+    static let visualGridSize = 288
+
     private struct FrameInput {
         var pixelBuffer: CVPixelBuffer
         var timestamp: TimeInterval
@@ -481,7 +483,7 @@ private final class SubpixelFrameMotionTracker {
     //
     // 继续收窄采样区域并加密网格，格距降到 2.06 源像素（精度 +43%）。
     // 分析耗时从 3.82 ms 升到约 7.3 ms，60 fps 的 16.7 ms 预算仍有余量。
-    private let gridSize = 288
+    private let gridSize = FrameStabilizationEngine.visualGridSize
     private let searchRadius = 8
     private let patchRadius = 3
     private let anchorStride = 28
@@ -1618,8 +1620,10 @@ private final class VirtualCameraTrajectoryController {
             1 - exp(-2 * Double.pi * tuning.rollFollowFrequency * Double(dt))
         )
         let rollLimit = tuning.maximumRollRadians(cropUsage: usage)
+        // 平移的 0.72 是针对裁切几何过补偿的实测修正；旋转以弧度直接作用
+        // 于渲染变换，不经过同一套平移几何，不能共用该系数。
         let correctionRoll = rollLimit > 0
-            ? softLimit((desiredRoll - rollPath) * lowAmount, limit: rollLimit)
+            ? softLimit(desiredRoll - rollPath, limit: rollLimit)
             : 0
         return VirtualCameraCropResult(
             correctionX: correctionX,

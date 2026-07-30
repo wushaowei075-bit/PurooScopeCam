@@ -210,12 +210,14 @@ struct StabilizationTuning: Equatable {
         return 1.0
     }
 
-    /// 低频承担 1-3 Hz 的手持抖动，是观感的主要来源。
+    /// 低频承担 0.5-7 Hz 的轨迹补偿。
     ///
-    /// 全量补偿：残差只由裁切余量和软限幅决定，不再预留系数上的折扣。
+    /// 在修正 1.8 倍裁切几何后，全量输出会在静止画面形成约 30% 的反向
+    /// 过补偿。6f33b17 成片逐帧拟合的横纵轴最优增益分别为 0.70/0.73，
+    /// 取 0.72；7 Hz 以上的细抖仍由高频通道保持全量补偿。
     var lowFrequencyStabilizationAmount: CGFloat {
         guard usesDigitalStabilization else { return 0 }
-        return 1.0
+        return 0.72
     }
 
     /// 判定为平移后虚拟相机跟随真实路径的带宽。
