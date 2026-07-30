@@ -19,7 +19,6 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let cropWindowView = UIView()
     private let cropCenterHorizontalView = UIView()
     private let cropCenterVerticalView = UIView()
-    private let focusIndicatorView = UIView()
     private let debugOverlayLabel = UILabel()
     private let viewportLock = NSLock()
     private let preferenceLock = NSLock()
@@ -34,7 +33,6 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var lastDebugOverlayUpdateTime: TimeInterval = 0
     private var lastVideoRotationAngle: CGFloat = 90
     private var isOverviewBusy = false
-    var onFocusPoint: ((CGPoint) -> Void)?
 
     override init(frame: CGRect) {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -57,7 +55,6 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
         addSubview(metalView)
         configureOverview()
-        configureFocusIndicator()
         configureDebugOverlay()
         stabilizationEngine.onResult = { [weak self] result in
             self?.applyStabilizationResult(result)
@@ -309,69 +306,6 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         debugOverlayLabel.isUserInteractionEnabled = false
         debugOverlayLabel.isHidden = true
         addSubview(debugOverlayLabel)
-    }
-
-    private func configureFocusIndicator() {
-        focusIndicatorView.frame = CGRect(x: 0, y: 0, width: 72, height: 72)
-        focusIndicatorView.layer.borderWidth = 1.5
-        focusIndicatorView.layer.borderColor = UIColor.systemYellow.cgColor
-        focusIndicatorView.layer.cornerRadius = 3
-        focusIndicatorView.alpha = 0
-        focusIndicatorView.isUserInteractionEnabled = false
-        addSubview(focusIndicatorView)
-
-        let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleFocusTap(_:)))
-        addGestureRecognizer(tapRecognizer)
-    }
-
-    @objc private func handleFocusTap(_ recognizer: UITapGestureRecognizer) {
-        guard recognizer.state == .ended, bounds.width > 1, bounds.height > 1 else { return }
-        let location = recognizer.location(in: self)
-        let normalizedPoint = CGPoint(
-            x: min(max(location.x / bounds.width, 0), 1),
-            y: min(max(location.y / bounds.height, 0), 1)
-        )
-        onFocusPoint?(devicePoint(from: normalizedPoint))
-        showFocusIndicator(at: location)
-    }
-
-    private func devicePoint(from previewPoint: CGPoint) -> CGPoint {
-        let angle = Int(lastVideoRotationAngle.rounded()).quotientAndRemainder(dividingBy: 360).remainder
-        switch angle < 0 ? angle + 360 : angle {
-        case 90:
-            return CGPoint(x: previewPoint.y, y: 1 - previewPoint.x)
-        case 180:
-            return CGPoint(x: 1 - previewPoint.x, y: 1 - previewPoint.y)
-        case 270:
-            return CGPoint(x: 1 - previewPoint.y, y: previewPoint.x)
-        default:
-            return previewPoint
-        }
-    }
-
-    private func showFocusIndicator(at point: CGPoint) {
-        let halfSize = focusIndicatorView.bounds.width * 0.5
-        focusIndicatorView.center = CGPoint(
-            x: min(max(point.x, halfSize), bounds.width - halfSize),
-            y: min(max(point.y, halfSize), bounds.height - halfSize)
-        )
-        focusIndicatorView.layer.removeAllAnimations()
-        focusIndicatorView.alpha = 1
-        focusIndicatorView.transform = CGAffineTransform(scaleX: 1.18, y: 1.18)
-        UIView.animate(
-            withDuration: 0.18,
-            delay: 0,
-            options: [.beginFromCurrentState, .curveEaseOut]
-        ) {
-            self.focusIndicatorView.transform = .identity
-        }
-        UIView.animate(
-            withDuration: 0.28,
-            delay: 0.85,
-            options: [.beginFromCurrentState, .curveEaseIn]
-        ) {
-            self.focusIndicatorView.alpha = 0
-        }
     }
 
     private func layoutOverview() {
@@ -1427,9 +1361,6 @@ struct CameraPreviewView: UIViewRepresentable {
                 self.view = view
                 camera.setPreviewFrameSink(view)
             }
-            view.onFocusPoint = { [weak camera] point in
-                camera?.focus(at: point)
-            }
             if self.motionMonitor !== motionMonitor {
                 self.motionMonitor = motionMonitor
                 view.updateMotionMonitor(motionMonitor)
@@ -1438,7 +1369,6 @@ struct CameraPreviewView: UIViewRepresentable {
 
         func detach() {
             camera?.setPreviewFrameSink(nil)
-            view?.onFocusPoint = nil
             view?.updateMotionMonitor(nil)
             camera = nil
             view = nil

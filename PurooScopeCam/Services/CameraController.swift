@@ -1,8 +1,31 @@
 import AVFoundation
+import AudioToolbox
 import Combine
 import Photos
 import simd
 import UIKit
+
+private enum CameraFeedbackSound {
+    static func playFocus() {
+        play(systemSoundID: 1104, hapticStyle: .light)
+    }
+
+    static func playShutter() {
+        play(systemSoundID: 1108, hapticStyle: .medium)
+    }
+
+    private static func play(
+        systemSoundID: SystemSoundID,
+        hapticStyle: UIImpactFeedbackGenerator.FeedbackStyle
+    ) {
+        DispatchQueue.main.async {
+            AudioServicesPlaySystemSound(systemSoundID)
+            let generator = UIImpactFeedbackGenerator(style: hapticStyle)
+            generator.prepare()
+            generator.impactOccurred()
+        }
+    }
+}
 
 struct CameraFrameMetadata {
     var presentationTime: CMTime
@@ -276,6 +299,7 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     func focus(at devicePoint: CGPoint) {
+        CameraFeedbackSound.playFocus()
         let point = CGPoint(
             x: min(max(devicePoint.x, 0), 1),
             y: min(max(devicePoint.y, 0), 1)
@@ -332,6 +356,7 @@ final class CameraController: NSObject, ObservableObject {
     func capturePhoto() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured else { return }
+            CameraFeedbackSound.playShutter()
             if let previewPhotoSink = self.previewPhotoSink {
                 self.publishStatus(message: "正在拍照...")
                 previewPhotoSink.captureStabilizedPhoto { [weak self] result in

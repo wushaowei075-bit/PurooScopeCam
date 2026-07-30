@@ -10,27 +10,51 @@ struct CameraScreen: View {
     @State private var interfaceOrientation: UIInterfaceOrientation = .portrait
     @State private var isQualityDialogPresented = false
     @State private var isMagnificationDialogPresented = false
+    @State private var focusIndicator: FocusIndicatorState?
 
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
             let previewSize = previewSize(in: proxy.size)
+            let previewVerticalOffset: CGFloat = isLandscape ? -10 : -34
 
             ZStack {
                 Color.black
                     .ignoresSafeArea()
 
-                CameraPreviewView(
-                    camera: camera,
-                    motionMonitor: motionMonitor,
-                    stabilizationPreference: camera.stabilizationPreference,
-                    isStabilizationEnabled: camera.isStabilizationEnabled,
-                    opticalMagnification: camera.telescopeMagnification,
-                    displayZoomFactor: camera.zoomFactor,
-                    systemStabilizationModeName: camera.status.activePreviewStabilizationMode.scopeDisplayName
-                )
+                ZStack {
+                    CameraPreviewView(
+                        camera: camera,
+                        motionMonitor: motionMonitor,
+                        stabilizationPreference: camera.stabilizationPreference,
+                        isStabilizationEnabled: camera.isStabilizationEnabled,
+                        opticalMagnification: camera.telescopeMagnification,
+                        displayZoomFactor: camera.zoomFactor,
+                        systemStabilizationModeName: camera.status.activePreviewStabilizationMode.scopeDisplayName
+                    )
+
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(
+                            SpatialTapGesture()
+                                .onEnded { value in
+                                    focus(at: value.location, in: previewSize)
+                                }
+                        )
+
+                    if let focusIndicator {
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color.yellow, lineWidth: 2)
+                            .frame(width: 72, height: 72)
+                            .position(focusIndicator.location)
+                            .transition(.scale(scale: 1.18).combined(with: .opacity))
+                            .allowsHitTesting(false)
+                    }
+                }
                 .frame(width: previewSize.width, height: previewSize.height)
                 .clipped()
+                .offset(y: previewVerticalOffset)
+                .animation(.easeOut(duration: 0.18), value: focusIndicator?.id)
 
                 if camera.authorizationStatus != .authorized {
                     Color.black.opacity(0.86)
@@ -131,19 +155,6 @@ struct CameraScreen: View {
     private var topBar: some View {
         HStack(spacing: 8) {
             Button {
-                camera.setStabilizationEnabled(!camera.isStabilizationEnabled)
-            } label: {
-                Label(
-                    camera.isStabilizationEnabled ? "防抖 开" : "防抖 关",
-                    systemImage: "scope"
-                )
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(camera.isStabilizationEnabled ? .green : .white.opacity(0.72))
-            }
-            .buttonStyle(CameraToolbarButtonStyle())
-            .accessibilityLabel(camera.isStabilizationEnabled ? "关闭稳定" : "开启稳定")
-
-            Button {
                 isQualityDialogPresented = true
             } label: {
                 Text(camera.activeCaptureQuality.shortTitle)
@@ -209,6 +220,37 @@ struct CameraScreen: View {
         )
     }
 
+    private func focus(at location: CGPoint, in previewSize: CGSize) {
+        guard previewSize.width > 1, previewSize.height > 1 else { return }
+        let normalizedPoint = CGPoint(
+            x: min(max(location.x / previewSize.width, 0), 1),
+            y: min(max(location.y / previewSize.height, 0), 1)
+        )
+        camera.focus(at: deviceFocusPoint(from: normalizedPoint))
+
+        let nextIndicator = FocusIndicatorState(location: location)
+        focusIndicator = nextIndicator
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) {
+            guard focusIndicator?.id == nextIndicator.id else { return }
+            withAnimation(.easeIn(duration: 0.22)) {
+                focusIndicator = nil
+            }
+        }
+    }
+
+    private func deviceFocusPoint(from previewPoint: CGPoint) -> CGPoint {
+        switch interfaceOrientation {
+        case .portrait:
+            return CGPoint(x: previewPoint.y, y: 1 - previewPoint.x)
+        case .landscapeLeft:
+            return CGPoint(x: 1 - previewPoint.x, y: 1 - previewPoint.y)
+        case .portraitUpsideDown:
+            return CGPoint(x: 1 - previewPoint.y, y: previewPoint.x)
+        default:
+            return previewPoint
+        }
+    }
+
     private func synchronizeOrientationWithScene() {
         guard let scene = activeWindowScene else { return }
         apply(interfaceOrientation: scene.effectiveGeometry.interfaceOrientation, requestGeometry: false)
@@ -239,6 +281,11 @@ struct CameraScreen: View {
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
     }
+}
+
+private struct FocusIndicatorState: Identifiable {
+    let id = UUID()
+    let location: CGPoint
 }
 
 private extension UIDeviceOrientation {

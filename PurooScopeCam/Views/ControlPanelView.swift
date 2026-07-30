@@ -47,7 +47,7 @@ struct ControlPanelView: View {
     }
 
     private var captureBar: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 11) {
             PhotosPicker(
                 selection: $albumSelection,
                 matching: .any(of: [.images, .videos]),
@@ -55,7 +55,7 @@ struct ControlPanelView: View {
             ) {
                 Image(systemName: "photo.on.rectangle")
                     .font(.system(size: 20, weight: .semibold))
-                    .frame(width: 48, height: 48)
+                    .frame(width: 44, height: 44)
                     .foregroundStyle(.white)
                     .background(.black.opacity(0.52), in: Circle())
             }
@@ -77,7 +77,7 @@ struct ControlPanelView: View {
                             .frame(width: 34, height: 34)
                     }
                 }
-                .frame(width: 52, height: 52)
+                .frame(width: 48, height: 48)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(camera.status.isRecording ? "停止录像" : "开始录像")
@@ -92,7 +92,7 @@ struct ControlPanelView: View {
                         .fill(.white)
                         .padding(7)
                 }
-                .frame(width: 68, height: 68)
+                .frame(width: 64, height: 64)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("拍照")
@@ -102,12 +102,34 @@ struct ControlPanelView: View {
             } label: {
                 Image(systemName: "square.stack.3d.up.fill")
                     .font(.system(size: 20, weight: .semibold))
-                    .frame(width: 48, height: 48)
+                    .frame(width: 44, height: 44)
                     .foregroundStyle(.white)
                     .background(.black.opacity(0.52), in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("连拍")
+
+            VStack(spacing: 1) {
+                Toggle(
+                    "稳定",
+                    isOn: Binding(
+                        get: { camera.isStabilizationEnabled },
+                        set: { camera.setStabilizationEnabled($0) }
+                    )
+                )
+                .labelsHidden()
+                .tint(Color(red: 0.12, green: 0.86, blue: 0.34))
+                .scaleEffect(0.82)
+                .frame(width: 54, height: 31)
+
+                Text("稳定")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 62, height: 52)
+            .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 6))
+            .accessibilityElement(children: .combine)
+            .accessibilityValue(camera.isStabilizationEnabled ? "开启" : "关闭")
         }
         .frame(maxWidth: .infinity)
     }
