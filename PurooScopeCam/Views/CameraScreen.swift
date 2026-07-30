@@ -8,12 +8,18 @@ struct CameraScreen: View {
     @EnvironmentObject private var motionMonitor: MotionStabilityMonitor
     @Environment(\.scenePhase) private var scenePhase
     @State private var interfaceOrientation: UIInterfaceOrientation = .portrait
+    @State private var isQualityDialogPresented = false
+    @State private var isMagnificationDialogPresented = false
 
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
+            let previewSize = previewSize(in: proxy.size)
 
             ZStack {
+                Color.black
+                    .ignoresSafeArea()
+
                 CameraPreviewView(
                     camera: camera,
                     motionMonitor: motionMonitor,
@@ -23,17 +29,13 @@ struct CameraScreen: View {
                     displayZoomFactor: camera.zoomFactor,
                     systemStabilizationModeName: camera.status.activePreviewStabilizationMode.scopeDisplayName
                 )
-                .ignoresSafeArea()
+                .frame(width: previewSize.width, height: previewSize.height)
+                .clipped()
 
                 if camera.authorizationStatus != .authorized {
                     Color.black.opacity(0.86)
                         .ignoresSafeArea()
                 }
-
-                CrosshairView()
-                    .stroke(.white.opacity(0.62), lineWidth: 1)
-                    .frame(width: 84, height: 84)
-                    .allowsHitTesting(false)
 
                 VStack(spacing: 0) {
                     topBar
@@ -96,6 +98,34 @@ struct CameraScreen: View {
                 break
             }
         }
+        .confirmationDialog(
+            "分辨率与帧率",
+            isPresented: $isQualityDialogPresented,
+            titleVisibility: .visible
+        ) {
+            ForEach(camera.captureQualityOptions) { option in
+                Button(option == camera.activeCaptureQuality ? "✓ \(option.title)" : option.title) {
+                    camera.captureQualityPreference = option
+                }
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "望远镜光学倍率",
+            isPresented: $isMagnificationDialogPresented,
+            titleVisibility: .visible
+        ) {
+            ForEach(TelescopeMagnificationOption.presets) { option in
+                Button(
+                    abs(option.value - camera.telescopeMagnification) < 0.01
+                        ? "✓ \(option.title)"
+                        : option.title
+                ) {
+                    camera.setTelescopeMagnification(option.value)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        }
     }
 
     private var topBar: some View {
@@ -103,18 +133,18 @@ struct CameraScreen: View {
             Button {
                 camera.setStabilizationEnabled(!camera.isStabilizationEnabled)
             } label: {
-                Image(systemName: camera.isStabilizationEnabled ? "scope" : "scope")
+                Label(
+                    camera.isStabilizationEnabled ? "防抖 开" : "防抖 关",
+                    systemImage: "scope"
+                )
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(camera.isStabilizationEnabled ? .green : .white.opacity(0.72))
             }
             .buttonStyle(CameraToolbarButtonStyle())
             .accessibilityLabel(camera.isStabilizationEnabled ? "关闭稳定" : "开启稳定")
 
-            Menu {
-                Picker("画质", selection: $camera.captureQualityPreference) {
-                    ForEach(camera.captureQualityOptions) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
+            Button {
+                isQualityDialogPresented = true
             } label: {
                 Text(camera.activeCaptureQuality.shortTitle)
                     .font(.caption.monospacedDigit().weight(.semibold))
@@ -122,18 +152,8 @@ struct CameraScreen: View {
             .buttonStyle(CameraToolbarButtonStyle())
             .disabled(camera.status.isRecording || camera.captureQualityOptions.count <= 1)
 
-            Menu {
-                Picker(
-                    "望远镜倍率",
-                    selection: Binding(
-                        get: { camera.telescopeMagnification },
-                        set: { camera.setTelescopeMagnification($0) }
-                    )
-                ) {
-                    ForEach(TelescopeMagnificationOption.presets) { option in
-                        Text(option.title).tag(option.value)
-                    }
-                }
+            Button {
+                isMagnificationDialogPresented = true
             } label: {
                 Label(
                     "\(camera.telescopeMagnification, specifier: "%.0f")×",
@@ -169,6 +189,24 @@ struct CameraScreen: View {
         }
         .padding(20)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func previewSize(in containerSize: CGSize) -> CGSize {
+        guard containerSize.width > 0, containerSize.height > 0 else { return .zero }
+        let targetAspect: CGFloat = containerSize.width > containerSize.height
+            ? 16.0 / 9.0
+            : 9.0 / 16.0
+        let containerAspect = containerSize.width / containerSize.height
+        if containerAspect > targetAspect {
+            return CGSize(
+                width: containerSize.height * targetAspect,
+                height: containerSize.height
+            )
+        }
+        return CGSize(
+            width: containerSize.width,
+            height: containerSize.width / targetAspect
+        )
     }
 
     private func synchronizeOrientationWithScene() {
@@ -239,7 +277,7 @@ private struct CameraToolbarButtonStyle: ButtonStyle {
             .lineLimit(1)
             .minimumScaleFactor(0.75)
             .padding(.horizontal, 10)
-            .frame(minWidth: 38, minHeight: 36)
+            .frame(minWidth: 44, minHeight: 44)
             .foregroundStyle(.white)
             .background(.black.opacity(configuration.isPressed ? 0.68 : 0.52), in: Capsule())
     }

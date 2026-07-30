@@ -44,7 +44,7 @@ struct CaptureQualityOption: Identifiable, Hashable {
             return "自动"
         }
 
-        return "\(verticalPixels)p \(frameRate)fps"
+        return "\(resolutionTitle) \(frameRate)帧"
     }
 
     var shortTitle: String {
@@ -52,15 +52,19 @@ struct CaptureQualityOption: Identifiable, Hashable {
             return "自动画质"
         }
 
-        return "\(verticalPixels)p/\(frameRate)"
+        return "\(resolutionTitle)/\(frameRate)"
     }
 
     var verticalPixels: Int32 {
-        max(width, height)
+        min(width, height)
     }
 
     var horizontalPixels: Int32 {
-        min(width, height)
+        max(width, height)
+    }
+
+    private var resolutionTitle: String {
+        verticalPixels >= 2160 ? "4K" : "\(verticalPixels)p"
     }
 }
 
@@ -148,7 +152,7 @@ struct TelescopeMagnificationOption: Identifiable, Hashable {
     var id: String { String(format: "%.0f", value) }
 
     var title: String {
-        value <= 1.0001 ? "裸机" : "\(Int(value.rounded()))x"
+        value <= 1.0001 ? "裸机" : "\(Int(value.rounded()))×"
     }
 }
 
@@ -179,14 +183,10 @@ struct StabilizationTuning: Equatable {
         isEnabled
     }
 
-    /// 裁切预留。
-    ///
-    /// 补偿量按正确的几何放大后，实测 P95 需要的行程超过 1.5 倍预留能提供的
-    /// 上限。提到 1.8 倍把 P95 占用降到 65%，留出应对突发抖动的余量；代价是
-    /// 视场从 67% 收到 56%。
+    /// 1.5 倍裁切在稳定余量和望远镜视场之间取平衡。
     var previewCropScale: CGFloat {
         guard usesDigitalStabilization else { return 1 }
-        return 1.80
+        return 1.50
     }
 
     var previewCropTravelFactor: CGFloat {
@@ -212,7 +212,7 @@ struct StabilizationTuning: Equatable {
 
     /// 低频承担 0.5-7 Hz 的轨迹补偿。
     ///
-    /// 在修正 1.8 倍裁切几何后，全量输出会在静止画面形成约 30% 的反向
+    /// 在修正裁切几何后，全量输出会在静止画面形成约 30% 的反向
     /// 过补偿。6f33b17 成片逐帧拟合的横纵轴最优增益分别为 0.70/0.73，
     /// 取 0.72；7 Hz 以上的细抖仍由高频通道保持全量补偿。
     var lowFrequencyStabilizationAmount: CGFloat {

@@ -44,6 +44,12 @@ protocol StabilizedRecordingFrameSink: AnyObject {
     func stopStabilizedRecording()
 }
 
+protocol StabilizedPhotoFrameSink: AnyObject {
+    func captureStabilizedPhoto(
+        completion: @escaping (Result<Data, Error>) -> Void
+    )
+}
+
 final class CameraController: NSObject, ObservableObject {
     let session = AVCaptureSession()
 
@@ -82,6 +88,7 @@ final class CameraController: NSObject, ObservableObject {
     private var videoDeviceInput: AVCaptureDeviceInput?
     private weak var previewFrameSink: CameraFrameSink?
     private weak var previewRecordingSink: StabilizedRecordingFrameSink?
+    private weak var previewPhotoSink: StabilizedPhotoFrameSink?
     private var isConfigured = false
     private var targetFrameRate = 60
     private var requestedZoomFactor: CGFloat = 1
@@ -135,6 +142,7 @@ final class CameraController: NSObject, ObservableObject {
             guard let self else { return }
             self.previewFrameSink = sink
             self.previewRecordingSink = sink as? StabilizedRecordingFrameSink
+            self.previewPhotoSink = sink as? StabilizedPhotoFrameSink
             sink?.cameraController(self, didUpdateTargetFrameRate: self.targetFrameRate)
         }
     }
@@ -267,6 +275,42 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
+    func focus(at devicePoint: CGPoint) {
+        let point = CGPoint(
+            x: min(max(devicePoint.x, 0), 1),
+            y: min(max(devicePoint.y, 0), 1)
+        )
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isFocusPointOfInterestSupported {
+                    device.focusPointOfInterest = point
+                    if device.isFocusModeSupported(.autoFocus) {
+                        device.focusMode = .autoFocus
+                    } else if device.isFocusModeSupported(.continuousAutoFocus) {
+                        device.focusMode = .continuousAutoFocus
+                    }
+                }
+                if device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = point
+                    if device.isExposureModeSupported(.autoExpose) {
+                        device.exposureMode = .autoExpose
+                    } else if device.isExposureModeSupported(.continuousAutoExposure) {
+                        device.exposureMode = .continuousAutoExposure
+                    }
+                }
+                device.unlockForConfiguration()
+                self.publish {
+                    $0.focusLocked = false
+                    $0.exposureLocked = false
+                }
+            } catch {
+                self.publishStatus(error: "无法在所选位置对焦。")
+            }
+        }
+    }
+
     func setExposureLocked(_ locked: Bool) {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.videoDeviceInput?.device else { return }
@@ -288,6 +332,19 @@ final class CameraController: NSObject, ObservableObject {
     func capturePhoto() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured else { return }
+            if let previewPhotoSink = self.previewPhotoSink {
+                self.publishStatus(message: "正在拍照...")
+                previewPhotoSink.captureStabilizedPhoto { [weak self] result in
+                    switch result {
+                    case .success(let data):
+                        self?.savePhotoData(data)
+                    case .failure(let error):
+                        self?.publishStatus(error: error.localizedDescription)
+                    }
+                }
+                return
+            }
+
             let settings = AVCapturePhotoSettings()
             settings.flashMode = .off
             self.photoOutput.capturePhoto(with: settings, delegate: self)
@@ -401,6 +458,8 @@ final class CameraController: NSObject, ObservableObject {
 
     private func supportedCaptureQualityOptions(for device: AVCaptureDevice) -> [CaptureQualityOption] {
         let targets = [
+            CaptureQualityOption(width: 3840, height: 2160, frameRate: 60),
+            CaptureQualityOption(width: 3840, height: 2160, frameRate: 30),
             CaptureQualityOption(width: 1920, height: 1080, frameRate: 60),
             CaptureQualityOption(width: 1920, height: 1080, frameRate: 30),
             CaptureQualityOption(width: 1280, height: 720, frameRate: 60),
@@ -413,7 +472,9 @@ final class CameraController: NSObject, ObservableObject {
 
     private func selectedCaptureQuality(from options: [CaptureQualityOption]) -> CaptureQualityOption {
         let explicitOptions = options.filter { !$0.isAutomatic }
-        guard let automaticSelection = explicitOptions.first else {
+        guard let automaticSelection = explicitOptions.first(where: {
+            $0.width == 1920 && $0.height == 1080 && $0.frameRate == 60
+        }) ?? explicitOptions.first else {
             return .automatic
         }
 

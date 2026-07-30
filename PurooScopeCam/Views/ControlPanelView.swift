@@ -1,4 +1,5 @@
 import Foundation
+import PhotosUI
 import SwiftUI
 
 struct ControlPanelView: View {
@@ -9,6 +10,7 @@ struct ControlPanelView: View {
 
     @EnvironmentObject private var camera: CameraController
     @State private var adjustment: Adjustment = .zoom
+    @State private var albumSelection: PhotosPickerItem?
 
     var body: some View {
         VStack(spacing: 10) {
@@ -45,7 +47,20 @@ struct ControlPanelView: View {
     }
 
     private var captureBar: some View {
-        HStack(spacing: 24) {
+        HStack(spacing: 18) {
+            PhotosPicker(
+                selection: $albumSelection,
+                matching: .any(of: [.images, .videos]),
+                photoLibrary: .shared()
+            ) {
+                Image(systemName: "photo.on.rectangle")
+                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 48, height: 48)
+                    .foregroundStyle(.white)
+                    .background(.black.opacity(0.52), in: Circle())
+            }
+            .accessibilityLabel("相册")
+
             Button {
                 camera.toggleRecording()
             } label: {
@@ -82,38 +97,17 @@ struct ControlPanelView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("拍照")
 
-            Menu {
-                Button {
-                    camera.captureBurst()
-                } label: {
-                    Label("连拍", systemImage: "square.stack.3d.up")
-                }
-
-                Button {
-                    camera.setFocusLocked(!camera.focusLocked)
-                } label: {
-                    Label(
-                        camera.focusLocked ? "解除对焦锁定" : "锁定对焦",
-                        systemImage: camera.focusLocked ? "lock.open" : "viewfinder"
-                    )
-                }
-
-                Button {
-                    camera.setExposureLocked(!camera.exposureLocked)
-                } label: {
-                    Label(
-                        camera.exposureLocked ? "解除测光锁定" : "锁定测光",
-                        systemImage: camera.exposureLocked ? "lock.open" : "camera.metering.center.weighted"
-                    )
-                }
+            Button {
+                camera.captureBurst()
             } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 21, weight: .semibold))
-                    .frame(width: 52, height: 52)
+                Image(systemName: "square.stack.3d.up.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 48, height: 48)
                     .foregroundStyle(.white)
                     .background(.black.opacity(0.52), in: Circle())
             }
-            .accessibilityLabel("更多拍摄功能")
+            .buttonStyle(.plain)
+            .accessibilityLabel("连拍")
         }
         .frame(maxWidth: .infinity)
     }

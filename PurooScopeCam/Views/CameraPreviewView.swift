@@ -6,7 +6,7 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
-final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFrameSink {
+final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFrameSink, StabilizedPhotoFrameSink {
     private let metalView: MTKView
     private let renderer: StabilizedMetalPreviewRenderer
     private let stabilizationEngine = FrameStabilizationEngine()
@@ -19,6 +19,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let cropWindowView = UIView()
     private let cropCenterHorizontalView = UIView()
     private let cropCenterVerticalView = UIView()
+    private let focusIndicatorView = UIView()
     private let debugOverlayLabel = UILabel()
     private let viewportLock = NSLock()
     private let preferenceLock = NSLock()
@@ -33,6 +34,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var lastDebugOverlayUpdateTime: TimeInterval = 0
     private var lastVideoRotationAngle: CGFloat = 90
     private var isOverviewBusy = false
+    var onFocusPoint: ((CGPoint) -> Void)?
 
     override init(frame: CGRect) {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -55,6 +57,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
         addSubview(metalView)
         configureOverview()
+        configureFocusIndicator()
         configureDebugOverlay()
         stabilizationEngine.onResult = { [weak self] result in
             self?.applyStabilizationResult(result)
@@ -164,6 +167,12 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
     func stopStabilizedRecording() {
         renderer.stopRecording()
+    }
+
+    func captureStabilizedPhoto(
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) {
+        renderer.capturePhoto(completion: completion)
     }
 
     func cameraController(
@@ -300,6 +309,69 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         debugOverlayLabel.isUserInteractionEnabled = false
         debugOverlayLabel.isHidden = true
         addSubview(debugOverlayLabel)
+    }
+
+    private func configureFocusIndicator() {
+        focusIndicatorView.frame = CGRect(x: 0, y: 0, width: 72, height: 72)
+        focusIndicatorView.layer.borderWidth = 1.5
+        focusIndicatorView.layer.borderColor = UIColor.systemYellow.cgColor
+        focusIndicatorView.layer.cornerRadius = 3
+        focusIndicatorView.alpha = 0
+        focusIndicatorView.isUserInteractionEnabled = false
+        addSubview(focusIndicatorView)
+
+        let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleFocusTap(_:)))
+        addGestureRecognizer(tapRecognizer)
+    }
+
+    @objc private func handleFocusTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended, bounds.width > 1, bounds.height > 1 else { return }
+        let location = recognizer.location(in: self)
+        let normalizedPoint = CGPoint(
+            x: min(max(location.x / bounds.width, 0), 1),
+            y: min(max(location.y / bounds.height, 0), 1)
+        )
+        onFocusPoint?(devicePoint(from: normalizedPoint))
+        showFocusIndicator(at: location)
+    }
+
+    private func devicePoint(from previewPoint: CGPoint) -> CGPoint {
+        let angle = Int(lastVideoRotationAngle.rounded()).quotientAndRemainder(dividingBy: 360).remainder
+        switch angle < 0 ? angle + 360 : angle {
+        case 90:
+            return CGPoint(x: previewPoint.y, y: 1 - previewPoint.x)
+        case 180:
+            return CGPoint(x: 1 - previewPoint.x, y: 1 - previewPoint.y)
+        case 270:
+            return CGPoint(x: 1 - previewPoint.y, y: previewPoint.x)
+        default:
+            return previewPoint
+        }
+    }
+
+    private func showFocusIndicator(at point: CGPoint) {
+        let halfSize = focusIndicatorView.bounds.width * 0.5
+        focusIndicatorView.center = CGPoint(
+            x: min(max(point.x, halfSize), bounds.width - halfSize),
+            y: min(max(point.y, halfSize), bounds.height - halfSize)
+        )
+        focusIndicatorView.layer.removeAllAnimations()
+        focusIndicatorView.alpha = 1
+        focusIndicatorView.transform = CGAffineTransform(scaleX: 1.18, y: 1.18)
+        UIView.animate(
+            withDuration: 0.18,
+            delay: 0,
+            options: [.beginFromCurrentState, .curveEaseOut]
+        ) {
+            self.focusIndicatorView.transform = .identity
+        }
+        UIView.animate(
+            withDuration: 0.28,
+            delay: 0.85,
+            options: [.beginFromCurrentState, .curveEaseIn]
+        ) {
+            self.focusIndicatorView.alpha = 0
+        }
     }
 
     private func layoutOverview() {
@@ -466,10 +538,18 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         var timestamp: TimeInterval
     }
 
+    private struct DisplayedPhotoFrame {
+        var pixelBuffer: CVPixelBuffer
+        var transform: PreviewRenderTransform
+        var cropScale: CGFloat
+        var logicalViewport: CGSize
+    }
+
     private let commandQueue: MTLCommandQueue
     private let ciContext: CIContext
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     private let recorder = StabilizedPreviewRecorder()
+    private let photoQueue = DispatchQueue(label: "com.puroo.scope.preview.photo", qos: .userInitiated)
     private let stateLock = NSLock()
     private var frameQueue: [QueuedPreviewFrame] = []
     private var renderTransformHistory: [TimedRenderTransform] = [
@@ -486,6 +566,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     private var displayedIntervalTotal: TimeInterval = 0
     private var displayedIntervalCount: Int64 = 0
     private var lastDisplayedSourceTimestamp: TimeInterval?
+    private var displayedPhotoFrame: DisplayedPhotoFrame?
 
     init(device: MTLDevice) {
         guard let commandQueue = device.makeCommandQueue() else {
@@ -582,6 +663,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         displayedIntervalTotal = 0
         displayedIntervalCount = 0
         lastDisplayedSourceTimestamp = nil
+        displayedPhotoFrame = nil
         stateLock.unlock()
     }
 
@@ -602,6 +684,43 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func setTargetFrameRate(_ frameRate: Int) {
         recorder.setTargetFrameRate(frameRate)
+    }
+
+    func capturePhoto(
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) {
+        photoQueue.async { [weak self] in
+            guard let self else { return }
+            self.stateLock.lock()
+            let photoFrame = self.displayedPhotoFrame
+            self.stateLock.unlock()
+            guard let photoFrame else {
+                completion(.failure(StabilizedPhotoCaptureError.previewNotReady))
+                return
+            }
+            let image = CIImage(cvPixelBuffer: photoFrame.pixelBuffer)
+            let outputSize = CGSize(
+                width: CVPixelBufferGetWidth(photoFrame.pixelBuffer),
+                height: CVPixelBufferGetHeight(photoFrame.pixelBuffer)
+            )
+            let stabilizedImage = image.transformed(
+                by: self.imageToOutputTransform(
+                    imageExtent: image.extent,
+                    outputSize: outputSize,
+                    logicalViewport: photoFrame.logicalViewport,
+                    previewTransform: photoFrame.transform,
+                    cropWindowScale: photoFrame.cropScale
+                )
+            )
+            let outputBounds = CGRect(origin: .zero, size: outputSize)
+            guard let cgImage = self.ciContext.createCGImage(stabilizedImage, from: outputBounds),
+                  let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.96)
+            else {
+                completion(.failure(StabilizedPhotoCaptureError.encodingFailed))
+                return
+            }
+            completion(.success(jpegData))
+        }
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -654,6 +773,14 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 cropWindowScale: cropScale
             )
         )
+        stateLock.lock()
+        displayedPhotoFrame = DisplayedPhotoFrame(
+            pixelBuffer: queuedFrame.pixelBuffer,
+            transform: transform,
+            cropScale: cropScale,
+            logicalViewport: view.bounds.size
+        )
+        stateLock.unlock()
 
         if recording {
             let recordingSize = CGSize(
@@ -795,6 +922,20 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         let tx = outputCenterX - a * inputCenterX - c * inputCenterY
         let ty = outputCenterY - b * inputCenterX - d * inputCenterY
         return CGAffineTransform(a: a, b: b, c: c, d: d, tx: tx, ty: ty)
+    }
+}
+
+private enum StabilizedPhotoCaptureError: LocalizedError {
+    case previewNotReady
+    case encodingFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .previewNotReady:
+            return "稳定预览尚未准备好，请稍后再拍。"
+        case .encodingFailed:
+            return "无法生成与预览一致的照片。"
+        }
     }
 }
 
@@ -1051,7 +1192,7 @@ private final class StabilizedPreviewRecorder {
         let expectedFrameRate = max(24, min(targetFrameRate, 60))
         let bitrate = min(
             max(outputWidth * outputHeight * expectedFrameRate / 8, 6_000_000),
-            24_000_000
+            60_000_000
         )
         let outputSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -1101,8 +1242,8 @@ private final class StabilizedPreviewRecorder {
         let sourceWidth = max(sourceSize.width, 1)
         let sourceHeight = max(sourceSize.height, 1)
         let isPortrait = sourceHeight >= sourceWidth
-        let maximumWidth: CGFloat = isPortrait ? 1080 : 1920
-        let maximumHeight: CGFloat = isPortrait ? 1920 : 1080
+        let maximumWidth: CGFloat = isPortrait ? 2160 : 3840
+        let maximumHeight: CGFloat = isPortrait ? 3840 : 2160
         let scale = min(maximumWidth / sourceWidth, maximumHeight / sourceHeight, 1)
         return (
             compatibleVideoDimension(sourceWidth * scale),
@@ -1286,6 +1427,9 @@ struct CameraPreviewView: UIViewRepresentable {
                 self.view = view
                 camera.setPreviewFrameSink(view)
             }
+            view.onFocusPoint = { [weak camera] point in
+                camera?.focus(at: point)
+            }
             if self.motionMonitor !== motionMonitor {
                 self.motionMonitor = motionMonitor
                 view.updateMotionMonitor(motionMonitor)
@@ -1294,6 +1438,7 @@ struct CameraPreviewView: UIViewRepresentable {
 
         func detach() {
             camera?.setPreviewFrameSink(nil)
+            view?.onFocusPoint = nil
             view?.updateMotionMonitor(nil)
             camera = nil
             view = nil
