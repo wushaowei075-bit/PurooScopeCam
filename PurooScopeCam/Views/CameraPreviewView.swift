@@ -31,6 +31,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var overviewImageAspectRatio: CGFloat = 1
     private var lastOverviewUpdateTime: TimeInterval = 0
     private var lastDebugOverlayUpdateTime: TimeInterval = 0
+    private var lastVideoRotationAngle: CGFloat = 90
     private var isOverviewBusy = false
 
     override init(frame: CGRect) {
@@ -170,6 +171,15 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         didOutput pixelBuffer: CVPixelBuffer,
         metadata: CameraFrameMetadata
     ) {
+        if abs(metadata.videoRotationAngle - lastVideoRotationAngle) > 0.5 {
+            lastVideoRotationAngle = metadata.videoRotationAngle
+            stabilizationEngine.reset()
+            renderer.resetStabilizationState()
+            DispatchQueue.main.async { [weak self] in
+                self?.latestCorrection = .zero
+                self?.layoutCropWindow()
+            }
+        }
         guard let frameTime = frameClockMapper.motionTime(for: metadata.presentationTime) else {
             return
         }
@@ -196,6 +206,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
                 timestamp: frameTime,
                 motionReferenceTime: motionReferenceTime,
                 motionSamples: samples,
+                videoRotationAngle: metadata.videoRotationAngle,
                 tuning: tuning,
                 viewportSize: currentViewportSize,
                 focalLengthPixelsX: metadata.focalLengthPixelsX,
@@ -262,7 +273,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
         cropWindowView.backgroundColor = .clear
         cropWindowView.layer.borderColor = UIColor.systemYellow.cgColor
-        cropWindowView.layer.borderWidth = 2
+        cropWindowView.layer.borderWidth = 1.5
         cropWindowView.layer.shadowColor = UIColor.black.cgColor
         cropWindowView.layer.shadowOpacity = 0.45
         cropWindowView.layer.shadowRadius = 2
@@ -287,15 +298,18 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         debugOverlayLabel.clipsToBounds = true
         debugOverlayLabel.text = "防抖调试\n等待首帧与传感器数据"
         debugOverlayLabel.isUserInteractionEnabled = false
+        debugOverlayLabel.isHidden = true
         addSubview(debugOverlayLabel)
     }
 
     private func layoutOverview() {
-        let width = min(max(bounds.width * 0.28, 92), 128)
-        let height = width * 1.34
-        let topInset = max(bounds.height * 0.08, 44)
+        let shortSide = min(bounds.width, bounds.height)
+        let width = min(max(shortSide * 0.16, 72), 92)
+        let contentAspect = max(overviewImageAspectRatio, 0.1)
+        let height = min(width / contentAspect, width * 1.35)
+        let topInset = max(safeAreaInsets.top + 48, 48)
         overviewContainer.frame = CGRect(
-            x: bounds.maxX - width - 18,
+            x: bounds.maxX - width - 12,
             y: topInset,
             width: width,
             height: height
@@ -305,14 +319,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     }
 
     private func layoutDebugOverlay() {
-        let width = min(max(bounds.width * 0.82, 310), max(bounds.width - 24, 244))
-        let topInset = max(safeAreaInsets.top + 58, 82)
-        debugOverlayLabel.frame = CGRect(
-            x: 12,
-            y: topInset,
-            width: width,
-            height: 176
-        )
+        debugOverlayLabel.frame = .zero
     }
 
     private func layoutCropWindow() {

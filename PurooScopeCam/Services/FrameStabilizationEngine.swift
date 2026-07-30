@@ -262,6 +262,7 @@ final class FrameStabilizationEngine {
         var timestamp: TimeInterval
         var motionReferenceTime: TimeInterval
         var motionSamples: [StabilitySample]
+        var videoRotationAngle: CGFloat
         var tuning: StabilizationTuning
         var viewportSize: CGSize
         var focalLengthPixelsX: CGFloat
@@ -285,6 +286,7 @@ final class FrameStabilizationEngine {
         timestamp: TimeInterval,
         motionReferenceTime: TimeInterval,
         motionSamples: [StabilitySample],
+        videoRotationAngle: CGFloat,
         tuning: StabilizationTuning,
         viewportSize: CGSize,
         focalLengthPixelsX: CGFloat,
@@ -303,6 +305,7 @@ final class FrameStabilizationEngine {
             timestamp: timestamp,
             motionReferenceTime: motionReferenceTime,
             motionSamples: motionSamples,
+            videoRotationAngle: videoRotationAngle,
             tuning: tuning,
             viewportSize: viewportSize,
             focalLengthPixelsX: max(focalLengthPixelsX, 1),
@@ -364,6 +367,7 @@ final class FrameStabilizationEngine {
         let gyroCandidates = motionEstimator.candidates(
             samples: input.motionSamples,
             frameTime: input.motionReferenceTime,
+            videoRotationAngle: input.videoRotationAngle,
             tuning: input.tuning,
             focalLengthPixelsX: input.focalLengthPixelsX,
             focalLengthPixelsY: input.focalLengthPixelsY,
@@ -1040,6 +1044,7 @@ private final class QuaternionMotionEstimator {
     func candidates(
         samples: [StabilitySample],
         frameTime: TimeInterval,
+        videoRotationAngle: CGFloat,
         tuning: StabilizationTuning,
         focalLengthPixelsX: CGFloat,
         focalLengthPixelsY: CGFloat,
@@ -1063,11 +1068,25 @@ private final class QuaternionMotionEstimator {
             }
             let relative = previous.inverse.multiplied(by: current)
             let rotation = relative.rotationVector
-            // 竖屏取向下设备 y 轴旋转对应画面水平位移、x 轴旋转对应垂直位移。
-            // 离线标定 (analysis_outputs/20260713_v2/gyro_mapping_fit.json) 中该映射的
-            // 相关系数为 0.965/0.970，其余候选仅 0.43，可辨识性足够，无需运行期切换。
-            let horizontalRotation = rotation.y
-            let verticalRotation = rotation.x
+            // 先按相机连接对像素缓冲执行的旋转，把设备坐标系映射到当前画面
+            // 坐标系。90 度分支保持原竖屏标定；其余分支是同一向量的正交旋转。
+            let normalizedAngle = ((Int(videoRotationAngle.rounded()) % 360) + 360) % 360
+            let horizontalRotation: Double
+            let verticalRotation: Double
+            switch normalizedAngle {
+            case 0:
+                horizontalRotation = rotation.x
+                verticalRotation = -rotation.y
+            case 180:
+                horizontalRotation = -rotation.x
+                verticalRotation = rotation.y
+            case 270:
+                horizontalRotation = -rotation.y
+                verticalRotation = -rotation.x
+            default:
+                horizontalRotation = rotation.y
+                verticalRotation = rotation.x
+            }
             // 这里只做手机镜头本身的针孔投影，输出仍是「不含外接光学放大」的归一化位移。
             // 望远镜倍率由 ComplementaryMotionFusion 统一乘上，不要在此重复。
             let deltaX = clamp(

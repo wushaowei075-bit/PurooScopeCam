@@ -1,205 +1,175 @@
+import Foundation
 import SwiftUI
 
 struct ControlPanelView: View {
+    private enum Adjustment: Equatable {
+        case zoom
+        case exposure
+    }
+
     @EnvironmentObject private var camera: CameraController
+    @State private var adjustment: Adjustment = .zoom
 
     var body: some View {
-        VStack(spacing: 12) {
-            stabilizationToggle
-            telescopeMagnificationControl
-            qualityPicker
+        VStack(spacing: 10) {
+            adjustmentBar
+            captureBar
+        }
+    }
 
-            HStack(spacing: 12) {
-                metricSlider(
-                    title: "变焦",
-                    value: Binding(
-                        get: { Double(camera.zoomFactor) },
-                        set: { camera.setDisplayedZoomFactor(CGFloat($0)) }
-                    ),
-                    range: 1...6,
-                    systemImage: "plus.magnifyingglass"
-                )
+    private var adjustmentBar: some View {
+        HStack(spacing: 10) {
+            adjustmentButton(
+                systemImage: "plus.magnifyingglass",
+                label: "调节变焦",
+                adjustment: .zoom
+            )
 
-                metricSlider(
-                    title: "曝光",
-                    value: Binding(
-                        get: { Double(camera.exposureBias) },
-                        set: { camera.setExposureBias(Float($0)) }
-                    ),
-                    range: -3...3,
-                    systemImage: "sun.max"
-                )
+            Slider(value: adjustmentValue, in: adjustmentRange)
+                .tint(.white)
+
+            Text(adjustmentValueText)
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .frame(width: 48, alignment: .trailing)
+
+            adjustmentButton(
+                systemImage: "sun.max",
+                label: "调节曝光",
+                adjustment: .exposure
+            )
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 42)
+        .foregroundStyle(.white)
+        .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var captureBar: some View {
+        HStack(spacing: 24) {
+            Button {
+                camera.toggleRecording()
+            } label: {
+                ZStack {
+                    Circle()
+                        .stroke(.white.opacity(0.88), lineWidth: 2)
+                    if camera.status.isRecording {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(.red)
+                            .frame(width: 22, height: 22)
+                    } else {
+                        Circle()
+                            .fill(.red)
+                            .frame(width: 34, height: 34)
+                    }
+                }
+                .frame(width: 52, height: 52)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(camera.status.isRecording ? "停止录像" : "开始录像")
 
-            HStack(spacing: 12) {
-                iconToggle(
-                    title: "对焦",
-                    systemImage: camera.focusLocked ? "lock.fill" : "viewfinder",
-                    isActive: camera.focusLocked
-                ) {
-                    camera.setFocusLocked(!camera.focusLocked)
+            Button {
+                camera.capturePhoto()
+            } label: {
+                ZStack {
+                    Circle()
+                        .stroke(.white, lineWidth: 4)
+                    Circle()
+                        .fill(.white)
+                        .padding(7)
                 }
+                .frame(width: 68, height: 68)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("拍照")
 
-                iconToggle(
-                    title: "测光",
-                    systemImage: camera.exposureLocked ? "lock.fill" : "camera.metering.center.weighted",
-                    isActive: camera.exposureLocked
-                ) {
-                    camera.setExposureLocked(!camera.exposureLocked)
-                }
-
+            Menu {
                 Button {
                     camera.captureBurst()
                 } label: {
                     Label("连拍", systemImage: "square.stack.3d.up")
-                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(ScopeButtonStyle())
 
                 Button {
-                    camera.toggleRecording()
+                    camera.setFocusLocked(!camera.focusLocked)
                 } label: {
-                    Label(camera.status.isRecording ? "停止" : "录像", systemImage: camera.status.isRecording ? "stop.fill" : "video.fill")
-                        .frame(maxWidth: .infinity)
+                    Label(
+                        camera.focusLocked ? "解除对焦锁定" : "锁定对焦",
+                        systemImage: camera.focusLocked ? "lock.open" : "viewfinder"
+                    )
                 }
-                .buttonStyle(ScopeButtonStyle(isProminent: camera.status.isRecording))
 
                 Button {
-                    camera.capturePhoto()
+                    camera.setExposureLocked(!camera.exposureLocked)
                 } label: {
-                    Image(systemName: "camera.circle.fill")
-                        .font(.system(size: 42, weight: .semibold))
-                        .frame(width: 58, height: 58)
+                    Label(
+                        camera.exposureLocked ? "解除测光锁定" : "锁定测光",
+                        systemImage: camera.exposureLocked ? "lock.open" : "camera.metering.center.weighted"
+                    )
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("拍照")
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 21, weight: .semibold))
+                    .frame(width: 52, height: 52)
+                    .foregroundStyle(.white)
+                    .background(.black.opacity(0.52), in: Circle())
             }
-            .font(.subheadline.weight(.semibold))
+            .accessibilityLabel("更多拍摄功能")
         }
-        .padding(12)
-        .background(.black.opacity(0.56), in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: .infinity)
     }
 
-    private var stabilizationToggle: some View {
-        Toggle(isOn: Binding(
-            get: { camera.isStabilizationEnabled },
-            set: { camera.setStabilizationEnabled($0) }
-        )) {
-            Label("稳定", systemImage: "scope")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.86))
-        }
-        .tint(.green)
-        .padding(.horizontal, 10)
-        .frame(height: 38)
-        .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var qualityPicker: some View {
-        HStack(spacing: 10) {
-            Label("画质", systemImage: "rectangle.badge.checkmark")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.86))
-
-            Picker("画质", selection: $camera.captureQualityPreference) {
-                ForEach(camera.captureQualityOptions) { option in
-                    Text(option.title).tag(option)
-                }
-            }
-            .pickerStyle(.menu)
-            .disabled(camera.status.isRecording || camera.captureQualityOptions.count <= 1)
-
-            Spacer(minLength: 0)
-
-            Text(camera.activeCaptureQuality.shortTitle)
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(.white.opacity(0.78))
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 38)
-        .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var telescopeMagnificationControl: some View {
-        HStack(spacing: 10) {
-            Label("望远镜", systemImage: "binoculars")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.86))
-
-            Picker(
-                "望远镜倍率",
-                selection: Binding(
-                    get: { camera.telescopeMagnification },
-                    set: { camera.setTelescopeMagnification($0) }
-                )
-            ) {
-                ForEach(TelescopeMagnificationOption.presets) { option in
-                    Text(option.title).tag(option.value)
-                }
-            }
-            .pickerStyle(.menu)
-
-            Spacer(minLength: 0)
-
-            Text("陀螺标定基准")
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.58))
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 38)
-        .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func metricSlider(
-        title: String,
-        value: Binding<Double>,
-        range: ClosedRange<Double>,
-        systemImage: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(title, systemImage: systemImage)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.86))
-            Slider(value: value, in: range)
+    private var adjustmentValue: Binding<Double> {
+        switch adjustment {
+        case .zoom:
+            return Binding(
+                get: { Double(camera.zoomFactor) },
+                set: { camera.setDisplayedZoomFactor(CGFloat($0)) }
+            )
+        case .exposure:
+            return Binding(
+                get: { Double(camera.exposureBias) },
+                set: { camera.setExposureBias(Float($0)) }
+            )
         }
     }
 
-    private func iconToggle(
-        title: String,
+    private var adjustmentRange: ClosedRange<Double> {
+        switch adjustment {
+        case .zoom:
+            return 1...6
+        case .exposure:
+            return -3...3
+        }
+    }
+
+    private var adjustmentValueText: String {
+        switch adjustment {
+        case .zoom:
+            return String(format: "%.1f×", camera.zoomFactor)
+        case .exposure:
+            return String(format: "%+.1f", camera.exposureBias)
+        }
+    }
+
+    private func adjustmentButton(
         systemImage: String,
-        isActive: Bool,
-        action: @escaping () -> Void
+        label: String,
+        adjustment nextAdjustment: Adjustment
     ) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .frame(maxWidth: .infinity)
+        Button {
+            adjustment = nextAdjustment
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 28, height: 28)
+                .foregroundStyle(adjustment == nextAdjustment ? .black : .white)
+                .background(
+                    adjustment == nextAdjustment ? Color.white : Color.white.opacity(0.14),
+                    in: Circle()
+                )
         }
-        .buttonStyle(ScopeButtonStyle(isProminent: isActive))
-    }
-}
-
-struct ScopeButtonStyle: ButtonStyle {
-    var isProminent = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .lineLimit(1)
-            .minimumScaleFactor(0.78)
-            .padding(.horizontal, 10)
-            .frame(height: 42)
-            .background(background(configuration: configuration), in: RoundedRectangle(cornerRadius: 8))
-            .foregroundStyle(.white)
-            .opacity(configuration.isPressed ? 0.74 : 1)
-    }
-
-    private func background(configuration: Configuration) -> Color {
-        if isProminent {
-            return configuration.isPressed ? .red.opacity(0.72) : .red.opacity(0.9)
-        } else {
-            return configuration.isPressed ? .white.opacity(0.22) : .white.opacity(0.14)
-        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 }
 

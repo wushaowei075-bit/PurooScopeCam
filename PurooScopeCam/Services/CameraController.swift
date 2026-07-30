@@ -7,6 +7,7 @@ import UIKit
 struct CameraFrameMetadata {
     var presentationTime: CMTime
     var exposureDuration: TimeInterval
+    var videoRotationAngle: CGFloat
     var focalLengthPixelsX: CGFloat
     var focalLengthPixelsY: CGFloat
     var frameWidth: Int
@@ -84,6 +85,8 @@ final class CameraController: NSObject, ObservableObject {
     private var isConfigured = false
     private var targetFrameRate = 60
     private var requestedZoomFactor: CGFloat = 1
+    private var requestedVideoRotationAngle: CGFloat = 90
+    private var isVideoOrientationLocked = false
 
     private struct CaptureQualityApplication {
         var options: [CaptureQualityOption]
@@ -133,6 +136,29 @@ final class CameraController: NSObject, ObservableObject {
             self.previewFrameSink = sink
             self.previewRecordingSink = sink as? StabilizedRecordingFrameSink
             sink?.cameraController(self, didUpdateTargetFrameRate: self.targetFrameRate)
+        }
+    }
+
+    func setVideoOrientation(_ orientation: UIInterfaceOrientation) {
+        let angle: CGFloat
+        switch orientation {
+        case .portrait:
+            angle = 90
+        case .landscapeRight:
+            angle = 0
+        case .landscapeLeft:
+            angle = 180
+        case .portraitUpsideDown:
+            angle = 270
+        default:
+            return
+        }
+
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.requestedVideoRotationAngle = angle
+            guard !self.isVideoOrientationLocked else { return }
+            self.applyRequestedVideoRotation()
         }
     }
 
@@ -500,9 +526,7 @@ final class CameraController: NSObject, ObservableObject {
 
     private func configureVideoOutputConnection() {
         guard let connection = videoOutput.connection(with: .video) else { return }
-        if connection.isVideoRotationAngleSupported(90) {
-            connection.videoRotationAngle = 90
-        }
+        applyVideoRotation(to: connection)
         if connection.isVideoMirroringSupported {
             connection.isVideoMirrored = false
         }
@@ -515,12 +539,41 @@ final class CameraController: NSObject, ObservableObject {
     private func configurePhotoOutput() {
         if session.canAddOutput(photoOutput) {
             session.addOutput(photoOutput)
+            applyVideoRotation(to: photoOutput.connection(with: .video))
         }
     }
 
     private func configureMovieOutput() {
         if session.canAddOutput(movieOutput) {
             session.addOutput(movieOutput)
+            applyVideoRotation(to: movieOutput.connection(with: .video))
+        }
+    }
+
+    private func applyRequestedVideoRotation() {
+        applyVideoRotation(to: videoOutput.connection(with: .video))
+        applyVideoRotation(to: photoOutput.connection(with: .video))
+        applyVideoRotation(to: movieOutput.connection(with: .video))
+        StabilizationTraceRecorder.shared.recordControl(
+            "video_orientation",
+            values: ["angle": requestedVideoRotationAngle]
+        )
+    }
+
+    private func applyVideoRotation(to connection: AVCaptureConnection?) {
+        guard let connection,
+              connection.isVideoRotationAngleSupported(requestedVideoRotationAngle)
+        else {
+            return
+        }
+        connection.videoRotationAngle = requestedVideoRotationAngle
+    }
+
+    private func unlockVideoOrientationAfterRecording() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.isVideoOrientationLocked = false
+            self.applyRequestedVideoRotation()
         }
     }
 
@@ -532,9 +585,11 @@ final class CameraController: NSObject, ObservableObject {
                     .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
                     .appendingPathExtension("mp4")
                 guard !previewRecordingSink.isStabilizedRecording else { return }
+                self.isVideoOrientationLocked = true
                 previewRecordingSink.startStabilizedRecording(to: url) { [weak self] result in
                     guard let self else { return }
                     self.publishStatus { $0.isRecording = false }
+                    self.unlockVideoOrientationAfterRecording()
 
                     switch result {
                     case .success(let outputURL):
@@ -552,6 +607,7 @@ final class CameraController: NSObject, ObservableObject {
                 .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
                 .appendingPathExtension("mov")
             guard !self.movieOutput.isRecording else { return }
+            self.isVideoOrientationLocked = true
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
             self.publishStatus { $0.isRecording = true }
         }
@@ -660,6 +716,9 @@ final class CameraController: NSObject, ObservableObject {
                     status.lastMessage = success ? "照片已保存。" : nil
                     status.errorMessage = error?.localizedDescription
                 }
+                if success {
+                    self?.clearStatusMessage("照片已保存。")
+                }
             }
         }
     }
@@ -685,6 +744,9 @@ final class CameraController: NSObject, ObservableObject {
                     status.lastMessage = success ? "视频已保存。" : nil
                     status.errorMessage = error?.localizedDescription
                 }
+                if success {
+                    self?.clearStatusMessage("视频已保存。")
+                }
             }
         }
     }
@@ -699,6 +761,16 @@ final class CameraController: NSObject, ObservableObject {
         publishStatus { status in
             status.lastMessage = message
             status.errorMessage = error
+        }
+        if let message {
+            clearStatusMessage(message)
+        }
+    }
+
+    private func clearStatusMessage(_ expectedMessage: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak self] in
+            guard let self, self.status.lastMessage == expectedMessage else { return }
+            self.status.lastMessage = nil
         }
     }
 
@@ -761,6 +833,7 @@ extension CameraController: AVCaptureFileOutputRecordingDelegate {
         error: Error?
     ) {
         publishStatus { $0.isRecording = false }
+        unlockVideoOrientationAfterRecording()
 
         if let error {
             publishStatus(error: error.localizedDescription)
@@ -792,6 +865,7 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             let metadata = CameraFrameMetadata(
                 presentationTime: timestamp,
                 exposureDuration: exposureDuration.isFinite ? exposureDuration : 0,
+                videoRotationAngle: connection.videoRotationAngle,
                 focalLengthPixelsX: focalLengths.x,
                 focalLengthPixelsY: focalLengths.y,
                 frameWidth: width,
