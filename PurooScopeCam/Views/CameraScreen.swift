@@ -15,14 +15,14 @@ struct CameraScreen: View {
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
-            let horizontalPadding: CGFloat = isLandscape ? 88 : 12
-            let headerHeight: CGFloat = isLandscape ? 40 : 52
-            let controlsHeight: CGFloat = isLandscape ? 80 : 86
-            let spacing: CGFloat = isLandscape ? 6 : 10
+            let horizontalPadding: CGFloat = 0
+            let headerHeight: CGFloat = isLandscape ? 34 : 40
+            let controlsHeight: CGFloat = isLandscape ? 64 : 72
+            let spacing: CGFloat = 4
             let availablePreviewSize = CGSize(
                 width: max(proxy.size.width - horizontalPadding * 2, 1),
                 height: max(
-                    proxy.size.height - headerHeight - controlsHeight - spacing * 2 - 8,
+                    proxy.size.height - headerHeight - spacing - 8,
                     1
                 )
             )
@@ -43,13 +43,18 @@ struct CameraScreen: View {
                         .frame(width: previewSize.width, height: previewSize.height)
 
                     Spacer(minLength: 0)
-
-                    ControlPanelView()
-                        .frame(maxWidth: isLandscape ? 520 : 390)
-                        .frame(height: controlsHeight)
                 }
                 .padding(.horizontal, horizontalPadding)
                 .padding(.vertical, 4)
+
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    ControlPanelView()
+                        .frame(maxWidth: isLandscape ? 500 : 390)
+                        .frame(height: controlsHeight)
+                        .background(.black.opacity(0.88))
+                }
+                .padding(.bottom, 4)
 
                 if camera.authorizationStatus != .authorized {
                     Color.black.opacity(0.90)
@@ -120,36 +125,18 @@ struct CameraScreen: View {
     }
 
     private var brandHeader: some View {
-        ZStack {
+        HStack(spacing: 7) {
             Text("PUROO 普徕 · 稳定")
-                .font(.system(size: 22, weight: .semibold))
+                .font(.system(size: 20, weight: .light))
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
                 .foregroundStyle(PurooBrandStyle.gradient)
 
-            HStack {
-                Image(systemName: "camera.aperture")
-                    .font(.system(size: 19, weight: .medium))
-                    .foregroundStyle(PurooBrandStyle.gradient)
-                    .frame(width: 42, height: 42)
-                    .background(.white.opacity(0.07), in: Circle())
-
-                Spacer()
-
-                if camera.status.isRecording {
-                    Label("录像", systemImage: "record.circle.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 10)
-                        .frame(height: 36)
-                        .background(.white.opacity(0.07), in: Capsule())
-                } else {
-                    Image(systemName: "scope")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(camera.isStabilizationEnabled ? PurooBrandStyle.yellow : .white.opacity(0.45))
-                        .frame(width: 42, height: 42)
-                        .background(.white.opacity(0.07), in: Circle())
-                }
+            if camera.status.isRecording {
+                Circle()
+                    .fill(.red)
+                    .frame(width: 7, height: 7)
+                    .accessibilityLabel("正在录像")
             }
         }
     }
@@ -181,11 +168,11 @@ struct CameraScreen: View {
                         isQualityDialogPresented = true
                     } label: {
                         Text(qualityBadgeTitle)
-                            .font(.caption.monospacedDigit().weight(.bold))
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
-                            .frame(minWidth: 64, minHeight: 44)
-                            .padding(.horizontal, 8)
+                            .frame(minWidth: 58, minHeight: 38)
+                            .padding(.horizontal, 7)
                             .foregroundStyle(.black)
                             .background(PurooBrandStyle.gradient, in: Capsule())
                     }
@@ -200,9 +187,9 @@ struct CameraScreen: View {
                             "\(camera.telescopeMagnification, specifier: "%.0f")×",
                             systemImage: "binoculars"
                         )
-                        .font(.subheadline.monospacedDigit().weight(.bold))
-                        .padding(.horizontal, 14)
-                        .frame(height: 44)
+                        .font(.system(size: 13, weight: .regular, design: .monospaced))
+                        .padding(.horizontal, 12)
+                        .frame(height: 38)
                         .foregroundStyle(.black)
                         .background(
                             LinearGradient(
@@ -216,7 +203,7 @@ struct CameraScreen: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("望远镜倍率")
 
-                    Spacer(minLength: 76)
+                    Spacer(minLength: 72)
                 }
 
                 Spacer(minLength: 0)
@@ -229,30 +216,28 @@ struct CameraScreen: View {
 
                 CameraAdjustmentBar()
             }
-            .padding(12)
+            .padding(.top, 10)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 82)
 
             if let focusIndicator {
                 FocusReticleView()
-                    .frame(width: 76, height: 76)
+                    .frame(width: 66, height: 66)
                     .position(focusIndicator.location)
                     .transition(.scale(scale: 1.18).combined(with: .opacity))
                     .allowsHitTesting(false)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(.white.opacity(0.18), lineWidth: 1)
-        }
+        .clipped()
         .animation(.easeOut(duration: 0.18), value: focusIndicator?.id)
     }
 
     private func statusCapsule(text: String, systemImage: String) -> some View {
         Label(text, systemImage: systemImage)
-            .font(.caption.weight(.medium))
+            .font(.system(size: 11, weight: .regular))
             .lineLimit(1)
             .padding(.horizontal, 13)
-            .frame(height: 34)
+            .frame(height: 30)
             .foregroundStyle(.white)
             .background(.black.opacity(0.62), in: Capsule())
     }
@@ -267,12 +252,12 @@ struct CameraScreen: View {
     private var permissionPanel: some View {
         VStack(spacing: 14) {
             Image(systemName: "camera.fill")
-                .font(.system(size: 38, weight: .semibold))
+                .font(.system(size: 34, weight: .regular))
                 .foregroundStyle(PurooBrandStyle.gradient)
             Text("需要相机权限")
-                .font(.headline)
+                .font(.system(size: 17, weight: .regular))
             Text("请在系统设置中开启相机权限，然后返回应用。")
-                .font(.subheadline)
+                .font(.system(size: 14, weight: .light))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
@@ -368,10 +353,10 @@ private struct FocusReticleView: View {
     var body: some View {
         ZStack {
             Image(systemName: "viewfinder")
-                .font(.system(size: 72, weight: .light))
+                .font(.system(size: 62, weight: .ultraLight))
                 .foregroundStyle(PurooBrandStyle.gradient)
             Image(systemName: "plus")
-                .font(.system(size: 25, weight: .medium))
+                .font(.system(size: 21, weight: .light))
                 .foregroundStyle(PurooBrandStyle.gradient)
         }
     }

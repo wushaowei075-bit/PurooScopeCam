@@ -42,9 +42,9 @@ struct CameraAdjustmentBar: View {
             GradientValueSlider(value: adjustmentValue, range: adjustmentRange)
 
             Text(adjustmentValueText)
-                .font(.subheadline.monospacedDigit().weight(.semibold))
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
                 .lineLimit(1)
-                .frame(width: 52, alignment: .trailing)
+                .frame(width: 48, alignment: .trailing)
 
             adjustmentButton(
                 systemImage: "sun.max.fill",
@@ -53,7 +53,7 @@ struct CameraAdjustmentBar: View {
             )
         }
         .padding(.horizontal, 11)
-        .frame(height: 54)
+        .frame(height: 48)
         .foregroundStyle(.white)
         .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 8))
     }
@@ -100,8 +100,8 @@ struct CameraAdjustmentBar: View {
             adjustment = nextAdjustment
         } label: {
             Image(systemName: systemImage)
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 38, height: 38)
+                .font(.system(size: 15, weight: .regular))
+                .frame(width: 32, height: 32)
                 .foregroundStyle(adjustment == nextAdjustment ? .black : .white)
                 .background(
                     adjustment == nextAdjustment ? Color.white : Color.white.opacity(0.13),
@@ -125,17 +125,17 @@ private struct GradientValueSlider: View {
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(.white.opacity(0.22))
-                    .frame(height: 7)
+                    .frame(height: 6)
 
                 Capsule()
                     .fill(PurooBrandStyle.gradient)
-                    .frame(width: max(7, width * fraction), height: 7)
+                    .frame(width: max(6, width * fraction), height: 6)
 
                 Circle()
                     .fill(.white)
-                    .frame(width: 22, height: 22)
+                    .frame(width: 18, height: 18)
                     .shadow(color: .black.opacity(0.30), radius: 2, y: 1)
-                    .offset(x: min(max(width * fraction - 11, 0), max(width - 22, 0)))
+                    .offset(x: min(max(width * fraction - 9, 0), max(width - 18, 0)))
             }
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
@@ -147,7 +147,7 @@ private struct GradientValueSlider: View {
                     }
             )
         }
-        .frame(height: 34)
+        .frame(height: 30)
     }
 
     private var rangeLength: Double {
@@ -163,7 +163,7 @@ struct ControlPanelView: View {
     @State private var albumErrorMessage: String?
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             PhotosPicker(
                 selection: $albumSelection,
                 matching: .any(of: [.images, .videos]),
@@ -176,6 +176,7 @@ struct ControlPanelView: View {
                 )
             }
             .accessibilityLabel("相册")
+            .frame(maxWidth: .infinity)
 
             Button {
                 camera.toggleRecording()
@@ -186,24 +187,25 @@ struct ControlPanelView: View {
                     if camera.status.isRecording {
                         RoundedRectangle(cornerRadius: 4)
                             .fill(.red)
-                            .frame(width: 22, height: 22)
+                            .frame(width: 19, height: 19)
                     } else {
                         Circle()
                             .fill(.red)
-                            .frame(width: 28, height: 28)
+                            .frame(width: 25, height: 25)
                     }
                 }
-                .frame(width: 56, height: 56)
+                .frame(width: 50, height: 50)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(camera.status.isRecording ? "停止录像" : "开始录像")
+            .frame(maxWidth: .infinity)
 
             Button {
                 camera.capturePhoto()
             } label: {
                 ZStack {
                     Circle()
-                        .stroke(PurooBrandStyle.gradient, lineWidth: 7)
+                        .stroke(PurooBrandStyle.gradient, lineWidth: 5)
                     Circle()
                         .fill(.black)
                         .padding(8)
@@ -211,10 +213,11 @@ struct ControlPanelView: View {
                         .fill(.white)
                         .padding(11)
                 }
-                .frame(width: 76, height: 76)
+                .frame(width: 66, height: 66)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("拍照")
+            .frame(maxWidth: .infinity)
 
             Button {
                 camera.captureBurst()
@@ -227,6 +230,7 @@ struct ControlPanelView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("连拍")
+            .frame(maxWidth: .infinity)
 
             Button {
                 camera.setStabilizationEnabled(!camera.isStabilizationEnabled)
@@ -244,19 +248,20 @@ struct ControlPanelView: View {
                                     )
                             )
                         Image(systemName: camera.isStabilizationEnabled ? "checkmark" : "xmark")
-                            .font(.system(size: 19, weight: .bold))
+                            .font(.system(size: 16, weight: .regular))
                             .foregroundStyle(camera.isStabilizationEnabled ? .black : .white)
                     }
-                    .frame(width: 64, height: 34)
+                    .frame(width: 58, height: 30)
 
                     Text("稳定")
-                        .font(.caption2.weight(.medium))
+                        .font(.system(size: 11, weight: .light))
                         .foregroundStyle(.white)
                 }
-                .frame(width: 68, height: 58)
+                .frame(width: 60, height: 54)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(camera.isStabilizationEnabled ? "关闭稳定" : "开启稳定")
+            .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity)
         .overlay {
@@ -293,13 +298,13 @@ struct ControlPanelView: View {
     ) -> some View {
         VStack(spacing: 4) {
             Image(systemName: systemImage)
-                .font(.system(size: 24, weight: .medium))
-                .frame(width: 44, height: 34)
+                .font(.system(size: 20, weight: .regular))
+                .frame(width: 40, height: 30)
             Text(title)
-                .font(.caption2.weight(.medium))
+                .font(.system(size: 11, weight: .light))
         }
         .foregroundStyle(color)
-        .frame(width: 50, height: 58)
+        .frame(width: 48, height: 54)
     }
 
     private func loadAlbumSelection(_ item: PhotosPickerItem?) {
@@ -373,35 +378,158 @@ private struct AlbumMediaPreview: View {
     let media: AlbumPreviewMedia
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack {
             Color.black
                 .ignoresSafeArea()
 
             switch media.content {
             case .image(let image):
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
+                ZoomableAlbumImageView(image: image)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .video(let url):
                 AlbumVideoPreview(url: url)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 17, weight: .bold))
-                    .frame(width: 44, height: 44)
-                    .foregroundStyle(.white)
-                    .background(.black.opacity(0.64), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 12)
-            .padding(.trailing, 14)
-            .accessibilityLabel("关闭预览")
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack {
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .regular))
+                        .frame(width: 42, height: 42)
+                        .foregroundStyle(.white)
+                        .background(.black.opacity(0.62), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭预览")
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 48)
+            .background(.black.opacity(0.42))
+        }
+        .onDisappear {
+            if case .video(let url) = media.content {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+}
+
+private struct ZoomableAlbumImageView: UIViewRepresentable {
+    let image: UIImage
+
+    func makeUIView(context: Context) -> ZoomableImageScrollView {
+        ZoomableImageScrollView(image: image)
+    }
+
+    func updateUIView(_ view: ZoomableImageScrollView, context: Context) {
+        view.setImage(image)
+    }
+}
+
+private final class ZoomableImageScrollView: UIScrollView, UIScrollViewDelegate {
+    private let imageView = UIImageView()
+    private var displayedImage: UIImage?
+    private var previousBoundsSize = CGSize.zero
+
+    init(image: UIImage) {
+        super.init(frame: .zero)
+        delegate = self
+        backgroundColor = .black
+        showsHorizontalScrollIndicator = false
+        showsVerticalScrollIndicator = false
+        bouncesZoom = true
+        decelerationRate = .fast
+        contentInsetAdjustmentBehavior = .never
+
+        imageView.contentMode = .scaleAspectFit
+        imageView.isUserInteractionEnabled = true
+        addSubview(imageView)
+
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        addGestureRecognizer(doubleTap)
+        setImage(image)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setImage(_ image: UIImage) {
+        guard displayedImage !== image else { return }
+        displayedImage = image
+        imageView.image = image
+        imageView.frame = CGRect(origin: .zero, size: image.size)
+        contentSize = image.size
+        previousBoundsSize = .zero
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width > 1, bounds.height > 1,
+              let image = displayedImage,
+              image.size.width > 0, image.size.height > 0
+        else {
+            return
+        }
+
+        if bounds.size != previousBoundsSize {
+            let oldMinimum = minimumZoomScale
+            let wasAtMinimum = previousBoundsSize == .zero || abs(zoomScale - oldMinimum) < 0.01
+            let fitScale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+            minimumZoomScale = fitScale
+            maximumZoomScale = max(fitScale * 6, 1)
+            if wasAtMinimum {
+                zoomScale = fitScale
+            } else {
+                zoomScale = min(max(zoomScale, fitScale), maximumZoomScale)
+            }
+            previousBoundsSize = bounds.size
+        }
+        centerImage()
+    }
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+        imageView
+    }
+
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        centerImage()
+    }
+
+    @objc private func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
+        if zoomScale > minimumZoomScale * 1.05 {
+            setZoomScale(minimumZoomScale, animated: true)
+            return
+        }
+
+        let targetScale = min(max(minimumZoomScale * 2.5, minimumZoomScale), maximumZoomScale)
+        let location = recognizer.location(in: imageView)
+        let zoomSize = CGSize(
+            width: bounds.width / targetScale,
+            height: bounds.height / targetScale
+        )
+        let zoomRect = CGRect(
+            x: location.x - zoomSize.width * 0.5,
+            y: location.y - zoomSize.height * 0.5,
+            width: zoomSize.width,
+            height: zoomSize.height
+        )
+        zoom(to: zoomRect, animated: true)
+    }
+
+    private func centerImage() {
+        let horizontalInset = max((bounds.width - contentSize.width) * 0.5, 0)
+        let verticalInset = max((bounds.height - contentSize.height) * 0.5, 0)
+        imageView.center = CGPoint(
+            x: contentSize.width * 0.5 + horizontalInset,
+            y: contentSize.height * 0.5 + verticalInset
+        )
     }
 }
 
