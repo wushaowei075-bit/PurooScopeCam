@@ -117,10 +117,17 @@ final class CameraController: NSObject, ObservableObject {
     private var requestedZoomFactor: CGFloat = 1
     private var requestedVideoRotationAngle: CGFloat = 90
     private var isVideoOrientationLocked = false
+    private var subjectAreaObserver: NSObjectProtocol?
 
     private struct CaptureQualityApplication {
         var options: [CaptureQualityOption]
         var selected: CaptureQualityOption
+    }
+
+    deinit {
+        if let subjectAreaObserver {
+            NotificationCenter.default.removeObserver(subjectAreaObserver)
+        }
     }
 
     func requestAccessAndConfigure() {
@@ -147,6 +154,7 @@ final class CameraController: NSObject, ObservableObject {
     func startSession() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured, !self.session.isRunning else { return }
+            self.restoreContinuousAutoControlsOnSessionQueue(recenter: false)
             self.session.startRunning()
             self.publishStatus { $0.isSessionRunning = true }
         }
@@ -271,6 +279,10 @@ final class CameraController: NSObject, ObservableObject {
             guard let self, let device = self.videoDeviceInput?.device else { return }
             do {
                 try device.lockForConfiguration()
+                if !self.exposureLocked,
+                   device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
                 device.setExposureTargetBias(clamped, completionHandler: nil)
                 device.unlockForConfiguration()
                 self.publish { $0.exposureBias = clamped }
@@ -310,20 +322,21 @@ final class CameraController: NSObject, ObservableObject {
                 try device.lockForConfiguration()
                 if device.isFocusPointOfInterestSupported {
                     device.focusPointOfInterest = point
-                    if device.isFocusModeSupported(.autoFocus) {
-                        device.focusMode = .autoFocus
-                    } else if device.isFocusModeSupported(.continuousAutoFocus) {
+                    if device.isFocusModeSupported(.continuousAutoFocus) {
                         device.focusMode = .continuousAutoFocus
+                    } else if device.isFocusModeSupported(.autoFocus) {
+                        device.focusMode = .autoFocus
                     }
                 }
                 if device.isExposurePointOfInterestSupported {
                     device.exposurePointOfInterest = point
-                    if device.isExposureModeSupported(.autoExpose) {
-                        device.exposureMode = .autoExpose
-                    } else if device.isExposureModeSupported(.continuousAutoExposure) {
+                    if device.isExposureModeSupported(.continuousAutoExposure) {
                         device.exposureMode = .continuousAutoExposure
+                    } else if device.isExposureModeSupported(.autoExpose) {
+                        device.exposureMode = .autoExpose
                     }
                 }
+                device.isSubjectAreaChangeMonitoringEnabled = true
                 device.unlockForConfiguration()
                 self.publish {
                     $0.focusLocked = false
@@ -345,6 +358,7 @@ final class CameraController: NSObject, ObservableObject {
                 } else if device.isExposureModeSupported(.continuousAutoExposure) {
                     device.exposureMode = .continuousAutoExposure
                 }
+                device.isSubjectAreaChangeMonitoringEnabled = true
                 device.unlockForConfiguration()
                 self.publish { $0.exposureLocked = locked }
             } catch {
@@ -436,19 +450,12 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     private func configureDeviceDefaults(_ device: AVCaptureDevice) {
+        installSubjectAreaObserver(for: device)
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
             let qualityApplication = configureCaptureQuality(device)
-            if device.isFocusModeSupported(.continuousAutoFocus) {
-                device.focusMode = .continuousAutoFocus
-            }
-            if device.isExposureModeSupported(.continuousAutoExposure) {
-                device.exposureMode = .continuousAutoExposure
-            }
-            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
-                device.whiteBalanceMode = .continuousAutoWhiteBalance
-            }
+            configureContinuousAutoControls(device, recenter: true)
             if device.isSmoothAutoFocusSupported {
                 device.isSmoothAutoFocusEnabled = true
             }
@@ -459,6 +466,58 @@ final class CameraController: NSObject, ObservableObject {
         } catch {
             publishStatus(error: "无法配置相机默认参数。")
         }
+    }
+
+    private func installSubjectAreaObserver(for device: AVCaptureDevice) {
+        if let subjectAreaObserver {
+            NotificationCenter.default.removeObserver(subjectAreaObserver)
+        }
+        subjectAreaObserver = NotificationCenter.default.addObserver(
+            forName: AVCaptureDevice.subjectAreaDidChangeNotification,
+            object: device,
+            queue: nil
+        ) { [weak self] _ in
+            self?.sessionQueue.async { [weak self] in
+                self?.restoreContinuousAutoControlsOnSessionQueue(recenter: true)
+            }
+        }
+    }
+
+    private func restoreContinuousAutoControlsOnSessionQueue(recenter: Bool) {
+        guard let device = videoDeviceInput?.device else { return }
+        do {
+            try device.lockForConfiguration()
+            configureContinuousAutoControls(device, recenter: recenter)
+            device.unlockForConfiguration()
+        } catch {
+            publishStatus(error: "无法恢复自动测光。")
+        }
+    }
+
+    private func configureContinuousAutoControls(
+        _ device: AVCaptureDevice,
+        recenter: Bool
+    ) {
+        let center = CGPoint(x: 0.5, y: 0.5)
+
+        if recenter, device.isFocusPointOfInterestSupported {
+            device.focusPointOfInterest = center
+        }
+        if !focusLocked, device.isFocusModeSupported(.continuousAutoFocus) {
+            device.focusMode = .continuousAutoFocus
+        }
+
+        if recenter, device.isExposurePointOfInterestSupported {
+            device.exposurePointOfInterest = center
+        }
+        if !exposureLocked, device.isExposureModeSupported(.continuousAutoExposure) {
+            device.exposureMode = .continuousAutoExposure
+        }
+
+        if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+            device.whiteBalanceMode = .continuousAutoWhiteBalance
+        }
+        device.isSubjectAreaChangeMonitoringEnabled = true
     }
 
     private func configureCaptureQuality(_ device: AVCaptureDevice) -> CaptureQualityApplication {
@@ -571,6 +630,7 @@ final class CameraController: NSObject, ObservableObject {
             do {
                 try device.lockForConfiguration()
                 let qualityApplication = self.configureCaptureQuality(device)
+                self.configureContinuousAutoControls(device, recenter: false)
                 device.unlockForConfiguration()
                 self.publishCaptureQuality(qualityApplication)
                 self.applySelectedStabilizationMode()
