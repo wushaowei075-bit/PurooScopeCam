@@ -18,7 +18,7 @@ struct CameraScreen: View {
             let isLandscape = proxy.size.width > proxy.size.height
             let horizontalPadding: CGFloat = 0
             let headerHeight: CGFloat = isLandscape ? 34 : 40
-            let controlsHeight: CGFloat = isLandscape ? 68 : 78
+            let controlsHeight: CGFloat = isLandscape ? 96 : 148
             let bottomSafeInset = max(proxy.safeAreaInsets.bottom, isLandscape ? 4 : 8)
             let spacing: CGFloat = 4
             let availablePreviewSize = CGSize(

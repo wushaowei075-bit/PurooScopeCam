@@ -125,132 +125,196 @@ private struct CompactZoomSlider: View {
 }
 
 struct ControlPanelView: View {
+    private enum CaptureMode: String, CaseIterable {
+        case video = "视频"
+        case photo = "照片"
+    }
+
     @EnvironmentObject private var camera: CameraController
     @State private var isPhotoLibraryPresented = false
+    @State private var captureMode: CaptureMode = .photo
 
     var body: some View {
         GeometryReader { proxy in
-            let rowWidth = min(proxy.size.width, 360)
-            let fixedItemWidth: CGFloat = 264
-            let itemSpacing = max(14, min(24, (rowWidth - fixedItemWidth) / 3))
-
-            HStack(spacing: itemSpacing) {
-                Button {
-                    isPhotoLibraryPresented = true
-                } label: {
-                    utilityLabel(
-                        systemImage: "photo.on.rectangle",
-                        title: "相册"
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("打开相册")
-
-                recordingButton
-
-                photoButton
-
-                Button {
-                    camera.captureBurst()
-                } label: {
-                    utilityLabel(
-                        systemImage: "square.stack.3d.up",
-                        title: "连拍"
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("连拍")
+            if proxy.size.height < 120 {
+                compactLayout
+            } else {
+                portraitLayout
             }
-            .frame(width: rowWidth, height: proxy.size.height, alignment: .center)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)
         .background(Color.black)
         .fullScreenCover(isPresented: $isPhotoLibraryPresented) {
             PhotoLibraryView()
         }
-    }
-
-    private var recordingButton: some View {
-        Button {
-            camera.toggleRecording()
-        } label: {
-            VStack(spacing: 4) {
-                ZStack {
-                    Circle()
-                        .stroke(.white.opacity(0.42), lineWidth: 2)
-                    if camera.status.isRecording {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(.red)
-                            .frame(width: 18, height: 18)
-                    } else {
-                        Circle()
-                            .fill(.red)
-                            .frame(width: 24, height: 24)
-                    }
-                }
-                .frame(width: 46, height: 46)
-
-                recordingCaption
-                    .font(.system(size: 9.5, weight: .light, design: .monospaced))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+        .onChange(of: camera.status.isRecording) { _, isRecording in
+            if isRecording {
+                captureMode = .video
             }
-            .frame(width: 86, height: 72)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(camera.status.isRecording ? "停止录像" : "开始录像")
-    }
-
-    @ViewBuilder
-    private var recordingCaption: some View {
-        if camera.status.isRecording,
-           let startedAt = camera.status.recordingStartedAt {
-            TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                Text(recordingTitle(at: context.date, startedAt: startedAt))
-                    .foregroundStyle(.red)
-            }
-        } else {
-            Text("录像")
-                .foregroundStyle(.white)
         }
     }
 
-    private var photoButton: some View {
+    private var portraitLayout: some View {
+        VStack(spacing: 5) {
+            captureButton(size: 72)
+
+            recordingStatus
+                .frame(height: 14)
+
+            HStack(spacing: 0) {
+                libraryButton
+
+                Spacer(minLength: 12)
+
+                modeSelector
+
+                Spacer(minLength: 12)
+
+                burstButton
+            }
+            .padding(.horizontal, 22)
+        }
+        .padding(.top, 3)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var compactLayout: some View {
+        HStack(spacing: 16) {
+            libraryButton
+            modeSelector
+
+            VStack(spacing: 2) {
+                captureButton(size: 58)
+                recordingStatus
+                    .frame(height: 12)
+            }
+
+            burstButton
+        }
+        .frame(maxWidth: 410, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func captureButton(size: CGFloat) -> some View {
         Button {
-            camera.capturePhoto()
+            switch captureMode {
+            case .photo:
+                camera.capturePhoto()
+            case .video:
+                camera.toggleRecording()
+            }
         } label: {
-            VStack(spacing: 4) {
-                ZStack {
+            ZStack {
+                if captureMode == .photo {
                     Circle()
                         .stroke(.white, lineWidth: 3)
                     Circle()
                         .fill(.white)
-                        .padding(6)
+                        .padding(7)
+                } else {
+                    Circle()
+                        .stroke(.white.opacity(0.38), lineWidth: 3)
+                    if camera.status.isRecording {
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(.red)
+                            .frame(width: size * 0.34, height: size * 0.34)
+                    } else {
+                        Circle()
+                            .fill(.red)
+                            .frame(width: size * 0.43, height: size * 0.43)
+                    }
                 }
-                .frame(width: 58, height: 58)
-
-                Text("拍照")
-                    .font(.system(size: 10, weight: .light))
-                    .foregroundStyle(.white)
             }
-            .frame(width: 70, height: 76)
+            .frame(width: size, height: size)
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("拍照")
+        .accessibilityLabel(captureButtonAccessibilityLabel)
     }
 
-    private func utilityLabel(systemImage: String, title: String) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: systemImage)
-                .font(.system(size: 21, weight: .light))
-                .frame(width: 36, height: 34)
-            Text(title)
-                .font(.system(size: 10, weight: .light))
+    private var modeSelector: some View {
+        HStack(spacing: 0) {
+            ForEach(CaptureMode.allCases, id: \.self) { mode in
+                Button {
+                    guard !camera.status.isRecording else { return }
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        captureMode = mode
+                    }
+                } label: {
+                    Text(mode.rawValue)
+                        .font(.system(size: 15, weight: .light))
+                        .foregroundStyle(captureMode == mode ? PurooBrandStyle.yellow : .white)
+                        .frame(width: 66, height: 36)
+                        .background(
+                            captureMode == mode ? Color.white.opacity(0.11) : Color.clear,
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(camera.status.isRecording && captureMode != mode)
+            }
         }
-        .foregroundStyle(.white)
-        .frame(width: 54, height: 66)
+        .padding(3)
+        .background(.white.opacity(0.07), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(.white.opacity(0.10), lineWidth: 0.8)
+        }
+    }
+
+    private var libraryButton: some View {
+        Button {
+            isPhotoLibraryPresented = true
+        } label: {
+            Image(systemName: "photo.on.rectangle")
+                .font(.system(size: 20, weight: .light))
+                .foregroundStyle(.white)
+                .frame(width: 46, height: 46)
+                .background(.white.opacity(0.10), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("打开相册")
+    }
+
+    private var burstButton: some View {
+        Button {
+            camera.captureBurst()
+        } label: {
+            Image(systemName: "square.stack.3d.up")
+                .font(.system(size: 20, weight: .light))
+                .foregroundStyle(.white)
+                .frame(width: 46, height: 46)
+                .background(.white.opacity(0.10), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(camera.status.isRecording)
+        .opacity(camera.status.isRecording ? 0.42 : 1)
+        .accessibilityLabel("连拍")
+    }
+
+    @ViewBuilder
+    private var recordingStatus: some View {
+        if camera.status.isRecording,
+           let startedAt = camera.status.recordingStartedAt {
+            TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                Text(recordingTitle(at: context.date, startedAt: startedAt))
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            }
+        } else {
+            Color.clear
+        }
+    }
+
+    private var captureButtonAccessibilityLabel: String {
+        switch captureMode {
+        case .photo:
+            return "拍照"
+        case .video:
+            return camera.status.isRecording ? "停止录像" : "开始录像"
+        }
     }
 
     private func recordingTitle(at date: Date, startedAt: Date) -> String {
