@@ -1,9 +1,4 @@
-import AVKit
-import Foundation
-import PhotosUI
 import SwiftUI
-import UniformTypeIdentifiers
-import UIKit
 
 enum PurooBrandStyle {
     static let colors: [Color] = [
@@ -157,26 +152,29 @@ private struct GradientValueSlider: View {
 
 struct ControlPanelView: View {
     @EnvironmentObject private var camera: CameraController
-    @State private var albumSelection: PhotosPickerItem?
-    @State private var previewMedia: AlbumPreviewMedia?
-    @State private var isLoadingAlbumItem = false
-    @State private var albumErrorMessage: String?
+    @State private var isPhotoLibraryPresented = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            PhotosPicker(
-                selection: $albumSelection,
-                matching: .any(of: [.images, .videos]),
-                photoLibrary: .shared()
-            ) {
+        GeometryReader { proxy in
+            let rowWidth = min(proxy.size.width, 420)
+            let itemWidth: CGFloat = 48
+            let shutterWidth: CGFloat = 64
+            let availableSpacing = (rowWidth - itemWidth * 4 - shutterWidth) / 4
+            let itemSpacing = max(10, min(22, availableSpacing))
+
+            HStack(spacing: itemSpacing) {
+                Button {
+                    isPhotoLibraryPresented = true
+                } label: {
                 utilityLabel(
                     systemImage: "photo.on.rectangle",
                     title: "相册",
                     color: PurooBrandStyle.pink
                 )
             }
-            .accessibilityLabel("相册")
-            .frame(maxWidth: .infinity)
+                .buttonStyle(.plain)
+                .accessibilityLabel("打开相册")
+                .frame(width: itemWidth)
 
             Button {
                 camera.toggleRecording()
@@ -198,7 +196,7 @@ struct ControlPanelView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(camera.status.isRecording ? "停止录像" : "开始录像")
-            .frame(maxWidth: .infinity)
+            .frame(width: itemWidth)
 
             Button {
                 camera.capturePhoto()
@@ -213,11 +211,10 @@ struct ControlPanelView: View {
                         .fill(.white)
                         .padding(11)
                 }
-                .frame(width: 66, height: 66)
+                .frame(width: shutterWidth, height: shutterWidth)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("拍照")
-            .frame(maxWidth: .infinity)
 
             Button {
                 camera.captureBurst()
@@ -230,7 +227,7 @@ struct ControlPanelView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("连拍")
-            .frame(maxWidth: .infinity)
+            .frame(width: itemWidth)
 
             Button {
                 camera.setStabilizationEnabled(!camera.isStabilizationEnabled)
@@ -248,46 +245,28 @@ struct ControlPanelView: View {
                                     )
                             )
                         Image(systemName: camera.isStabilizationEnabled ? "checkmark" : "xmark")
-                            .font(.system(size: 16, weight: .regular))
+                            .font(.system(size: 14, weight: .regular))
                             .foregroundStyle(camera.isStabilizationEnabled ? .black : .white)
                     }
-                    .frame(width: 58, height: 30)
+                    .frame(width: 48, height: 27)
 
                     Text("稳定")
                         .font(.system(size: 11, weight: .light))
                         .foregroundStyle(.white)
                 }
-                .frame(width: 60, height: 54)
+                .frame(width: itemWidth, height: 54)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(camera.isStabilizationEnabled ? "关闭稳定" : "开启稳定")
-            .frame(maxWidth: .infinity)
+            .frame(width: itemWidth)
+        }
+            .frame(width: rowWidth, height: proxy.size.height, alignment: .center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)
-        .overlay {
-            if isLoadingAlbumItem {
-                ProgressView()
-                    .tint(.white)
-                    .padding(10)
-                    .background(.black.opacity(0.72), in: Circle())
-            }
-        }
-        .onChange(of: albumSelection) { _, item in
-            loadAlbumSelection(item)
-        }
-        .fullScreenCover(item: $previewMedia) { media in
-            AlbumMediaPreview(media: media)
-        }
-        .alert(
-            "无法预览",
-            isPresented: Binding(
-                get: { albumErrorMessage != nil },
-                set: { if !$0 { albumErrorMessage = nil } }
-            )
-        ) {
-            Button("确定", role: .cancel) {}
-        } message: {
-            Text(albumErrorMessage ?? "所选内容暂时不可用。")
+        .background(Color.black)
+        .fullScreenCover(isPresented: $isPhotoLibraryPresented) {
+            PhotoLibraryView()
         }
     }
 
@@ -307,244 +286,6 @@ struct ControlPanelView: View {
         .frame(width: 48, height: 54)
     }
 
-    private func loadAlbumSelection(_ item: PhotosPickerItem?) {
-        guard let item else { return }
-        isLoadingAlbumItem = true
-
-        Task {
-            do {
-                guard let data = try await item.loadTransferable(type: Data.self) else {
-                    throw AlbumPreviewError.dataUnavailable
-                }
-                let media: AlbumPreviewMedia
-                if item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }),
-                   let image = UIImage(data: data) {
-                    media = AlbumPreviewMedia(content: .image(image))
-                } else if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }) {
-                    let fileExtension = item.supportedContentTypes
-                        .compactMap(\.preferredFilenameExtension)
-                        .first ?? "mov"
-                    let url = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("puroo-album-\(UUID().uuidString)")
-                        .appendingPathExtension(fileExtension)
-                    try data.write(to: url, options: .atomic)
-                    media = AlbumPreviewMedia(content: .video(url))
-                } else {
-                    throw AlbumPreviewError.unsupportedContent
-                }
-
-                await MainActor.run {
-                    previewMedia = media
-                    albumSelection = nil
-                    isLoadingAlbumItem = false
-                }
-            } catch {
-                await MainActor.run {
-                    albumSelection = nil
-                    isLoadingAlbumItem = false
-                    albumErrorMessage = error.localizedDescription
-                }
-            }
-        }
-    }
-}
-
-private struct AlbumPreviewMedia: Identifiable {
-    enum Content {
-        case image(UIImage)
-        case video(URL)
-    }
-
-    let id = UUID()
-    let content: Content
-}
-
-private enum AlbumPreviewError: LocalizedError {
-    case dataUnavailable
-    case unsupportedContent
-
-    var errorDescription: String? {
-        switch self {
-        case .dataUnavailable:
-            return "无法读取所选照片或视频。"
-        case .unsupportedContent:
-            return "暂不支持预览这种媒体格式。"
-        }
-    }
-}
-
-private struct AlbumMediaPreview: View {
-    @Environment(\.dismiss) private var dismiss
-    let media: AlbumPreviewMedia
-
-    var body: some View {
-        ZStack {
-            Color.black
-                .ignoresSafeArea()
-
-            switch media.content {
-            case .image(let image):
-                ZoomableAlbumImageView(image: image)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .video(let url):
-                AlbumVideoPreview(url: url)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            HStack {
-                Spacer()
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 15, weight: .regular))
-                        .frame(width: 42, height: 42)
-                        .foregroundStyle(.white)
-                        .background(.black.opacity(0.62), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("关闭预览")
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 48)
-            .background(.black.opacity(0.42))
-        }
-        .onDisappear {
-            if case .video(let url) = media.content {
-                try? FileManager.default.removeItem(at: url)
-            }
-        }
-    }
-}
-
-private struct ZoomableAlbumImageView: UIViewRepresentable {
-    let image: UIImage
-
-    func makeUIView(context: Context) -> ZoomableImageScrollView {
-        ZoomableImageScrollView(image: image)
-    }
-
-    func updateUIView(_ view: ZoomableImageScrollView, context: Context) {
-        view.setImage(image)
-    }
-}
-
-private final class ZoomableImageScrollView: UIScrollView, UIScrollViewDelegate {
-    private let imageView = UIImageView()
-    private var displayedImage: UIImage?
-    private var previousBoundsSize = CGSize.zero
-
-    init(image: UIImage) {
-        super.init(frame: .zero)
-        delegate = self
-        backgroundColor = .black
-        showsHorizontalScrollIndicator = false
-        showsVerticalScrollIndicator = false
-        bouncesZoom = true
-        decelerationRate = .fast
-        contentInsetAdjustmentBehavior = .never
-
-        imageView.contentMode = .scaleAspectFit
-        imageView.isUserInteractionEnabled = true
-        addSubview(imageView)
-
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
-        doubleTap.numberOfTapsRequired = 2
-        addGestureRecognizer(doubleTap)
-        setImage(image)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func setImage(_ image: UIImage) {
-        guard displayedImage !== image else { return }
-        displayedImage = image
-        imageView.image = image
-        imageView.frame = CGRect(origin: .zero, size: image.size)
-        contentSize = image.size
-        previousBoundsSize = .zero
-        setNeedsLayout()
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        guard bounds.width > 1, bounds.height > 1,
-              let image = displayedImage,
-              image.size.width > 0, image.size.height > 0
-        else {
-            return
-        }
-
-        if bounds.size != previousBoundsSize {
-            let oldMinimum = minimumZoomScale
-            let wasAtMinimum = previousBoundsSize == .zero || abs(zoomScale - oldMinimum) < 0.01
-            let fitScale = min(bounds.width / image.size.width, bounds.height / image.size.height)
-            minimumZoomScale = fitScale
-            maximumZoomScale = max(fitScale * 6, 1)
-            if wasAtMinimum {
-                zoomScale = fitScale
-            } else {
-                zoomScale = min(max(zoomScale, fitScale), maximumZoomScale)
-            }
-            previousBoundsSize = bounds.size
-        }
-        centerImage()
-    }
-
-    func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-        imageView
-    }
-
-    func scrollViewDidZoom(_ scrollView: UIScrollView) {
-        centerImage()
-    }
-
-    @objc private func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
-        if zoomScale > minimumZoomScale * 1.05 {
-            setZoomScale(minimumZoomScale, animated: true)
-            return
-        }
-
-        let targetScale = min(max(minimumZoomScale * 2.5, minimumZoomScale), maximumZoomScale)
-        let location = recognizer.location(in: imageView)
-        let zoomSize = CGSize(
-            width: bounds.width / targetScale,
-            height: bounds.height / targetScale
-        )
-        let zoomRect = CGRect(
-            x: location.x - zoomSize.width * 0.5,
-            y: location.y - zoomSize.height * 0.5,
-            width: zoomSize.width,
-            height: zoomSize.height
-        )
-        zoom(to: zoomRect, animated: true)
-    }
-
-    private func centerImage() {
-        let horizontalInset = max((bounds.width - contentSize.width) * 0.5, 0)
-        let verticalInset = max((bounds.height - contentSize.height) * 0.5, 0)
-        imageView.center = CGPoint(
-            x: contentSize.width * 0.5 + horizontalInset,
-            y: contentSize.height * 0.5 + verticalInset
-        )
-    }
-}
-
-private struct AlbumVideoPreview: View {
-    @State private var player: AVPlayer
-
-    init(url: URL) {
-        _player = State(initialValue: AVPlayer(url: url))
-    }
-
-    var body: some View {
-        VideoPlayer(player: player)
-            .onAppear { player.play() }
-            .onDisappear { player.pause() }
-    }
 }
 
 #Preview {

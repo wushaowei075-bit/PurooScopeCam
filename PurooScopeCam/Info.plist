@@ -26,6 +26,8 @@
 	<string>&#x9700;&#x8981;&#x4F7F;&#x7528;&#x8FD0;&#x52A8;&#x4F20;&#x611F;&#x5668;&#x68C0;&#x6D4B;&#x671B;&#x8FDC;&#x955C;&#x62CD;&#x6444;&#x65F6;&#x7684;&#x6296;&#x52A8;&#x5E76;&#x8F85;&#x52A9;&#x9632;&#x6296;&#x3002;</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>&#x9700;&#x8981;&#x5C06;&#x62CD;&#x6444;&#x7684;&#x7167;&#x7247;&#x548C;&#x89C6;&#x9891;&#x4FDD;&#x5B58;&#x5230;&#x76F8;&#x518C;&#x3002;</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>&#x9700;&#x8981;&#x8BBF;&#x95EE;&#x7167;&#x7247;&#x5E93;&#xFF0C;&#x4EE5;&#x4FBF;&#x5728;&#x5E94;&#x7528;&#x5185;&#x6D4F;&#x89C8;&#x3001;&#x7F29;&#x653E;&#x548C;&#x5206;&#x4EAB;&#x7167;&#x7247;&#x4E0E;&#x89C6;&#x9891;&#x3002;</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

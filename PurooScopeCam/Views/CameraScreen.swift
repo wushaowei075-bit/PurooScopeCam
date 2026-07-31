@@ -17,7 +17,8 @@ struct CameraScreen: View {
             let isLandscape = proxy.size.width > proxy.size.height
             let horizontalPadding: CGFloat = 0
             let headerHeight: CGFloat = isLandscape ? 34 : 40
-            let controlsHeight: CGFloat = isLandscape ? 64 : 72
+            let controlsHeight: CGFloat = isLandscape ? 68 : 78
+            let bottomSafeInset = max(proxy.safeAreaInsets.bottom, isLandscape ? 4 : 8)
             let spacing: CGFloat = 4
             let availablePreviewSize = CGSize(
                 width: max(proxy.size.width - horizontalPadding * 2, 1),
@@ -39,7 +40,10 @@ struct CameraScreen: View {
                     brandHeader
                         .frame(height: headerHeight)
 
-                    cameraViewport(size: previewSize)
+                    cameraViewport(
+                        size: previewSize,
+                        bottomControlInset: controlsHeight + bottomSafeInset
+                    )
                         .frame(width: previewSize.width, height: previewSize.height)
 
                     Spacer(minLength: 0)
@@ -50,11 +54,12 @@ struct CameraScreen: View {
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     ControlPanelView()
-                        .frame(maxWidth: isLandscape ? 500 : 390)
+                        .frame(maxWidth: .infinity)
                         .frame(height: controlsHeight)
-                        .background(.black.opacity(0.88))
+                        .padding(.bottom, bottomSafeInset)
+                        .background(Color.black)
                 }
-                .padding(.bottom, 4)
+                .ignoresSafeArea(edges: .bottom)
 
                 if camera.authorizationStatus != .authorized {
                     Color.black.opacity(0.90)
@@ -141,7 +146,7 @@ struct CameraScreen: View {
         }
     }
 
-    private func cameraViewport(size: CGSize) -> some View {
+    private func cameraViewport(size: CGSize, bottomControlInset: CGFloat) -> some View {
         ZStack {
             CameraPreviewView(
                 camera: camera,
@@ -218,7 +223,7 @@ struct CameraScreen: View {
             }
             .padding(.top, 10)
             .padding(.horizontal, 12)
-            .padding(.bottom, 82)
+            .padding(.bottom, bottomControlInset + 6)
 
             if let focusIndicator {
                 FocusReticleView()

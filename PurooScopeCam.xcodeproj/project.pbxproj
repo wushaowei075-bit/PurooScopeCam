@@ -20,6 +20,7 @@
 		1A000001000000000000000B /* ShakeMeterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000101000000000000000B /* ShakeMeterView.swift */; };
 		1A000001000000000000000C /* CrosshairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000101000000000000000C /* CrosshairView.swift */; };
 		1A000001000000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A000101000000000000000F /* Assets.xcassets */; };
+		1A000001000000000000000E /* PhotoLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000010 /* PhotoLibraryView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +39,7 @@
 		1A000101000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1A000101000000000000000E /* PurooScopeCam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PurooScopeCam.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A000101000000000000000F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		1A0001010000000000000010 /* PhotoLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -98,6 +100,7 @@
 				1A0001010000000000000008 /* CameraPreviewView.swift */,
 				1A0001010000000000000009 /* CameraScreen.swift */,
 				1A000101000000000000000A /* ControlPanelView.swift */,
+				1A0001010000000000000010 /* PhotoLibraryView.swift */,
 				1A000101000000000000000B /* ShakeMeterView.swift */,
 				1A000101000000000000000C /* CrosshairView.swift */,
 			);
@@ -191,6 +194,7 @@
 				1A0000010000000000000008 /* CameraPreviewView.swift in Sources */,
 				1A0000010000000000000009 /* CameraScreen.swift in Sources */,
 				1A000001000000000000000A /* ControlPanelView.swift in Sources */,
+				1A000001000000000000000E /* PhotoLibraryView.swift in Sources */,
 				1A000001000000000000000B /* ShakeMeterView.swift in Sources */,
 				1A000001000000000000000C /* CrosshairView.swift in Sources */,
 			);
