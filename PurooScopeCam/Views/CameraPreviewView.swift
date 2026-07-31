@@ -310,13 +310,12 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
     private func layoutOverview() {
         let shortSide = min(bounds.width, bounds.height)
-        let width = min(max(shortSide * 0.16, 72), 92)
+        let width = min(max(shortSide * 0.18, 72), 92)
         let contentAspect = max(overviewImageAspectRatio, 0.1)
         let height = min(width / contentAspect, width * 1.35)
-        let topInset = max(safeAreaInsets.top + 48, 48)
         overviewContainer.frame = CGRect(
             x: bounds.maxX - width - 12,
-            y: topInset,
+            y: 14,
             width: width,
             height: height
         )

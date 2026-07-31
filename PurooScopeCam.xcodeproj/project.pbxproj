@@ -19,6 +19,7 @@
 		1A000001000000000000000A /* ControlPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000101000000000000000A /* ControlPanelView.swift */; };
 		1A000001000000000000000B /* ShakeMeterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000101000000000000000B /* ShakeMeterView.swift */; };
 		1A000001000000000000000C /* CrosshairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000101000000000000000C /* CrosshairView.swift */; };
+		1A000001000000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A000101000000000000000F /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -36,6 +37,7 @@
 		1A000101000000000000000C /* CrosshairView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrosshairView.swift; sourceTree = "<group>"; };
 		1A000101000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1A000101000000000000000E /* PurooScopeCam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PurooScopeCam.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A000101000000000000000F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -62,6 +64,7 @@
 			children = (
 				1A0001010000000000000001 /* PurooScopeCamApp.swift */,
 				1A000101000000000000000D /* Info.plist */,
+				1A000101000000000000000F /* Assets.xcassets */,
 				1A0003010000000000000003 /* Models */,
 				1A0003010000000000000004 /* Services */,
 				1A0003010000000000000005 /* Views */,
@@ -167,6 +170,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1A000001000000000000000D /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -311,6 +315,7 @@
 		1A0009010000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 23;
@@ -334,6 +339,7 @@
 		1A0009010000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 23;

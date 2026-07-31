@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>&#x666E;&#x9C81;&#x671B;&#x8FDC;&#x955C;</string>
+	<string>PUROO&#x666E;&#x5F95;</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
