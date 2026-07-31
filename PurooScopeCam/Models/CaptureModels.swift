@@ -376,6 +376,7 @@ struct CaptureStatus: Equatable {
     var activeMovieStabilizationMode: AVCaptureVideoStabilizationMode = .off
     var isSessionRunning = false
     var isRecording = false
+    var recordingStartedAt: Date?
     var isSaving = false
     var lastMessage: String?
     var errorMessage: String?

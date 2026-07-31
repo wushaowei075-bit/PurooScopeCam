@@ -734,7 +734,10 @@ final class CameraController: NSObject, ObservableObject {
                 self.isVideoOrientationLocked = true
                 previewRecordingSink.startStabilizedRecording(to: url) { [weak self] result in
                     guard let self else { return }
-                    self.publishStatus { $0.isRecording = false }
+                    self.publishStatus {
+                        $0.isRecording = false
+                        $0.recordingStartedAt = nil
+                    }
                     self.unlockVideoOrientationAfterRecording()
 
                     switch result {
@@ -745,7 +748,10 @@ final class CameraController: NSObject, ObservableObject {
                         self.publishStatus(error: self.recordingErrorMessage(for: error))
                     }
                 }
-                self.publishStatus { $0.isRecording = true }
+                self.publishStatus {
+                    $0.isRecording = true
+                    $0.recordingStartedAt = Date()
+                }
                 return
             }
 
@@ -755,7 +761,10 @@ final class CameraController: NSObject, ObservableObject {
             guard !self.movieOutput.isRecording else { return }
             self.isVideoOrientationLocked = true
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
-            self.publishStatus { $0.isRecording = true }
+            self.publishStatus {
+                $0.isRecording = true
+                $0.recordingStartedAt = Date()
+            }
         }
     }
 
@@ -978,7 +987,10 @@ extension CameraController: AVCaptureFileOutputRecordingDelegate {
         from connections: [AVCaptureConnection],
         error: Error?
     ) {
-        publishStatus { $0.isRecording = false }
+        publishStatus {
+            $0.isRecording = false
+            $0.recordingStartedAt = nil
+        }
         unlockVideoOrientationAfterRecording()
 
         if let error {

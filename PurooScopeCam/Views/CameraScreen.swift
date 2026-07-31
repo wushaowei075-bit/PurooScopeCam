@@ -11,6 +11,7 @@ struct CameraScreen: View {
     @State private var isQualityDialogPresented = false
     @State private var isMagnificationDialogPresented = false
     @State private var focusIndicator: FocusIndicatorState?
+    @State private var focusDismissToken = UUID()
 
     var body: some View {
         GeometryReader { proxy in
@@ -130,9 +131,9 @@ struct CameraScreen: View {
     }
 
     private var brandHeader: some View {
-        HStack(spacing: 7) {
-            Text("PUROO 普徕 · 稳定")
-                .font(.system(size: 20, weight: .light))
+        HStack(spacing: 8) {
+            Text("PUROO 普徕")
+                .font(.system(size: 18, weight: .light))
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
                 .foregroundStyle(PurooBrandStyle.gradient)
@@ -143,7 +144,28 @@ struct CameraScreen: View {
                     .frame(width: 7, height: 7)
                     .accessibilityLabel("正在录像")
             }
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 5) {
+                Text("稳定")
+                    .font(.system(size: 11, weight: .light))
+                    .foregroundStyle(.white.opacity(0.82))
+
+                Toggle(
+                    "稳定",
+                    isOn: Binding(
+                        get: { camera.isStabilizationEnabled },
+                        set: { camera.setStabilizationEnabled($0) }
+                    )
+                )
+                .labelsHidden()
+                .tint(.green)
+                .scaleEffect(0.78)
+                .frame(width: 43, height: 28)
+            }
         }
+        .padding(.horizontal, 14)
     }
 
     private func cameraViewport(size: CGSize, bottomControlInset: CGFloat) -> some View {
@@ -215,8 +237,6 @@ struct CameraScreen: View {
 
                 if let message = camera.status.errorMessage ?? camera.status.lastMessage {
                     statusCapsule(text: message, systemImage: "exclamationmark.circle.fill")
-                } else if camera.isStabilizationEnabled {
-                    statusCapsule(text: "稳定已开启", systemImage: "waveform.path")
                 }
 
                 CameraAdjustmentBar()
@@ -227,10 +247,21 @@ struct CameraScreen: View {
 
             if let focusIndicator {
                 FocusReticleView()
-                    .frame(width: 66, height: 66)
-                    .position(focusIndicator.location)
+                    .frame(width: 70, height: 70)
+                    .position(focusReticlePosition(for: focusIndicator, in: size))
                     .transition(.scale(scale: 1.18).combined(with: .opacity))
                     .allowsHitTesting(false)
+
+                FocusExposureControl(
+                    value: Binding(
+                        get: { Double(camera.exposureBias) },
+                        set: { camera.setExposureBias(Float($0)) }
+                    ),
+                    onEditingChanged: handleExposureEditing
+                )
+                .frame(width: 36, height: 116)
+                .position(exposureControlPosition(for: focusIndicator, in: size))
+                .transition(.opacity)
             }
         }
         .clipped()
@@ -296,12 +327,56 @@ struct CameraScreen: View {
 
         let nextIndicator = FocusIndicatorState(location: location)
         focusIndicator = nextIndicator
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) {
-            guard focusIndicator?.id == nextIndicator.id else { return }
+        scheduleFocusDismiss(for: nextIndicator, after: 3.2)
+    }
+
+    private func scheduleFocusDismiss(
+        for indicator: FocusIndicatorState,
+        after delay: TimeInterval
+    ) {
+        let token = UUID()
+        focusDismissToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard focusDismissToken == token,
+                  focusIndicator?.id == indicator.id
+            else {
+                return
+            }
             withAnimation(.easeIn(duration: 0.22)) {
                 focusIndicator = nil
             }
         }
+    }
+
+    private func handleExposureEditing(_ editing: Bool) {
+        guard let focusIndicator else { return }
+        if editing {
+            focusDismissToken = UUID()
+        } else {
+            scheduleFocusDismiss(for: focusIndicator, after: 2.4)
+        }
+    }
+
+    private func focusReticlePosition(
+        for indicator: FocusIndicatorState,
+        in size: CGSize
+    ) -> CGPoint {
+        CGPoint(
+            x: min(max(indicator.location.x, 38), max(size.width - 38, 38)),
+            y: min(max(indicator.location.y, 38), max(size.height - 38, 38))
+        )
+    }
+
+    private func exposureControlPosition(
+        for indicator: FocusIndicatorState,
+        in size: CGSize
+    ) -> CGPoint {
+        let reticle = focusReticlePosition(for: indicator, in: size)
+        let placeOnRight = reticle.x <= size.width - 92
+        return CGPoint(
+            x: reticle.x + (placeOnRight ? 54 : -54),
+            y: min(max(reticle.y, 64), max(size.height - 64, 64))
+        )
     }
 
     private func deviceFocusPoint(from previewPoint: CGPoint) -> CGPoint {
@@ -356,14 +431,71 @@ private struct FocusIndicatorState: Identifiable {
 
 private struct FocusReticleView: View {
     var body: some View {
-        ZStack {
-            Image(systemName: "viewfinder")
-                .font(.system(size: 62, weight: .ultraLight))
-                .foregroundStyle(PurooBrandStyle.gradient)
-            Image(systemName: "plus")
-                .font(.system(size: 21, weight: .light))
-                .foregroundStyle(PurooBrandStyle.gradient)
+        RoundedRectangle(cornerRadius: 3)
+            .stroke(PurooBrandStyle.yellow, lineWidth: 1.5)
+            .padding(3)
+    }
+}
+
+private struct FocusExposureControl: View {
+    @Binding var value: Double
+    let onEditingChanged: (Bool) -> Void
+    @State private var isDragging = false
+    @State private var dragStartValue = 0.0
+
+    private let range: ClosedRange<Double> = -3...3
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Image(systemName: "sun.max.fill")
+                .font(.system(size: 14, weight: .regular))
+
+            GeometryReader { proxy in
+                let trackHeight = max(proxy.size.height, 1)
+                let fraction = min(max((value - range.lowerBound) / rangeLength, 0), 1)
+                let knobY = trackHeight * CGFloat(1 - fraction)
+
+                ZStack(alignment: .top) {
+                    Capsule()
+                        .fill(.white.opacity(0.42))
+                        .frame(width: 2, height: trackHeight)
+
+                    Circle()
+                        .fill(PurooBrandStyle.yellow)
+                        .frame(width: isDragging ? 14 : 10, height: isDragging ? 14 : 10)
+                        .shadow(color: .black.opacity(0.35), radius: 2)
+                        .offset(y: min(max(knobY - (isDragging ? 7 : 5), 0), trackHeight - (isDragging ? 14 : 10)))
+                }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { gesture in
+                            if !isDragging {
+                                isDragging = true
+                                dragStartValue = value
+                                onEditingChanged(true)
+                            }
+                            let delta = Double(-gesture.translation.height / 92) * rangeLength
+                            value = min(max(dragStartValue + delta, range.lowerBound), range.upperBound)
+                        }
+                        .onEnded { _ in
+                            isDragging = false
+                            onEditingChanged(false)
+                        }
+                )
+            }
         }
+        .padding(.vertical, 4)
+        .frame(width: 34, height: 112)
+        .foregroundStyle(PurooBrandStyle.yellow)
+        .background(.black.opacity(0.36), in: Capsule())
+        .animation(.easeOut(duration: 0.12), value: isDragging)
+        .accessibilityLabel("调节曝光")
+    }
+
+    private var rangeLength: Double {
+        range.upperBound - range.lowerBound
     }
 }
 
