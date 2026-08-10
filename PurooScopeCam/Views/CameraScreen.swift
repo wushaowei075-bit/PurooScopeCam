@@ -16,20 +16,11 @@ struct CameraScreen: View {
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
-            let horizontalPadding: CGFloat = 0
             let headerHeight: CGFloat = isLandscape ? 34 : 40
             let bottomSafeInset = max(proxy.safeAreaInsets.bottom, isLandscape ? 4 : 8)
-            let controlsContentHeight: CGFloat = isLandscape ? 82 : 120
-            let controlsHeight = controlsContentHeight + bottomSafeInset
-            let availablePreviewSize = CGSize(
-                width: max(proxy.size.width - horizontalPadding * 2, 1),
-                height: max(
-                    proxy.size.height - controlsHeight,
-                    1
-                )
-            )
-            let previewSize = fittedPreviewSize(
-                in: availablePreviewSize,
+            let layout = cameraLayoutMetrics(
+                screenSize: proxy.size,
+                bottomSafeInset: bottomSafeInset,
                 isLandscape: isLandscape
             )
 
@@ -42,10 +33,10 @@ struct CameraScreen: View {
                         Color.black
 
                         cameraViewport(
-                            size: previewSize,
+                            size: layout.previewSize,
                             topControlInset: headerHeight + 8
                         )
-                        .frame(width: previewSize.width, height: previewSize.height)
+                        .frame(width: layout.previewSize.width, height: layout.previewSize.height)
                         .overlay(alignment: .top) {
                             brandHeader
                                 .frame(height: headerHeight)
@@ -58,15 +49,17 @@ struct CameraScreen: View {
                                 )
                         }
                     }
-                    .frame(width: availablePreviewSize.width, height: availablePreviewSize.height)
+                    .frame(
+                        width: layout.previewAreaSize.width,
+                        height: layout.previewAreaSize.height
+                    )
 
                     ControlPanelView()
                         .frame(maxWidth: .infinity)
-                        .frame(height: controlsContentHeight)
+                        .frame(height: layout.controlsContentHeight)
                         .padding(.bottom, bottomSafeInset)
                         .background(Color.black)
                 }
-                .padding(.horizontal, horizontalPadding)
                 .ignoresSafeArea(edges: .bottom)
 
                 if camera.authorizationStatus != .authorized {
@@ -324,6 +317,44 @@ struct CameraScreen: View {
         )
     }
 
+    private func cameraLayoutMetrics(
+        screenSize: CGSize,
+        bottomSafeInset: CGFloat,
+        isLandscape: Bool
+    ) -> CameraLayoutMetrics {
+        let minimumControlsContentHeight: CGFloat = isLandscape ? 82 : 108
+        let targetAspect: CGFloat = isLandscape ? 16.0 / 9.0 : 9.0 / 16.0
+        let fullWidthPreviewHeight = screenSize.width / targetAspect
+        let fullWidthControlsContentHeight = screenSize.height
+            - fullWidthPreviewHeight
+            - bottomSafeInset
+
+        if !isLandscape, fullWidthControlsContentHeight >= minimumControlsContentHeight {
+            let previewSize = CGSize(
+                width: screenSize.width,
+                height: fullWidthPreviewHeight
+            )
+            return CameraLayoutMetrics(
+                previewSize: previewSize,
+                previewAreaSize: previewSize,
+                controlsContentHeight: fullWidthControlsContentHeight
+            )
+        }
+
+        let previewAreaSize = CGSize(
+            width: screenSize.width,
+            height: max(
+                screenSize.height - minimumControlsContentHeight - bottomSafeInset,
+                1
+            )
+        )
+        return CameraLayoutMetrics(
+            previewSize: fittedPreviewSize(in: previewAreaSize, isLandscape: isLandscape),
+            previewAreaSize: previewAreaSize,
+            controlsContentHeight: minimumControlsContentHeight
+        )
+    }
+
     private func focus(at location: CGPoint, in previewSize: CGSize) {
         guard previewSize.width > 1, previewSize.height > 1 else { return }
         let normalizedPoint = CGPoint(
@@ -429,6 +460,12 @@ struct CameraScreen: View {
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
     }
+}
+
+private struct CameraLayoutMetrics {
+    let previewSize: CGSize
+    let previewAreaSize: CGSize
+    let controlsContentHeight: CGFloat
 }
 
 private struct FocusIndicatorState: Identifiable {

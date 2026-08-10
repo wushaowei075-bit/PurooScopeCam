@@ -137,7 +137,7 @@ struct ControlPanelView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            if proxy.size.height < 120 {
+            if proxy.size.height < 100 {
                 compactLayout
             } else {
                 portraitLayout
@@ -158,8 +158,8 @@ struct ControlPanelView: View {
     }
 
     private var portraitLayout: some View {
-        VStack(spacing: 2) {
-            captureButton(size: 62)
+        VStack(spacing: 1) {
+            captureButton(size: 56)
 
             recordingStatus
                 .frame(height: 10)
@@ -275,7 +275,7 @@ struct ControlPanelView: View {
             Image(systemName: "photo.on.rectangle")
                 .font(.system(size: 20, weight: .light))
                 .foregroundStyle(.white)
-                .frame(width: 42, height: 42)
+                .frame(width: 40, height: 40)
                 .background(.white.opacity(0.10), in: Circle())
         }
         .buttonStyle(.plain)
@@ -289,7 +289,7 @@ struct ControlPanelView: View {
             Image(systemName: "square.stack.3d.up")
                 .font(.system(size: 20, weight: .light))
                 .foregroundStyle(.white)
-                .frame(width: 42, height: 42)
+                .frame(width: 40, height: 40)
                 .background(.white.opacity(0.10), in: Circle())
         }
         .buttonStyle(.plain)
