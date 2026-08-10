@@ -133,6 +133,7 @@ struct ControlPanelView: View {
     @EnvironmentObject private var camera: CameraController
     @State private var isPhotoLibraryPresented = false
     @State private var captureMode: CaptureMode = .photo
+    @Namespace private var captureModeAnimation
 
     var body: some View {
         GeometryReader { proxy in
@@ -149,17 +150,19 @@ struct ControlPanelView: View {
         }
         .onChange(of: camera.status.isRecording) { _, isRecording in
             if isRecording {
-                captureMode = .video
+                withAnimation(modeTransitionAnimation) {
+                    captureMode = .video
+                }
             }
         }
     }
 
     private var portraitLayout: some View {
-        VStack(spacing: 5) {
-            captureButton(size: 72)
+        VStack(spacing: 2) {
+            captureButton(size: 62)
 
             recordingStatus
-                .frame(height: 14)
+                .frame(height: 10)
 
             HStack(spacing: 0) {
                 libraryButton
@@ -174,7 +177,6 @@ struct ControlPanelView: View {
             }
             .padding(.horizontal, 22)
         }
-        .padding(.top, 3)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -196,7 +198,12 @@ struct ControlPanelView: View {
     }
 
     private func captureButton(size: CGFloat) -> some View {
-        Button {
+        let isPhoto = captureMode == .photo
+        let isRecording = camera.status.isRecording
+        let innerSize = isPhoto ? size - 14 : size * (isRecording ? 0.34 : 0.43)
+        let innerCornerRadius = isPhoto || !isRecording ? innerSize / 2 : 5
+
+        return Button {
             switch captureMode {
             case .photo:
                 camera.capturePhoto()
@@ -205,28 +212,17 @@ struct ControlPanelView: View {
             }
         } label: {
             ZStack {
-                if captureMode == .photo {
-                    Circle()
-                        .stroke(.white, lineWidth: 3)
-                    Circle()
-                        .fill(.white)
-                        .padding(7)
-                } else {
-                    Circle()
-                        .stroke(.white.opacity(0.38), lineWidth: 3)
-                    if camera.status.isRecording {
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(.red)
-                            .frame(width: size * 0.34, height: size * 0.34)
-                    } else {
-                        Circle()
-                            .fill(.red)
-                            .frame(width: size * 0.43, height: size * 0.43)
-                    }
-                }
+                Circle()
+                    .stroke(.white.opacity(isPhoto ? 1 : 0.38), lineWidth: 3)
+
+                RoundedRectangle(cornerRadius: innerCornerRadius, style: .continuous)
+                    .fill(isPhoto ? Color.white : Color.red)
+                    .frame(width: innerSize, height: innerSize)
             }
             .frame(width: size, height: size)
             .contentShape(Circle())
+            .animation(modeTransitionAnimation, value: captureMode)
+            .animation(modeTransitionAnimation, value: isRecording)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(captureButtonAccessibilityLabel)
@@ -237,18 +233,28 @@ struct ControlPanelView: View {
             ForEach(CaptureMode.allCases, id: \.self) { mode in
                 Button {
                     guard !camera.status.isRecording else { return }
-                    withAnimation(.easeOut(duration: 0.16)) {
+                    withAnimation(modeTransitionAnimation) {
                         captureMode = mode
                     }
                 } label: {
-                    Text(mode.rawValue)
-                        .font(.system(size: 15, weight: .light))
-                        .foregroundStyle(captureMode == mode ? PurooBrandStyle.yellow : .white)
-                        .frame(width: 66, height: 36)
-                        .background(
-                            captureMode == mode ? Color.white.opacity(0.11) : Color.clear,
-                            in: Capsule()
-                        )
+                    ZStack {
+                        if captureMode == mode {
+                            Capsule()
+                                .fill(Color.white.opacity(0.12))
+                                .matchedGeometryEffect(
+                                    id: "capture-mode-selection",
+                                    in: captureModeAnimation
+                                )
+                        }
+
+                        Text(mode.rawValue)
+                            .font(.system(size: 15, weight: .light))
+                            .foregroundStyle(
+                                captureMode == mode ? PurooBrandStyle.yellow : .white
+                            )
+                    }
+                    .frame(width: 66, height: 34)
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .disabled(camera.status.isRecording && captureMode != mode)
@@ -269,7 +275,7 @@ struct ControlPanelView: View {
             Image(systemName: "photo.on.rectangle")
                 .font(.system(size: 20, weight: .light))
                 .foregroundStyle(.white)
-                .frame(width: 46, height: 46)
+                .frame(width: 42, height: 42)
                 .background(.white.opacity(0.10), in: Circle())
         }
         .buttonStyle(.plain)
@@ -283,7 +289,7 @@ struct ControlPanelView: View {
             Image(systemName: "square.stack.3d.up")
                 .font(.system(size: 20, weight: .light))
                 .foregroundStyle(.white)
-                .frame(width: 46, height: 46)
+                .frame(width: 42, height: 42)
                 .background(.white.opacity(0.10), in: Circle())
         }
         .buttonStyle(.plain)
@@ -320,6 +326,10 @@ struct ControlPanelView: View {
     private func recordingTitle(at date: Date, startedAt: Date) -> String {
         let elapsed = max(Int(date.timeIntervalSince(startedAt)), 0)
         return String(format: "录制中 %02d:%02d", elapsed / 60, elapsed % 60)
+    }
+
+    private var modeTransitionAnimation: Animation {
+        .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.12)
     }
 }
 

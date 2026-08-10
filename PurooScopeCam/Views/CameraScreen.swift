@@ -18,13 +18,13 @@ struct CameraScreen: View {
             let isLandscape = proxy.size.width > proxy.size.height
             let horizontalPadding: CGFloat = 0
             let headerHeight: CGFloat = isLandscape ? 34 : 40
-            let controlsHeight: CGFloat = isLandscape ? 96 : 148
             let bottomSafeInset = max(proxy.safeAreaInsets.bottom, isLandscape ? 4 : 8)
-            let spacing: CGFloat = 4
+            let controlsContentHeight: CGFloat = isLandscape ? 82 : 120
+            let controlsHeight = controlsContentHeight + bottomSafeInset
             let availablePreviewSize = CGSize(
                 width: max(proxy.size.width - horizontalPadding * 2, 1),
                 height: max(
-                    proxy.size.height - headerHeight - spacing - 8,
+                    proxy.size.height - controlsHeight,
                     1
                 )
             )
@@ -37,29 +37,36 @@ struct CameraScreen: View {
                 Color.black
                     .ignoresSafeArea()
 
-                VStack(spacing: spacing) {
-                    brandHeader
-                        .frame(height: headerHeight)
-
-                    cameraViewport(
-                        size: previewSize,
-                        bottomControlInset: controlsHeight + bottomSafeInset
-                    )
-                        .frame(width: previewSize.width, height: previewSize.height)
-
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, horizontalPadding)
-                .padding(.vertical, 4)
-
                 VStack(spacing: 0) {
-                    Spacer(minLength: 0)
+                    ZStack {
+                        Color.black
+
+                        cameraViewport(
+                            size: previewSize,
+                            topControlInset: headerHeight + 8
+                        )
+                        .frame(width: previewSize.width, height: previewSize.height)
+                        .overlay(alignment: .top) {
+                            brandHeader
+                                .frame(height: headerHeight)
+                                .background(
+                                    LinearGradient(
+                                        colors: [.black.opacity(0.58), .black.opacity(0.08)],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                        }
+                    }
+                    .frame(width: availablePreviewSize.width, height: availablePreviewSize.height)
+
                     ControlPanelView()
                         .frame(maxWidth: .infinity)
-                        .frame(height: controlsHeight)
+                        .frame(height: controlsContentHeight)
                         .padding(.bottom, bottomSafeInset)
                         .background(Color.black)
                 }
+                .padding(.horizontal, horizontalPadding)
                 .ignoresSafeArea(edges: .bottom)
 
                 if camera.authorizationStatus != .authorized {
@@ -168,7 +175,7 @@ struct CameraScreen: View {
         .padding(.horizontal, 14)
     }
 
-    private func cameraViewport(size: CGSize, bottomControlInset: CGFloat) -> some View {
+    private func cameraViewport(size: CGSize, topControlInset: CGFloat) -> some View {
         ZStack {
             CameraPreviewView(
                 camera: camera,
@@ -241,9 +248,9 @@ struct CameraScreen: View {
 
                 CameraAdjustmentBar()
             }
-            .padding(.top, 10)
+            .padding(.top, topControlInset)
             .padding(.horizontal, 12)
-            .padding(.bottom, bottomControlInset + 6)
+            .padding(.bottom, 8)
 
             if let focusIndicator {
                 FocusReticleView()
