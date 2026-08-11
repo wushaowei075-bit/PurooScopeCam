@@ -29,7 +29,7 @@ struct CameraScreen: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    ZStack {
+                    ZStack(alignment: .top) {
                         Color.black
 
                         cameraViewport(
@@ -71,6 +71,7 @@ struct CameraScreen: View {
                 }
             }
         }
+        .ignoresSafeArea(.container, edges: .horizontal)
         .task {
             camera.requestAccessAndConfigure()
             motionMonitor.start()
@@ -329,15 +330,30 @@ struct CameraScreen: View {
             - fullWidthPreviewHeight
             - bottomSafeInset
 
-        if !isLandscape, fullWidthControlsContentHeight >= minimumControlsContentHeight {
+        if !isLandscape {
             let previewSize = CGSize(
                 width: screenSize.width,
                 height: fullWidthPreviewHeight
             )
+            let previewAreaHeight: CGFloat
+            let controlsContentHeight: CGFloat
+            if fullWidthControlsContentHeight >= minimumControlsContentHeight {
+                previewAreaHeight = fullWidthPreviewHeight
+                controlsContentHeight = fullWidthControlsContentHeight
+            } else {
+                previewAreaHeight = max(
+                    screenSize.height - minimumControlsContentHeight - bottomSafeInset,
+                    1
+                )
+                controlsContentHeight = minimumControlsContentHeight
+            }
             return CameraLayoutMetrics(
                 previewSize: previewSize,
-                previewAreaSize: previewSize,
-                controlsContentHeight: fullWidthControlsContentHeight
+                previewAreaSize: CGSize(
+                    width: screenSize.width,
+                    height: previewAreaHeight
+                ),
+                controlsContentHeight: controlsContentHeight
             )
         }
 
