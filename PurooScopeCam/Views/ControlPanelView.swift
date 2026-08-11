@@ -137,7 +137,7 @@ struct ControlPanelView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            if proxy.size.height < 100 {
+            if proxy.size.width > 520, proxy.size.height < 120 {
                 compactLayout
             } else {
                 portraitLayout

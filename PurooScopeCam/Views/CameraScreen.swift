@@ -17,17 +17,17 @@ struct CameraScreen: View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
             let topSafeInset = proxy.safeAreaInsets.top
-            let topChromeHeight = max(
+            let topOverlayHeight = max(
                 isLandscape ? 42 : 72,
                 topSafeInset + (isLandscape ? 36 : 52)
             )
-            let bottomSafeInset = max(proxy.safeAreaInsets.bottom, isLandscape ? 4 : 8)
+            let bottomControlInset = max(
+                proxy.safeAreaInsets.bottom - (isLandscape ? 6 : 12),
+                isLandscape ? 2 : 8
+            )
             let layout = cameraLayoutMetrics(
-                screenSize: CGSize(
-                    width: proxy.size.width,
-                    height: max(proxy.size.height - topChromeHeight, 1)
-                ),
-                bottomSafeInset: bottomSafeInset,
+                screenSize: proxy.size,
+                bottomSafeInset: bottomControlInset,
                 isLandscape: isLandscape
             )
 
@@ -36,19 +36,13 @@ struct CameraScreen: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    Color.clear
-                        .frame(height: topChromeHeight)
-
                     ZStack(alignment: .top) {
                         Color.black
 
                         cameraViewport(
                             size: layout.previewSize,
-                            topControlInset: 10,
-                            bottomControlInset: max(
-                                layout.previewSize.height - layout.previewAreaSize.height,
-                                0
-                            )
+                            topControlInset: topOverlayHeight + 10,
+                            bottomControlInset: 0
                         )
                         .frame(width: layout.previewSize.width, height: layout.previewSize.height)
                     }
@@ -60,7 +54,7 @@ struct CameraScreen: View {
                     ControlPanelView()
                         .frame(maxWidth: .infinity)
                         .frame(height: layout.controlsContentHeight)
-                        .padding(.bottom, bottomSafeInset)
+                        .padding(.bottom, bottomControlInset)
                         .background(Color.black)
                 }
                 .ignoresSafeArea(edges: .bottom)
@@ -68,11 +62,17 @@ struct CameraScreen: View {
                 brandHeader
                     .frame(
                         width: proxy.size.width,
-                        height: max(topChromeHeight - topSafeInset, 1),
+                        height: max(topOverlayHeight - topSafeInset, 1),
                         alignment: .bottom
                     )
                     .padding(.top, topSafeInset)
-                    .background(Color.black)
+                    .background(
+                        LinearGradient(
+                            colors: [.black.opacity(0.82), .black.opacity(0.24)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
                     .zIndex(20)
 
                 if camera.authorizationStatus != .authorized {
@@ -374,25 +374,10 @@ struct CameraScreen: View {
                 width: screenSize.width,
                 height: fullWidthPreviewHeight
             )
-            let previewAreaHeight: CGFloat
-            let controlsContentHeight: CGFloat
-            if fullWidthControlsContentHeight >= minimumControlsContentHeight {
-                previewAreaHeight = fullWidthPreviewHeight
-                controlsContentHeight = fullWidthControlsContentHeight
-            } else {
-                previewAreaHeight = max(
-                    screenSize.height - minimumControlsContentHeight - bottomSafeInset,
-                    1
-                )
-                controlsContentHeight = minimumControlsContentHeight
-            }
             return CameraLayoutMetrics(
                 previewSize: previewSize,
-                previewAreaSize: CGSize(
-                    width: screenSize.width,
-                    height: previewAreaHeight
-                ),
-                controlsContentHeight: controlsContentHeight
+                previewAreaSize: previewSize,
+                controlsContentHeight: max(fullWidthControlsContentHeight, 1)
             )
         }
 
