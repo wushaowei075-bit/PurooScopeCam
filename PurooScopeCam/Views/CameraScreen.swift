@@ -16,10 +16,13 @@ struct CameraScreen: View {
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
-            let headerHeight: CGFloat = isLandscape ? 34 : 40
+            let topChromeHeight: CGFloat = isLandscape ? 42 : 72
             let bottomSafeInset = max(proxy.safeAreaInsets.bottom, isLandscape ? 4 : 8)
             let layout = cameraLayoutMetrics(
-                screenSize: proxy.size,
+                screenSize: CGSize(
+                    width: proxy.size.width,
+                    height: max(proxy.size.height - topChromeHeight, 1)
+                ),
                 bottomSafeInset: bottomSafeInset,
                 isLandscape: isLandscape
             )
@@ -29,25 +32,18 @@ struct CameraScreen: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
+                    brandHeader
+                        .frame(height: topChromeHeight, alignment: .bottom)
+                        .background(Color.black)
+
                     ZStack(alignment: .top) {
                         Color.black
 
                         cameraViewport(
                             size: layout.previewSize,
-                            topControlInset: headerHeight + 8
+                            topControlInset: 10
                         )
                         .frame(width: layout.previewSize.width, height: layout.previewSize.height)
-                        .overlay(alignment: .top) {
-                            brandHeader
-                                .frame(height: headerHeight)
-                                .background(
-                                    LinearGradient(
-                                        colors: [.black.opacity(0.58), .black.opacity(0.08)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                        }
                     }
                     .frame(
                         width: layout.previewAreaSize.width,
