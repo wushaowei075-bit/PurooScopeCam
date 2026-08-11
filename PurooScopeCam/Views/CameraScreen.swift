@@ -16,7 +16,11 @@ struct CameraScreen: View {
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
-            let topChromeHeight: CGFloat = isLandscape ? 42 : 72
+            let topSafeInset = proxy.safeAreaInsets.top
+            let topChromeHeight = max(
+                isLandscape ? 42 : 72,
+                topSafeInset + (isLandscape ? 36 : 52)
+            )
             let bottomSafeInset = max(proxy.safeAreaInsets.bottom, isLandscape ? 4 : 8)
             let layout = cameraLayoutMetrics(
                 screenSize: CGSize(
@@ -27,14 +31,13 @@ struct CameraScreen: View {
                 isLandscape: isLandscape
             )
 
-            ZStack {
+            ZStack(alignment: .top) {
                 Color.black
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    brandHeader
-                        .frame(height: topChromeHeight, alignment: .bottom)
-                        .background(Color.black)
+                    Color.clear
+                        .frame(height: topChromeHeight)
 
                     ZStack(alignment: .top) {
                         Color.black
@@ -61,6 +64,16 @@ struct CameraScreen: View {
                         .background(Color.black)
                 }
                 .ignoresSafeArea(edges: .bottom)
+
+                brandHeader
+                    .frame(
+                        width: proxy.size.width,
+                        height: max(topChromeHeight - topSafeInset, 1),
+                        alignment: .bottom
+                    )
+                    .padding(.top, topSafeInset)
+                    .background(Color.black)
+                    .zIndex(20)
 
                 if camera.authorizationStatus != .authorized {
                     Color.black.opacity(0.90)

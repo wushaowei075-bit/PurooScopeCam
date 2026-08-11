@@ -177,7 +177,8 @@ struct ControlPanelView: View {
             }
             .padding(.horizontal, 22)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .offset(y: 6)
     }
 
     private var compactLayout: some View {
