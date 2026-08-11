@@ -41,7 +41,11 @@ struct CameraScreen: View {
 
                         cameraViewport(
                             size: layout.previewSize,
-                            topControlInset: 10
+                            topControlInset: 10,
+                            bottomControlInset: max(
+                                layout.previewSize.height - layout.previewAreaSize.height,
+                                0
+                            )
                         )
                         .frame(width: layout.previewSize.width, height: layout.previewSize.height)
                     }
@@ -128,44 +132,70 @@ struct CameraScreen: View {
     }
 
     private var brandHeader: some View {
-        HStack(spacing: 8) {
-            Text("PUROO 普徕")
-                .font(.system(size: 18, weight: .light))
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
-                .foregroundStyle(PurooBrandStyle.gradient)
+        HStack(spacing: 12) {
+            HStack(spacing: 7) {
+                Text("PUROO 普徕")
+                    .font(.system(size: 19, weight: .light))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                    .foregroundStyle(PurooBrandStyle.gradient)
 
-            if camera.status.isRecording {
-                Circle()
-                    .fill(.red)
-                    .frame(width: 7, height: 7)
-                    .accessibilityLabel("正在录像")
+                if camera.status.isRecording {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 7, height: 7)
+                        .accessibilityLabel("正在录像")
+                }
             }
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 16)
 
-            HStack(spacing: 5) {
-                Text("稳定")
-                    .font(.system(size: 11, weight: .light))
-                    .foregroundStyle(.white.opacity(0.82))
-
-                Toggle(
-                    "稳定",
-                    isOn: Binding(
-                        get: { camera.isStabilizationEnabled },
-                        set: { camera.setStabilizationEnabled($0) }
-                    )
-                )
-                .labelsHidden()
-                .tint(.green)
-                .scaleEffect(0.78)
-                .frame(width: 43, height: 28)
-            }
+            stabilityControl
         }
-        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 
-    private func cameraViewport(size: CGSize, topControlInset: CGFloat) -> some View {
+    private var stabilityControl: some View {
+        Button {
+            camera.setStabilizationEnabled(!camera.isStabilizationEnabled)
+        } label: {
+            HStack(spacing: 8) {
+                Text("稳定")
+                    .font(.system(size: 12, weight: .light))
+                    .foregroundStyle(.white.opacity(0.86))
+
+                ZStack {
+                    Capsule()
+                        .fill(
+                            camera.isStabilizationEnabled
+                                ? Color(red: 0.08, green: 0.82, blue: 0.34)
+                                : Color.white.opacity(0.20)
+                        )
+
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 24, height: 24)
+                        .shadow(color: .black.opacity(0.28), radius: 1.5, y: 1)
+                        .offset(x: camera.isStabilizationEnabled ? 10 : -10)
+                }
+                .frame(width: 50, height: 28)
+            }
+            .frame(minWidth: 92, minHeight: 44, alignment: .trailing)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: camera.isStabilizationEnabled)
+        .accessibilityLabel("稳定")
+        .accessibilityValue(camera.isStabilizationEnabled ? "已开启" : "已关闭")
+    }
+
+    private func cameraViewport(
+        size: CGSize,
+        topControlInset: CGFloat,
+        bottomControlInset: CGFloat
+    ) -> some View {
         ZStack {
             CameraPreviewView(
                 camera: camera,
@@ -240,7 +270,7 @@ struct CameraScreen: View {
             }
             .padding(.top, topControlInset)
             .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+            .padding(.bottom, bottomControlInset + 8)
 
             if let focusIndicator {
                 FocusReticleView()
