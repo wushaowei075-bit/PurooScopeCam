@@ -309,7 +309,7 @@ class CameraController(
         }
     }
 
-    private fun prepareVideoRecording(output: androidx.camera.video.VideoOutput): PendingRecording {
+    private fun prepareVideoRecording(output: Recorder): PendingRecording {
         val name = "PUROO_${timestamp()}.mp4"
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
