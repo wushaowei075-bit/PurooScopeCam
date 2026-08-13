@@ -158,12 +158,7 @@ struct ControlPanelView: View {
     }
 
     private var portraitLayout: some View {
-        VStack(spacing: 1) {
-            captureButton(size: 56)
-
-            recordingStatus
-                .frame(height: 10)
-
+        ZStack(alignment: .top) {
             HStack(spacing: 0) {
                 libraryButton
 
@@ -176,9 +171,18 @@ struct ControlPanelView: View {
                 burstButton
             }
             .padding(.horizontal, 22)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, 4)
+
+            VStack(spacing: 4) {
+                recordingStatus
+                    .frame(height: 12)
+
+                captureButton(size: 72)
+            }
+            .offset(y: -92)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .offset(y: 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var compactLayout: some View {
@@ -276,7 +280,7 @@ struct ControlPanelView: View {
             Image(systemName: "photo.on.rectangle")
                 .font(.system(size: 20, weight: .light))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: 46, height: 46)
                 .background(.white.opacity(0.10), in: Circle())
         }
         .buttonStyle(.plain)
@@ -290,7 +294,7 @@ struct ControlPanelView: View {
             Image(systemName: "square.stack.3d.up")
                 .font(.system(size: 20, weight: .light))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: 46, height: 46)
                 .background(.white.opacity(0.10), in: Circle())
         }
         .buttonStyle(.plain)

@@ -16,11 +16,6 @@ struct CameraScreen: View {
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
-            let topSafeInset = proxy.safeAreaInsets.top
-            let topOverlayHeight = max(
-                isLandscape ? 42 : 72,
-                topSafeInset + (isLandscape ? 36 : 52)
-            )
             let bottomControlInset = max(
                 proxy.safeAreaInsets.bottom - (isLandscape ? 6 : 12),
                 isLandscape ? 2 : 8
@@ -41,8 +36,8 @@ struct CameraScreen: View {
 
                         cameraViewport(
                             size: layout.previewSize,
-                            topControlInset: topOverlayHeight + 10,
-                            bottomControlInset: 0
+                            topControlInset: isLandscape ? 8 : 12,
+                            bottomControlInset: isLandscape ? 8 : 112
                         )
                         .frame(width: layout.previewSize.width, height: layout.previewSize.height)
                     }
@@ -58,22 +53,6 @@ struct CameraScreen: View {
                         .background(Color.black)
                 }
                 .ignoresSafeArea(edges: .bottom)
-
-                brandHeader
-                    .frame(
-                        width: proxy.size.width,
-                        height: max(topOverlayHeight - topSafeInset, 1),
-                        alignment: .bottom
-                    )
-                    .padding(.top, topSafeInset)
-                    .background(
-                        LinearGradient(
-                            colors: [.black.opacity(0.82), .black.opacity(0.24)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .zIndex(20)
 
                 if camera.authorizationStatus != .authorized {
                     Color.black.opacity(0.90)
@@ -160,14 +139,20 @@ struct CameraScreen: View {
                         .accessibilityLabel("正在录像")
                 }
             }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(.black.opacity(0.58), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(PurooBrandStyle.gradient, lineWidth: 1)
+                    .opacity(0.72)
+            }
 
             Spacer(minLength: 16)
 
             stabilityControl
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
     }
 
     private var stabilityControl: some View {
@@ -193,10 +178,16 @@ struct CameraScreen: View {
                         .shadow(color: .black.opacity(0.28), radius: 1.5, y: 1)
                         .offset(x: camera.isStabilizationEnabled ? 10 : -10)
                 }
-                .frame(width: 50, height: 28)
+                .frame(width: 44, height: 24)
             }
-            .frame(minWidth: 92, minHeight: 44, alignment: .trailing)
-            .contentShape(Rectangle())
+            .padding(.horizontal, 10)
+            .frame(height: 36)
+            .background(.black.opacity(0.58), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(.white.opacity(0.16), lineWidth: 0.8)
+            }
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.28, dampingFraction: 0.82), value: camera.isStabilizationEnabled)
@@ -230,48 +221,7 @@ struct CameraScreen: View {
                 )
 
             VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Button {
-                        isQualityDialogPresented = true
-                    } label: {
-                        Text(qualityBadgeTitle)
-                            .font(.system(size: 11, weight: .regular, design: .monospaced))
-                            .multilineTextAlignment(.center)
-                            .lineLimit(2)
-                            .frame(minWidth: 58, minHeight: 38)
-                            .padding(.horizontal, 7)
-                            .foregroundStyle(.black)
-                            .background(PurooBrandStyle.gradient, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(camera.status.isRecording || camera.captureQualityOptions.count <= 1)
-                    .accessibilityLabel("分辨率与帧率")
-
-                    Button {
-                        isMagnificationDialogPresented = true
-                    } label: {
-                        Label(
-                            "\(camera.telescopeMagnification, specifier: "%.0f")×",
-                            systemImage: "binoculars"
-                        )
-                        .font(.system(size: 13, weight: .regular, design: .monospaced))
-                        .padding(.horizontal, 12)
-                        .frame(height: 38)
-                        .foregroundStyle(.black)
-                        .background(
-                            LinearGradient(
-                                colors: [PurooBrandStyle.yellow, Color(red: 0.78, green: 0.98, blue: 0.34)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ),
-                            in: Capsule()
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("望远镜倍率")
-
-                    Spacer(minLength: 72)
-                }
+                previewTopControls
 
                 Spacer(minLength: 0)
 
@@ -306,6 +256,56 @@ struct CameraScreen: View {
         }
         .clipped()
         .animation(.easeOut(duration: 0.18), value: focusIndicator?.id)
+    }
+
+    private var previewTopControls: some View {
+        VStack(spacing: 10) {
+            brandHeader
+
+            HStack(spacing: 8) {
+                Button {
+                    isQualityDialogPresented = true
+                } label: {
+                    Text(qualityBadgeTitle)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .frame(minWidth: 64, minHeight: 36)
+                        .padding(.horizontal, 8)
+                        .foregroundStyle(.white)
+                        .background(.black.opacity(0.58), in: Capsule())
+                        .overlay {
+                            Capsule()
+                                .stroke(PurooBrandStyle.gradient, lineWidth: 1.2)
+                        }
+                }
+                .buttonStyle(.plain)
+                .disabled(camera.status.isRecording || camera.captureQualityOptions.count <= 1)
+                .accessibilityLabel("分辨率与帧率")
+
+                Button {
+                    isMagnificationDialogPresented = true
+                } label: {
+                    Label(
+                        "\(camera.telescopeMagnification, specifier: "%.0f")×",
+                        systemImage: "binoculars"
+                    )
+                    .font(.system(size: 13, weight: .regular, design: .monospaced))
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .foregroundStyle(PurooBrandStyle.yellow)
+                    .background(.black.opacity(0.58), in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .stroke(PurooBrandStyle.yellow.opacity(0.72), lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("望远镜倍率")
+
+                Spacer(minLength: 96)
+            }
+        }
     }
 
     private func statusCapsule(text: String, systemImage: String) -> some View {
