@@ -1,0 +1,311 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black">
+
+    <FrameLayout
+        android:id="@+id/previewContainer"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:clipChildren="true"
+        android:clipToPadding="false"
+        app:layout_constraintDimensionRatio="H,9:16"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <androidx.camera.view.PreviewView
+            android:id="@+id/previewView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/black"
+            app:implementationMode="compatible"
+            app:scaleType="fillCenter" />
+
+        <com.puroo.pulai.GridOverlayView
+            android:id="@+id/gridOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <LinearLayout
+            android:id="@+id/topControls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:orientation="vertical"
+            android:paddingStart="14dp"
+            android:paddingTop="14dp"
+            android:paddingEnd="14dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <com.puroo.pulai.DopamineTextView
+                    android:id="@+id/brandTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:background="@drawable/chip_dark"
+                    android:gravity="center"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="@string/brand_name"
+                    android:textSize="18sp" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:background="@drawable/chip_dark"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="8dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/stability"
+                        android:textColor="#DDFFFFFF"
+                        android:textSize="12sp" />
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/stabilitySwitch"
+                        android:layout_width="44dp"
+                        android:layout_height="32dp"
+                        android:button="@null"
+                        android:checked="true"
+                        android:showText="false"
+                        app:thumbTint="@color/white"
+                        app:trackTint="@color/puroo_green" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/qualityButton"
+                    android:layout_width="78dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/chip_dark"
+                    android:gravity="center"
+                    android:text="1080p\n60 FPS"
+                    android:textColor="@color/white"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/magnificationButton"
+                    android:layout_width="76dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/chip_dark"
+                    android:drawableStart="@android:drawable/ic_menu_zoom"
+                    android:drawablePadding="6dp"
+                    android:gravity="center"
+                    android:text="10×"
+                    android:textColor="@color/puroo_yellow"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <FrameLayout
+            android:id="@+id/overviewContainer"
+            android:layout_width="82dp"
+            android:layout_height="112dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="102dp"
+            android:layout_marginEnd="14dp"
+            android:background="@drawable/overview_frame"
+            android:clipToOutline="true">
+
+            <ImageView
+                android:id="@+id/overviewImage"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="centerCrop" />
+
+            <com.puroo.pulai.CropOverlayView
+                android:id="@+id/cropOverlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </FrameLayout>
+
+        <View
+            android:id="@+id/focusFrame"
+            android:layout_width="70dp"
+            android:layout_height="70dp"
+            android:background="@drawable/focus_frame"
+            android:visibility="gone" />
+
+        <SeekBar
+            android:id="@+id/exposureBar"
+            android:layout_width="116dp"
+            android:layout_height="36dp"
+            android:max="12"
+            android:progress="6"
+            android:progressTint="@color/puroo_yellow"
+            android:rotation="-90"
+            android:thumbTint="@color/puroo_yellow"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/zoomControl"
+            android:layout_width="240dp"
+            android:layout_height="38dp"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="92dp"
+            android:background="@drawable/chip_dark"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:contentDescription="@string/magnification"
+                android:src="@android:drawable/ic_menu_zoom"
+                android:tint="@color/white" />
+
+            <SeekBar
+                android:id="@+id/zoomBar"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:max="1000"
+                android:progress="100"
+                android:progressTint="@color/puroo_yellow"
+                android:thumbTint="@color/white" />
+
+            <TextView
+                android:id="@+id/zoomLabel"
+                android:layout_width="48dp"
+                android:layout_height="wrap_content"
+                android:gravity="end"
+                android:text="1.5×"
+                android:textColor="@color/white"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <FrameLayout
+        android:id="@+id/bottomPanel"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@color/black"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/previewContainer">
+
+        <TextView
+            android:id="@+id/recordingStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="22dp"
+            android:layout_gravity="top|center_horizontal"
+            android:gravity="center"
+            android:text=""
+            android:textColor="@color/record_red"
+            android:textSize="11sp"
+            android:translationY="-114dp" />
+
+        <ImageButton
+            android:id="@+id/shutterButton"
+            android:layout_width="76dp"
+            android:layout_height="76dp"
+            android:layout_gravity="top|center_horizontal"
+            android:background="@drawable/shutter_photo"
+            android:contentDescription="@string/photo"
+            android:padding="0dp"
+            android:translationY="-88dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="bottom|center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:paddingBottom="8dp">
+
+            <ImageButton
+                android:id="@+id/albumButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/circle_dark"
+                android:contentDescription="@string/album"
+                android:padding="13dp"
+                android:src="@android:drawable/ic_menu_gallery"
+                android:tint="@color/white" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:id="@+id/modeSelector"
+                android:layout_width="156dp"
+                android:layout_height="48dp"
+                android:background="@drawable/mode_container"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:padding="3dp">
+
+                <TextView
+                    android:id="@+id/videoModeButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="@string/video"
+                    android:textColor="@color/white"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/photoModeButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@drawable/mode_selected"
+                    android:gravity="center"
+                    android:text="@string/photo"
+                    android:textColor="@color/puroo_yellow"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <ImageButton
+                android:id="@+id/burstButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/circle_dark"
+                android:contentDescription="@string/burst"
+                android:padding="13dp"
+                android:src="@android:drawable/ic_menu_add"
+                android:tint="@color/white" />
+        </LinearLayout>
+    </FrameLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

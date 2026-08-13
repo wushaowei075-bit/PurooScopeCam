@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PUROO普徕</string>
+    <string name="brand_name">PUROO 普徕</string>
+    <string name="stability">稳定</string>
+    <string name="video">视频</string>
+    <string name="photo">照片</string>
+    <string name="album">相册</string>
+    <string name="burst">连拍</string>
+    <string name="quality">画质与帧率</string>
+    <string name="magnification">望远镜倍率</string>
+    <string name="recording">录制中</string>
+</resources>
