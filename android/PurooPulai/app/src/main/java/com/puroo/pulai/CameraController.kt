@@ -174,7 +174,7 @@ class CameraController(
             return
         }
         val capture = videoCapture ?: return
-        var pending: PendingRecording = capture.output.prepareRecording(context, videoOutputOptions())
+        var pending: PendingRecording = prepareVideoRecording(capture.output)
         if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
@@ -309,7 +309,7 @@ class CameraController(
         }
     }
 
-    private fun videoOutputOptions(): androidx.camera.video.OutputOptions {
+    private fun prepareVideoRecording(output: androidx.camera.video.VideoOutput): PendingRecording {
         val name = "PUROO_${timestamp()}.mp4"
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
@@ -317,13 +317,15 @@ class CameraController(
                 put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/PUROO")
             }
-            MediaStoreOutputOptions.Builder(
+            val options = MediaStoreOutputOptions.Builder(
                 context.contentResolver,
                 MediaStore.Video.Media.EXTERNAL_CONTENT_URI
             ).setContentValues(values).build()
+            output.prepareRecording(context, options)
         } else {
             val directory = File(context.getExternalFilesDir(null), "PUROO").apply { mkdirs() }
-            FileOutputOptions.Builder(File(directory, name)).build()
+            val options = FileOutputOptions.Builder(File(directory, name)).build()
+            output.prepareRecording(context, options)
         }
     }
 
