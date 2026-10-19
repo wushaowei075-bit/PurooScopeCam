@@ -5,6 +5,7 @@ import SwiftUI
 import UIKit
 
 struct PhotoLibraryView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @StateObject private var store = PhotoLibraryStore()
@@ -31,6 +32,9 @@ struct PhotoLibraryView: View {
         .preferredColorScheme(.dark)
         .task {
             store.activate()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { store.activate() }
         }
     }
 
@@ -157,9 +161,18 @@ private struct PhotoLibraryAsset: Identifiable, Hashable {
     }
 }
 
-private final class PhotoLibraryStore: ObservableObject {
+private final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
     @Published private(set) var authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Published private(set) var assets: [PhotoLibraryAsset] = []
+    private var isObserving = false
+
+    deinit {
+        if isObserving { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
+    }
+
+    func photoLibraryDidChange(_ changeInstance: PHChange) {
+        DispatchQueue.main.async { [weak self] in self?.activate() }
+    }
 
     func activate() {
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -177,11 +190,16 @@ private final class PhotoLibraryStore: ObservableObject {
                 }
             }
         default:
-            break
+            assets = []
         }
     }
 
     func reloadAssets() {
+        guard authorizationStatus == .authorized || authorizationStatus == .limited else { return }
+        if !isObserving {
+            PHPhotoLibrary.shared().register(self)
+            isObserving = true
+        }
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         let result = PHAsset.fetchAssets(with: options)
@@ -198,6 +216,8 @@ private struct PhotoAssetThumbnail: View {
     let item: PhotoLibraryAsset
     @State private var image: UIImage?
     @State private var requestID = PHInvalidImageRequestID
+    @State private var requestToken = UUID()
+    @State private var failed = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -210,9 +230,11 @@ private struct PhotoAssetThumbnail: View {
                         .clipped()
                 } else {
                     Color.white.opacity(0.06)
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white.opacity(0.65))
+                    if failed {
+                        Image(systemName: "icloud.slash").foregroundStyle(.secondary)
+                    } else {
+                        ProgressView().controlSize(.small).tint(.white.opacity(0.65))
+                    }
                 }
 
                 if item.asset.mediaType == .video {
@@ -239,6 +261,9 @@ private struct PhotoAssetThumbnail: View {
 
     private func requestThumbnail() {
         guard image == nil, requestID == PHInvalidImageRequestID else { return }
+        failed = false
+        let token = UUID()
+        requestToken = token
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
@@ -248,15 +273,20 @@ private struct PhotoAssetThumbnail: View {
             targetSize: CGSize(width: 360, height: 360),
             contentMode: .aspectFill,
             options: options
-        ) { result, _ in
-            guard let result else { return }
+        ) { result, info in
             DispatchQueue.main.async {
-                image = result
+                guard requestToken == token else { return }
+                if let result { image = result }
+                if (info?[PHImageResultIsDegradedKey] as? Bool) != true {
+                    requestID = PHInvalidImageRequestID
+                    failed = result == nil
+                }
             }
         }
     }
 
     private func cancelRequest() {
+        requestToken = UUID()
         guard requestID != PHInvalidImageRequestID else { return }
         PHCachingImageManager.default().cancelImageRequest(requestID)
         requestID = PHInvalidImageRequestID
@@ -274,6 +304,7 @@ private struct PhotoAssetViewer: View {
     @State private var sharePayload: PhotoSharePayload?
     @State private var shareCleanupURL: URL?
     @State private var errorMessage: String?
+    @State private var shareGeneration = UUID()
 
     init(
         assets: [PhotoLibraryAsset],
@@ -314,6 +345,7 @@ private struct PhotoAssetViewer: View {
             PhotoActivityView(activityItems: [payload.url])
                 .ignoresSafeArea()
         }
+        .onDisappear { shareGeneration = UUID() }
         .alert(
             "无法完成操作",
             isPresented: Binding(
@@ -429,6 +461,7 @@ private struct PhotoAssetViewer: View {
         }
 
         isPreparingShare = true
+        let generation = shareGeneration
         let sourceExtension = URL(fileURLWithPath: resource.originalFilename).pathExtension
         let fallbackExtension = asset.mediaType == .video ? "mov" : "jpg"
         let fileExtension = sourceExtension.isEmpty ? fallbackExtension : sourceExtension
@@ -444,6 +477,10 @@ private struct PhotoAssetViewer: View {
             options: options
         ) { error in
             DispatchQueue.main.async {
+                guard shareGeneration == generation else {
+                    try? FileManager.default.removeItem(at: destination)
+                    return
+                }
                 isPreparingShare = false
                 if let error {
                     try? FileManager.default.removeItem(at: destination)
@@ -496,104 +533,150 @@ private struct PhotoAssetPage: View {
 
 private struct PhotoAssetImagePage: View {
     let asset: PHAsset
-    @State private var image: UIImage?
-    @State private var requestID = PHInvalidImageRequestID
+    @StateObject private var loader = PhotoAssetLoader()
 
     var body: some View {
         ZStack {
             Color.black
-            if let image {
+            if let image = loader.image {
                 ZoomablePhotoView(image: image)
             } else {
-                ProgressView()
-                    .tint(.white)
+                PhotoLoadingState(loader: loader) { loader.load(asset) }
             }
         }
-        .onAppear(perform: requestImage)
-        .onDisappear(perform: cancelRequest)
-    }
-
-    private func requestImage() {
-        guard image == nil, requestID == PHInvalidImageRequestID else { return }
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
-        options.resizeMode = .exact
-        options.isNetworkAccessAllowed = true
-        requestID = PHImageManager.default().requestImage(
-            for: asset,
-            targetSize: CGSize(width: 4096, height: 4096),
-            contentMode: .aspectFit,
-            options: options
-        ) { result, _ in
-            guard let result else { return }
-            DispatchQueue.main.async {
-                image = result
-            }
-        }
-    }
-
-    private func cancelRequest() {
-        guard requestID != PHInvalidImageRequestID else { return }
-        PHImageManager.default().cancelImageRequest(requestID)
-        requestID = PHInvalidImageRequestID
+        .onAppear { loader.load(asset) }
+        .onDisappear { loader.cancel() }
     }
 }
 
 private struct PhotoAssetVideoPage: View {
     let asset: PHAsset
     let isActive: Bool
-    @State private var player: AVPlayer?
-    @State private var requestID = PHInvalidImageRequestID
+    @StateObject private var loader = PhotoAssetLoader()
 
     var body: some View {
         ZStack {
             Color.black
-            if let player {
+            if let player = loader.player {
                 VideoPlayer(player: player)
             } else {
-                ProgressView()
-                    .tint(.white)
+                PhotoLoadingState(loader: loader) { loader.load(asset) }
             }
         }
-        .onAppear(perform: requestPlayerItem)
+        .onAppear {
+            loader.isActive = isActive
+            loader.load(asset)
+        }
         .onDisappear {
-            player?.pause()
-            cancelRequest()
+            loader.isActive = false
+            loader.player?.pause()
+            loader.cancel()
         }
         .onChange(of: isActive) { _, active in
+            loader.isActive = active
             if active {
-                player?.play()
+                loader.player?.play()
             } else {
-                player?.pause()
-                player?.seek(to: .zero)
+                loader.player?.pause()
+                loader.player?.seek(to: .zero)
             }
         }
     }
 
-    private func requestPlayerItem() {
-        guard player == nil, requestID == PHInvalidImageRequestID else { return }
-        let options = PHVideoRequestOptions()
-        options.deliveryMode = .automatic
-        options.isNetworkAccessAllowed = true
-        requestID = PHImageManager.default().requestPlayerItem(
-            forVideo: asset,
-            options: options
-        ) { item, _ in
-            guard let item else { return }
+}
+
+private struct PhotoLoadingState: View {
+    @ObservedObject var loader: PhotoAssetLoader
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            if let error = loader.errorMessage {
+                Image(systemName: "icloud.slash")
+                Text(error).font(.system(size: 14)).multilineTextAlignment(.center)
+                Button("重试", action: retry).buttonStyle(.bordered)
+            } else if loader.progress > 0 {
+                ProgressView(value: loader.progress).frame(width: 160)
+                Text("正在下载 \(Int(loader.progress * 100))%")
+                    .font(.system(size: 12))
+            } else {
+                ProgressView().tint(.white)
+            }
+        }
+        .padding(24)
+    }
+}
+
+private final class PhotoAssetLoader: ObservableObject {
+    @Published var image: UIImage?
+    @Published var player: AVPlayer?
+    @Published var errorMessage: String?
+    @Published var progress = 0.0
+    var isActive = false
+    private var requestID = PHInvalidImageRequestID
+    private var generation = UUID()
+
+    deinit {
+        if requestID != PHInvalidImageRequestID { PHImageManager.default().cancelImageRequest(requestID) }
+    }
+
+    func cancel() {
+        generation = UUID()
+        if requestID != PHInvalidImageRequestID { PHImageManager.default().cancelImageRequest(requestID) }
+        requestID = PHInvalidImageRequestID
+    }
+
+    func load(_ asset: PHAsset) {
+        guard image == nil, player == nil else { return }
+        cancel()
+        errorMessage = nil
+        progress = 0
+        let token = generation
+        let progressHandler: PHAssetImageProgressHandler = { [weak self] value, error, _, _ in
             DispatchQueue.main.async {
-                let newPlayer = AVPlayer(playerItem: item)
-                player = newPlayer
-                if isActive {
-                    newPlayer.play()
+                guard let self, self.generation == token else { return }
+                self.progress = value
+                if let error { self.errorMessage = error.localizedDescription }
+            }
+        }
+        if asset.mediaType == .video {
+            let options = PHVideoRequestOptions()
+            options.isNetworkAccessAllowed = true
+            options.progressHandler = progressHandler
+            requestID = PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { [weak self] item, info in
+                DispatchQueue.main.async {
+                    guard let self, self.generation == token else { return }
+                    self.requestID = PHInvalidImageRequestID
+                    guard let item else { self.fail(info); return }
+                    let player = AVPlayer(playerItem: item)
+                    self.player = player
+                    if self.isActive { player.play() }
+                }
+            }
+        } else {
+            let options = PHImageRequestOptions()
+            options.deliveryMode = .highQualityFormat
+            options.resizeMode = .exact
+            options.isNetworkAccessAllowed = true
+            options.progressHandler = progressHandler
+            requestID = PHImageManager.default().requestImage(
+                for: asset, targetSize: CGSize(width: 4096, height: 4096),
+                contentMode: .aspectFit, options: options
+            ) { [weak self] image, info in
+                DispatchQueue.main.async {
+                    guard let self, self.generation == token else { return }
+                    if (info?[PHImageResultIsDegradedKey] as? Bool) == true { return }
+                    self.requestID = PHInvalidImageRequestID
+                    guard let image else { self.fail(info); return }
+                    self.image = image
                 }
             }
         }
     }
 
-    private func cancelRequest() {
-        guard requestID != PHInvalidImageRequestID else { return }
-        PHImageManager.default().cancelImageRequest(requestID)
-        requestID = PHInvalidImageRequestID
+    private func fail(_ info: [AnyHashable: Any]?) {
+        errorMessage = (info?[PHImageErrorKey] as? Error)?.localizedDescription
+            ?? "无法载入此项目，请检查网络后重试。"
     }
 }
 

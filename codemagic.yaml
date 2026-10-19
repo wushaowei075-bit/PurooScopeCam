@@ -56,6 +56,22 @@ workflows:
     scripts:
       - name: Show Xcode version
         script: xcodebuild -version
+      - name: Test camera geometry and layout
+        script: |
+          set -euo pipefail
+          mkdir -p build
+          swiftc PurooScopeCam/Models/CameraGeometry.swift Tests/CameraGeometryTests/main.swift -o build/camera-geometry-tests
+          build/camera-geometry-tests
+      - name: Test production recorder with synthetic video and audio
+        script: |
+          set -euo pipefail
+          {
+            printf 'import Foundation\nimport AVFoundation\nimport CoreImage\n'
+            awk '/^private final class StabilizedPreviewRecorder / {copy=1} /^struct CameraPreviewView:/ {copy=0} copy' PurooScopeCam/Views/CameraPreviewView.swift
+            cat Tests/RecorderTests/main.swift
+          } > build/main.swift
+          swiftc -swift-version 5 PurooScopeCam/Models/CameraGeometry.swift build/main.swift -o build/recorder-tests
+          build/recorder-tests
       - name: Build unsigned iPhoneOS app
         script: |
           set -euo pipefail

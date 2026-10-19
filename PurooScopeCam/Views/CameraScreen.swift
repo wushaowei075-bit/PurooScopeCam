@@ -7,6 +7,7 @@ struct CameraScreen: View {
     @EnvironmentObject private var camera: CameraController
     @EnvironmentObject private var motionMonitor: MotionStabilityMonitor
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @State private var interfaceOrientation: UIInterfaceOrientation = .portrait
     @State private var isQualityDialogPresented = false
     @State private var isMagnificationDialogPresented = false
@@ -16,43 +17,27 @@ struct CameraScreen: View {
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
-            let bottomControlInset = max(
-                proxy.safeAreaInsets.bottom - (isLandscape ? 6 : 12),
-                isLandscape ? 2 : 8
-            )
-            let layout = cameraLayoutMetrics(
-                screenSize: proxy.size,
-                bottomSafeInset: bottomControlInset,
-                isLandscape: isLandscape
-            )
+            let layout = CameraLayout(size: proxy.size, landscape: isLandscape)
 
             ZStack(alignment: .top) {
                 Color.black
                     .ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    ZStack(alignment: .top) {
-                        Color.black
+                cameraViewport(
+                    size: layout.previewSize,
+                    topControlInset: (isLandscape ? 8 : 12) - layout.previewOriginY,
+                    bottomControlInset: layout.controlsOverlap
+                )
+                .frame(width: layout.previewSize.width, height: layout.previewSize.height)
+                .offset(y: layout.previewOriginY)
 
-                        cameraViewport(
-                            size: layout.previewSize,
-                            topControlInset: isLandscape ? 8 : 12,
-                            bottomControlInset: isLandscape ? 8 : 112
-                        )
-                        .frame(width: layout.previewSize.width, height: layout.previewSize.height)
-                    }
-                    .frame(
-                        width: layout.previewAreaSize.width,
-                        height: layout.previewAreaSize.height
-                    )
-
+                VStack {
+                    Spacer(minLength: 0)
                     ControlPanelView()
                         .frame(maxWidth: .infinity)
-                        .frame(height: layout.controlsContentHeight)
-                        .padding(.bottom, bottomControlInset)
-                        .background(Color.black)
+                        .frame(height: layout.controlsHeight)
                 }
-                .ignoresSafeArea(edges: .bottom)
+                .frame(height: proxy.size.height)
 
                 if camera.authorizationStatus != .authorized {
                     Color.black.opacity(0.90)
@@ -62,6 +47,7 @@ struct CameraScreen: View {
                         .padding(24)
                 }
             }
+            .clipped()
         }
         .ignoresSafeArea(.container, edges: .horizontal)
         .task {
@@ -82,7 +68,7 @@ struct CameraScreen: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                camera.startSession()
+                camera.requestAccessAndConfigure()
                 motionMonitor.start()
             case .background:
                 camera.stopSession()
@@ -92,6 +78,12 @@ struct CameraScreen: View {
             @unknown default:
                 break
             }
+        }
+        .onChange(of: orientationLocked) { _, locked in
+            PurooScopeAppDelegate.orientationMask = locked ? interfaceOrientation.orientationMask : .allButUpsideDown
+            activeWindowScene?.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            if !locked { updateOrientation(from: UIDevice.current.orientation) }
+            UIApplication.shared.isIdleTimerDisabled = camera.status.isRecording
         }
         .confirmationDialog(
             "分辨率与帧率",
@@ -191,6 +183,7 @@ struct CameraScreen: View {
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.28, dampingFraction: 0.82), value: camera.isStabilizationEnabled)
+        .disabled(camera.status.isCapturingPhoto || camera.status.isCapturingBurst || camera.status.isFinishingRecording)
         .accessibilityLabel("稳定")
         .accessibilityValue(camera.isStabilizationEnabled ? "已开启" : "已关闭")
     }
@@ -229,7 +222,20 @@ struct CameraScreen: View {
                     statusCapsule(text: message, systemImage: "exclamationmark.circle.fill")
                 }
 
+                if camera.pendingMediaCount > 0 {
+                    Button {
+                        camera.retryPendingMedia()
+                    } label: {
+                        Label("重新保存 \(camera.pendingMediaCount) 项", systemImage: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .regular))
+                            .padding(10)
+                            .background(.black.opacity(0.7), in: Capsule())
+                    }
+                    .disabled(camera.status.isSaving || camera.status.isCapturingBurst)
+                }
+
                 CameraAdjustmentBar()
+                    .disabled(camera.status.isCapturingPhoto || camera.status.isCapturingBurst || camera.status.isFinishingRecording)
             }
             .padding(.top, topControlInset)
             .padding(.horizontal, 12)
@@ -280,7 +286,7 @@ struct CameraScreen: View {
                         }
                 }
                 .buttonStyle(.plain)
-                .disabled(camera.status.isRecording || camera.captureQualityOptions.count <= 1)
+                .disabled(orientationLocked || camera.captureQualityOptions.count <= 1)
                 .accessibilityLabel("分辨率与帧率")
 
                 Button {
@@ -301,6 +307,7 @@ struct CameraScreen: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .disabled(orientationLocked)
                 .accessibilityLabel("望远镜倍率")
 
                 Spacer(minLength: 96)
@@ -336,63 +343,13 @@ struct CameraScreen: View {
                 .font(.system(size: 14, weight: .light))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            Button("打开设置") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+            }
+            .buttonStyle(.bordered)
         }
         .padding(20)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func fittedPreviewSize(in containerSize: CGSize, isLandscape: Bool) -> CGSize {
-        guard containerSize.width > 0, containerSize.height > 0 else { return .zero }
-        let targetAspect: CGFloat = isLandscape ? 16.0 / 9.0 : 9.0 / 16.0
-        let containerAspect = containerSize.width / containerSize.height
-        if containerAspect > targetAspect {
-            return CGSize(
-                width: containerSize.height * targetAspect,
-                height: containerSize.height
-            )
-        }
-        return CGSize(
-            width: containerSize.width,
-            height: containerSize.width / targetAspect
-        )
-    }
-
-    private func cameraLayoutMetrics(
-        screenSize: CGSize,
-        bottomSafeInset: CGFloat,
-        isLandscape: Bool
-    ) -> CameraLayoutMetrics {
-        let minimumControlsContentHeight: CGFloat = isLandscape ? 82 : 108
-        let targetAspect: CGFloat = isLandscape ? 16.0 / 9.0 : 9.0 / 16.0
-        let fullWidthPreviewHeight = screenSize.width / targetAspect
-        let fullWidthControlsContentHeight = screenSize.height
-            - fullWidthPreviewHeight
-            - bottomSafeInset
-
-        if !isLandscape {
-            let previewSize = CGSize(
-                width: screenSize.width,
-                height: fullWidthPreviewHeight
-            )
-            return CameraLayoutMetrics(
-                previewSize: previewSize,
-                previewAreaSize: previewSize,
-                controlsContentHeight: max(fullWidthControlsContentHeight, 1)
-            )
-        }
-
-        let previewAreaSize = CGSize(
-            width: screenSize.width,
-            height: max(
-                screenSize.height - minimumControlsContentHeight - bottomSafeInset,
-                1
-            )
-        )
-        return CameraLayoutMetrics(
-            previewSize: fittedPreviewSize(in: previewAreaSize, isLandscape: isLandscape),
-            previewAreaSize: previewAreaSize,
-            controlsContentHeight: minimumControlsContentHeight
-        )
     }
 
     private func focus(at location: CGPoint, in previewSize: CGSize) {
@@ -401,7 +358,7 @@ struct CameraScreen: View {
             x: min(max(location.x / previewSize.width, 0), 1),
             y: min(max(location.y / previewSize.height, 0), 1)
         )
-        camera.focus(at: deviceFocusPoint(from: normalizedPoint))
+        camera.focusInPreview(at: normalizedPoint)
 
         let nextIndicator = FocusIndicatorState(location: location)
         focusIndicator = nextIndicator
@@ -457,25 +414,13 @@ struct CameraScreen: View {
         )
     }
 
-    private func deviceFocusPoint(from previewPoint: CGPoint) -> CGPoint {
-        switch interfaceOrientation {
-        case .portrait:
-            return CGPoint(x: previewPoint.y, y: 1 - previewPoint.x)
-        case .landscapeLeft:
-            return CGPoint(x: 1 - previewPoint.x, y: 1 - previewPoint.y)
-        case .portraitUpsideDown:
-            return CGPoint(x: 1 - previewPoint.y, y: previewPoint.x)
-        default:
-            return previewPoint
-        }
-    }
-
     private func synchronizeOrientationWithScene() {
         guard let scene = activeWindowScene else { return }
         apply(interfaceOrientation: scene.effectiveGeometry.interfaceOrientation, requestGeometry: false)
     }
 
     private func updateOrientation(from deviceOrientation: UIDeviceOrientation) {
+        guard !orientationLocked else { return }
         guard let nextOrientation = deviceOrientation.interfaceOrientation else { return }
         apply(interfaceOrientation: nextOrientation, requestGeometry: true)
     }
@@ -500,12 +445,10 @@ struct CameraScreen: View {
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
     }
-}
 
-private struct CameraLayoutMetrics {
-    let previewSize: CGSize
-    let previewAreaSize: CGSize
-    let controlsContentHeight: CGFloat
+    private var orientationLocked: Bool {
+        camera.status.isRecording || camera.status.isFinishingRecording || camera.status.isCapturingPhoto || camera.status.isCapturingBurst
+    }
 }
 
 private struct FocusIndicatorState: Identifiable {

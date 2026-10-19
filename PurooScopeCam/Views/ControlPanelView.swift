@@ -33,7 +33,7 @@ struct CameraAdjustmentBar: View {
                     get: { Double(camera.zoomFactor) },
                     set: { camera.setDisplayedZoomFactor(CGFloat($0)) }
                 ),
-                range: 1...6,
+                range: (camera.isStabilizationEnabled ? 1.5 : 1)...6,
                 isExpanded: isEditing,
                 onEditingChanged: { editing in
                     withAnimation(.easeOut(duration: 0.18)) {
@@ -48,7 +48,7 @@ struct CameraAdjustmentBar: View {
                 .frame(width: isEditing ? 46 : 38, alignment: .trailing)
         }
         .padding(.horizontal, isEditing ? 12 : 9)
-        .frame(width: isEditing ? 310 : 210)
+        .frame(maxWidth: isEditing ? 310 : 210)
         .frame(height: isEditing ? 44 : 30)
         .foregroundStyle(.white)
         .background(.black.opacity(0.68), in: Capsule())
@@ -144,7 +144,6 @@ struct ControlPanelView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .background(Color.black)
         .fullScreenCover(isPresented: $isPhotoLibraryPresented) {
             PhotoLibraryView()
         }
@@ -158,7 +157,10 @@ struct ControlPanelView: View {
     }
 
     private var portraitLayout: some View {
-        ZStack(alignment: .top) {
+        VStack(spacing: 4) {
+            recordingStatus.frame(height: 12)
+            captureButton(size: 72)
+            Spacer(minLength: 4)
             HStack(spacing: 0) {
                 libraryButton
 
@@ -171,16 +173,9 @@ struct ControlPanelView: View {
                 burstButton
             }
             .padding(.horizontal, 22)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .padding(.bottom, 4)
-
-            VStack(spacing: 4) {
-                recordingStatus
-                    .frame(height: 12)
-
-                captureButton(size: 72)
-            }
-            .offset(y: -92)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(Color.black)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -200,6 +195,7 @@ struct ControlPanelView: View {
         }
         .frame(maxWidth: 410, maxHeight: .infinity)
         .frame(maxWidth: .infinity)
+        .background(Color.black)
     }
 
     private func captureButton(size: CGFloat) -> some View {
@@ -230,6 +226,7 @@ struct ControlPanelView: View {
             .animation(modeTransitionAnimation, value: isRecording)
         }
         .buttonStyle(.plain)
+        .disabled(camera.status.isFinishingRecording || camera.status.isCapturingPhoto || camera.status.isCapturingBurst || !camera.status.isSessionRunning)
         .accessibilityLabel(captureButtonAccessibilityLabel)
     }
 
@@ -237,7 +234,7 @@ struct ControlPanelView: View {
         HStack(spacing: 0) {
             ForEach(CaptureMode.allCases, id: \.self) { mode in
                 Button {
-                    guard !camera.status.isRecording else { return }
+                    guard !camera.status.isRecording, !camera.status.isCapturingPhoto, !camera.status.isCapturingBurst else { return }
                     withAnimation(modeTransitionAnimation) {
                         captureMode = mode
                     }
@@ -284,6 +281,7 @@ struct ControlPanelView: View {
                 .background(.white.opacity(0.10), in: Circle())
         }
         .buttonStyle(.plain)
+        .disabled(camera.status.isRecording || camera.status.isFinishingRecording || camera.status.isCapturingPhoto || camera.status.isCapturingBurst)
         .accessibilityLabel("打开相册")
     }
 
@@ -298,7 +296,7 @@ struct ControlPanelView: View {
                 .background(.white.opacity(0.10), in: Circle())
         }
         .buttonStyle(.plain)
-        .disabled(camera.status.isRecording)
+        .disabled(camera.status.isRecording || camera.status.isFinishingRecording || camera.status.isCapturingPhoto || camera.status.isCapturingBurst || !camera.status.isSessionRunning)
         .opacity(camera.status.isRecording ? 0.42 : 1)
         .accessibilityLabel("连拍")
     }

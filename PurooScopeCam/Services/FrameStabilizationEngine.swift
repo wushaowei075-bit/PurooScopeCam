@@ -267,6 +267,7 @@ final class FrameStabilizationEngine {
         var viewportSize: CGSize
         var focalLengthPixelsX: CGFloat
         var focalLengthPixelsY: CGFloat
+        var generation: UInt64
     }
 
     var onResult: ((StabilizationFrameResult) -> Void)?
@@ -276,6 +277,7 @@ final class FrameStabilizationEngine {
     private var isProcessing = false
     private var pendingInput: FrameInput?
     private var droppedAnalysisFrames = 0
+    private var generation: UInt64 = 0
     private var visualTracker = SubpixelFrameMotionTracker()
     private var motionEstimator = QuaternionMotionEstimator()
     private var fusion = ComplementaryMotionFusion()
@@ -300,6 +302,7 @@ final class FrameStabilizationEngine {
             return
         }
 
+        pendingLock.lock()
         let input = FrameInput(
             pixelBuffer: pixelBuffer,
             timestamp: timestamp,
@@ -309,10 +312,10 @@ final class FrameStabilizationEngine {
             tuning: tuning,
             viewportSize: viewportSize,
             focalLengthPixelsX: max(focalLengthPixelsX, 1),
-            focalLengthPixelsY: max(focalLengthPixelsY, 1)
+            focalLengthPixelsY: max(focalLengthPixelsY, 1),
+            generation: generation
         )
 
-        pendingLock.lock()
         if isProcessing {
             if pendingInput != nil {
                 droppedAnalysisFrames += 1
@@ -331,30 +334,29 @@ final class FrameStabilizationEngine {
 
     func reset() {
         pendingLock.lock()
+        generation &+= 1
         pendingInput = nil
-        pendingLock.unlock()
         queue.async { [weak self] in
             self?.resetProcessingState()
         }
+        pendingLock.unlock()
     }
 
     private func processLoop(startingWith firstInput: FrameInput) {
-        var input = firstInput
-        while true {
-            autoreleasepool {
-                process(input)
-            }
-
-            pendingLock.lock()
-            if let next = pendingInput {
-                pendingInput = nil
-                pendingLock.unlock()
-                input = next
-            } else {
-                isProcessing = false
-                pendingLock.unlock()
-                return
-            }
+        pendingLock.lock()
+        let current = firstInput.generation == generation
+        pendingLock.unlock()
+        if current {
+            autoreleasepool { process(firstInput) }
+        }
+        pendingLock.lock()
+        let next = pendingInput
+        pendingInput = nil
+        if next == nil { isProcessing = false }
+        pendingLock.unlock()
+        if let next {
+            // Yield between frames so reset tasks cannot be starved by new input.
+            queue.async { [weak self] in self?.processLoop(startingWith: next) }
         }
     }
 
@@ -444,8 +446,13 @@ final class FrameStabilizationEngine {
             normalizedCorrectionY: crop.correctionY,
             debug: debug
         )
-        StabilizationTraceRecorder.shared.recordFrame(result)
-        onResult?(result)
+        pendingLock.lock()
+        let current = input.generation == generation
+        pendingLock.unlock()
+        if current {
+            StabilizationTraceRecorder.shared.recordFrame(result)
+            onResult?(result)
+        }
     }
 
     private func resetProcessingState() {
@@ -1394,7 +1401,7 @@ private final class ComplementaryMotionFusion {
             correlation.visualEnergyY = correlation.visualEnergyY * decay + weight * visualY * visualY
             correlation.gyroEnergyX = correlation.gyroEnergyX * decay + weight * gyroX * gyroX
             correlation.gyroEnergyY = correlation.gyroEnergyY * decay + weight * gyroY * gyroY
-            correlation.sampleCount = min(correlation.sampleCount + 1, 10_000)
+            correlation.sampleCount += 1
             correlations[key] = correlation
         }
     }

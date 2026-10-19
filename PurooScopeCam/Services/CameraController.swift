@@ -38,6 +38,9 @@ struct CameraFrameMetadata {
 }
 
 protocol CameraFrameSink: AnyObject {
+    func receiveAudio(_ sampleBuffer: CMSampleBuffer)
+    func resetPreview()
+    func sourceFocusPoint(from point: CGPoint) -> CGPoint?
     func cameraController(
         _ controller: CameraController,
         didOutput pixelBuffer: CVPixelBuffer,
@@ -62,15 +65,25 @@ protocol StabilizedRecordingFrameSink: AnyObject {
 
     func startStabilizedRecording(
         to outputURL: URL,
+        includeAudio: Bool,
         completion: @escaping (Result<URL, Error>) -> Void
     )
     func stopStabilizedRecording()
 }
 
 protocol StabilizedPhotoFrameSink: AnyObject {
+    func photoContext() -> StabilizedPhotoContext?
+    func processPhoto(_ data: Data, context: StabilizedPhotoContext, completion: @escaping (Result<Data, Error>) -> Void)
     func captureStabilizedPhoto(
         completion: @escaping (Result<Data, Error>) -> Void
     )
+}
+
+struct StabilizedPhotoContext {
+    var sourceSize: CGSize
+    var viewport: CGSize
+    var transform: PreviewRenderTransform
+    var cropScale: CGFloat
 }
 
 final class CameraController: NSObject, ObservableObject {
@@ -93,7 +106,6 @@ final class CameraController: NSObject, ObservableObject {
     @Published var exposureBias: Float = 0
     @Published var captureQualityPreference: CaptureQualityOption = .automatic {
         didSet {
-            guard captureQualityPreference != oldValue else { return }
             applySelectedCaptureQuality()
         }
     }
@@ -101,12 +113,17 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var activeCaptureQuality: CaptureQualityOption = .automatic
     @Published private(set) var focusLocked = false
     @Published private(set) var exposureLocked = false
+    @Published private(set) var pendingMediaCount = 0
 
     private let sessionQueue = DispatchQueue(label: "com.puroo.scope.camera.session")
     private let videoOutputQueue = DispatchQueue(label: "com.puroo.scope.camera.videoOutput", qos: .userInteractive)
     private let videoOutput = AVCaptureVideoDataOutput()
     private let photoOutput = AVCapturePhotoOutput()
     private let movieOutput = AVCaptureMovieFileOutput()
+    private let audioOutput = AVCaptureAudioDataOutput()
+    private var audioDeviceInput: AVCaptureDeviceInput?
+    private let sinkLock = NSLock()
+    private let mediaQueue = DispatchQueue(label: "com.puroo.scope.media", qos: .utility)
 
     private var videoDeviceInput: AVCaptureDeviceInput?
     private weak var previewFrameSink: CameraFrameSink?
@@ -118,6 +135,19 @@ final class CameraController: NSObject, ObservableObject {
     private var requestedVideoRotationAngle: CGFloat = 90
     private var isVideoOrientationLocked = false
     private var subjectAreaObserver: NSObjectProtocol?
+    private var sessionObservers: [NSObjectProtocol] = []
+    private var shouldRunSession = false
+    private var recordingActive = false
+    private var finishingRecording = false
+    private var recordingRequestPending = false
+    private var photoBusy = false
+    private var burstRemaining = 0
+    private var burstSequenceActive = false
+    private var burstFiles: [(url: URL, score: Double)] = []
+    private var photoContexts: [Int64: StabilizedPhotoContext] = [:]
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var savingURLs: Set<URL> = []
+    private var requestedQualityOnQueue: CaptureQualityOption = .automatic
 
     private struct CaptureQualityApplication {
         var options: [CaptureQualityOption]
@@ -125,6 +155,7 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     deinit {
+        sessionObservers.forEach(NotificationCenter.default.removeObserver)
         if let subjectAreaObserver {
             NotificationCenter.default.removeObserver(subjectAreaObserver)
         }
@@ -136,11 +167,15 @@ final class CameraController: NSObject, ObservableObject {
 
         switch currentStatus {
         case .authorized:
+            publishStatus { if $0.errorMessage == "相机权限不可用。" { $0.errorMessage = nil } }
+            sessionQueue.async { [weak self] in self?.shouldRunSession = true }
             configureIfNeeded()
+            refreshPendingMedia()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 self?.publish { $0.authorizationStatus = granted ? .authorized : .denied }
                 if granted {
+                    self?.sessionQueue.async { [weak self] in self?.shouldRunSession = true }
                     self?.configureIfNeeded()
                 }
             }
@@ -153,25 +188,61 @@ final class CameraController: NSObject, ObservableObject {
 
     func startSession() {
         sessionQueue.async { [weak self] in
-            guard let self, self.isConfigured, !self.session.isRunning else { return }
-            self.restoreContinuousAutoControlsOnSessionQueue(recenter: false)
-            self.session.startRunning()
-            self.publishStatus { $0.isSessionRunning = true }
+            guard let self, self.shouldRunSession, self.isConfigured else { return }
+            if !self.session.isRunning {
+                self.restoreContinuousAutoControlsOnSessionQueue(recenter: false)
+                self.session.startRunning()
+            }
+            self.publishStatus { $0.isSessionRunning = self.session.isRunning }
         }
     }
 
     func stopSession() {
+        beginFinishingBackgroundTask()
         sessionQueue.async { [weak self] in
-            guard let self, self.session.isRunning else { return }
-            self.session.stopRunning()
+            guard let self else { return }
+            self.shouldRunSession = false
+            self.burstRemaining = 0
+            self.stopRecordingOnSessionQueue()
+            if self.session.isRunning { self.session.stopRunning() }
+            self.frameSink?.resetPreview()
             self.publishStatus { $0.isSessionRunning = false }
+            if !self.recordingActive && !self.finishingRecording && !self.photoBusy {
+                self.endFinishingBackgroundTask()
+            }
+        }
+    }
+
+    private var frameSink: CameraFrameSink? {
+        sinkLock.lock()
+        defer { sinkLock.unlock() }
+        return previewFrameSink
+    }
+
+    private func beginFinishingBackgroundTask() {
+        let begin = {
+            guard self.backgroundTask == .invalid else { return }
+            self.backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Save capture") { [weak self] in
+                self?.endFinishingBackgroundTask()
+            }
+        }
+        if Thread.isMainThread { begin() } else { DispatchQueue.main.async(execute: begin) }
+    }
+
+    private func endFinishingBackgroundTask() {
+        DispatchQueue.main.async {
+            guard self.backgroundTask != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(self.backgroundTask)
+            self.backgroundTask = .invalid
         }
     }
 
     func setPreviewFrameSink(_ sink: CameraFrameSink?) {
-        videoOutputQueue.async { [weak self] in
+        sessionQueue.async { [weak self] in
             guard let self else { return }
+            self.sinkLock.lock()
             self.previewFrameSink = sink
+            self.sinkLock.unlock()
             self.previewRecordingSink = sink as? StabilizedRecordingFrameSink
             self.previewPhotoSink = sink as? StabilizedPhotoFrameSink
             sink?.cameraController(self, didUpdateTargetFrameRate: self.targetFrameRate)
@@ -196,7 +267,7 @@ final class CameraController: NSObject, ObservableObject {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.requestedVideoRotationAngle = angle
-            guard !self.isVideoOrientationLocked else { return }
+            guard !self.isVideoOrientationLocked, !self.photoBusy, self.burstRemaining == 0 else { return }
             self.applyRequestedVideoRotation()
         }
     }
@@ -348,6 +419,22 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
+    func focusInPreview(at normalizedPoint: CGPoint) {
+        guard let source = frameSink?.sourceFocusPoint(from: normalizedPoint) else { return }
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let angle = self.videoOutput.connection(with: .video)?.videoRotationAngle ?? 90
+            let devicePoint: CGPoint
+            switch Int(angle.rounded()) {
+            case 90: devicePoint = CGPoint(x: source.y, y: 1 - source.x)
+            case 180: devicePoint = CGPoint(x: 1 - source.x, y: 1 - source.y)
+            case 270: devicePoint = CGPoint(x: 1 - source.y, y: source.x)
+            default: devicePoint = source
+            }
+            self.focus(at: devicePoint)
+        }
+    }
+
     func setExposureLocked(_ locked: Bool) {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.videoDeviceInput?.device else { return }
@@ -369,43 +456,52 @@ final class CameraController: NSObject, ObservableObject {
 
     func capturePhoto() {
         sessionQueue.async { [weak self] in
-            guard let self, self.isConfigured else { return }
-            CameraFeedbackSound.playShutter()
-            if let previewPhotoSink = self.previewPhotoSink {
-                self.publishStatus(message: "正在拍照...")
-                previewPhotoSink.captureStabilizedPhoto { [weak self] result in
-                    switch result {
-                    case .success(let data):
-                        self?.savePhotoData(data)
-                    case .failure(let error):
-                        self?.publishStatus(error: error.localizedDescription)
-                    }
-                }
-                return
-            }
-
-            let settings = AVCapturePhotoSettings()
-            settings.flashMode = .off
-            self.photoOutput.capturePhoto(with: settings, delegate: self)
-            self.publishStatus(message: "正在拍照...")
+            guard let self, self.burstRemaining == 0 else { return }
+            self.capturePhotoOnSessionQueue()
         }
+    }
+
+    private func capturePhotoOnSessionQueue() {
+        guard !photoBusy, !recordingActive, !finishingRecording, !recordingRequestPending else { return }
+        guard isConfigured, session.isRunning, let context = previewPhotoSink?.photoContext() else {
+            burstRemaining = 0
+            finishPhotoStep()
+            publishStatus(message: "取景画面尚未就绪，请稍后拍摄。")
+            return
+        }
+        photoBusy = true
+        publishStatus { $0.isCapturingPhoto = true }
+        let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+        settings.flashMode = .off
+        settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+        settings.photoQualityPrioritization = burstRemaining > 0 ? .speed : .quality
+        photoContexts[settings.uniqueID] = context
+        photoOutput.capturePhoto(with: settings, delegate: self)
     }
 
     func captureBurst(plan: BurstCapturePlan = .defaultTelescope) {
         sessionQueue.async { [weak self] in
-            guard let self, self.isConfigured else { return }
+            guard let self, self.isConfigured, self.session.isRunning,
+                  !self.photoBusy, !self.recordingActive, !self.finishingRecording, !self.recordingRequestPending,
+                  self.burstRemaining == 0 else { return }
             self.publishStatus(message: "正在连拍...")
-
-            for index in 0..<plan.frameCount {
-                self.sessionQueue.asyncAfter(deadline: .now() + plan.frameInterval * Double(index)) { [weak self] in
-                    self?.capturePhoto()
-                }
-            }
+            self.burstRemaining = max(1, min(plan.frameCount, 16))
+            self.burstSequenceActive = true
+            self.burstFiles = []
+            self.publishStatus { $0.isCapturingBurst = true }
+            self.capturePhotoOnSessionQueue()
         }
     }
 
     func toggleRecording() {
-        status.isRecording ? stopRecording() : startRecording()
+        sessionQueue.async { [weak self] in
+            guard let self, !self.finishingRecording, !self.photoBusy, self.burstRemaining == 0 else { return }
+            if self.recordingActive {
+                self.stopRecordingOnSessionQueue()
+            } else if !self.recordingRequestPending {
+                self.requestRecordingWithAudio()
+            }
+        }
     }
 
     private func configureIfNeeded() {
@@ -441,6 +537,7 @@ final class CameraController: NSObject, ObservableObject {
             self.configureVideoOutput()
             self.configurePhotoOutput()
             self.configureMovieOutput()
+            self.installSessionObservers()
             self.applySelectedStabilizationMode()
             self.applyZoomFactorOnSessionQueue(self.requestedZoomFactor)
 
@@ -562,11 +659,11 @@ final class CameraController: NSObject, ObservableObject {
             return .automatic
         }
 
-        if captureQualityPreference.isAutomatic {
+        if requestedQualityOnQueue.isAutomatic {
             return automaticSelection
         }
 
-        return explicitOptions.first { $0 == captureQualityPreference } ?? automaticSelection
+        return explicitOptions.first { $0 == requestedQualityOnQueue } ?? automaticSelection
     }
 
     private func preferredFormat(
@@ -620,18 +717,24 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     private func applySelectedCaptureQuality() {
+        let requested = captureQualityPreference
         sessionQueue.async { [weak self] in
             guard let self, let device = self.videoDeviceInput?.device else { return }
-            guard !self.status.isRecording else {
+            guard !self.recordingActive, !self.finishingRecording, !self.photoBusy, self.burstRemaining == 0 else {
                 self.publishStatus(error: "录制中不能切换画质。")
                 return
             }
 
             do {
+                self.requestedQualityOnQueue = requested
+                self.session.beginConfiguration()
+                defer { self.session.commitConfiguration() }
                 try device.lockForConfiguration()
                 let qualityApplication = self.configureCaptureQuality(device)
                 self.configureContinuousAutoControls(device, recenter: false)
                 device.unlockForConfiguration()
+                self.configurePhotoDimensions(device)
+                self.frameSink?.resetPreview()
                 self.publishCaptureQuality(qualityApplication)
                 self.applySelectedStabilizationMode()
                 self.applyZoomFactorOnSessionQueue(self.requestedZoomFactor)
@@ -660,6 +763,8 @@ final class CameraController: NSObject, ObservableObject {
 
     private func configureVideoOutput() {
         videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.automaticallyConfiguresOutputBufferDimensions = false
+        videoOutput.deliversPreviewSizedOutputBuffers = false
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         ]
@@ -685,8 +790,98 @@ final class CameraController: NSObject, ObservableObject {
     private func configurePhotoOutput() {
         if session.canAddOutput(photoOutput) {
             session.addOutput(photoOutput)
+            photoOutput.maxPhotoQualityPrioritization = .quality
+            if let device = videoDeviceInput?.device { configurePhotoDimensions(device) }
             applyVideoRotation(to: photoOutput.connection(with: .video))
         }
+    }
+
+    private func configurePhotoDimensions(_ device: AVCaptureDevice) {
+        if let size = device.activeFormat.supportedMaxPhotoDimensions.max(by: {
+            Int64($0.width) * Int64($0.height) < Int64($1.width) * Int64($1.height)
+        }) {
+            photoOutput.maxPhotoDimensions = size
+        }
+    }
+
+    private func installSessionObservers() {
+        guard sessionObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        sessionObservers.append(center.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: nil) { [weak self] _ in
+            self?.beginFinishingBackgroundTask()
+            self?.sessionQueue.async { [weak self] in
+                guard let self else { return }
+                let wasRecording = self.recordingActive
+                self.burstRemaining = 0
+                self.stopRecordingOnSessionQueue()
+                self.publishStatus { $0.isSessionRunning = false }
+                self.publishStatus(message: wasRecording ? "相机暂时中断，已结束当前录像。" : "相机暂时中断，等待恢复。")
+                if !self.recordingActive && !self.photoBusy { self.endFinishingBackgroundTask() }
+            }
+        })
+        for name in [AVCaptureSession.interruptionEndedNotification, AVCaptureSession.runtimeErrorNotification] {
+            sessionObservers.append(center.addObserver(forName: name, object: session, queue: nil) { [weak self] notification in
+                self?.sessionQueue.async { [weak self] in
+                    guard let self else { return }
+                    if notification.name == AVCaptureSession.runtimeErrorNotification {
+                        self.stopRecordingOnSessionQueue()
+                        self.publishStatus(error: "相机发生中断，正在恢复。")
+                    }
+                    self.frameSink?.resetPreview()
+                    if self.shouldRunSession { self.startSession() }
+                }
+            })
+        }
+    }
+
+    private func requestRecordingWithAudio() {
+        guard session.isRunning, shouldRunSession else { return }
+        recordingRequestPending = true
+        let proceed: (Bool) -> Void = { [weak self] granted in
+            self?.sessionQueue.async { [weak self] in
+                guard let self else { return }
+                self.recordingRequestPending = false
+                guard self.shouldRunSession, self.session.isRunning, !self.photoBusy, self.burstRemaining == 0 else { return }
+                if granted { self.configureAudioInput() }
+                self.startRecording()
+                if self.audioDeviceInput == nil { self.publishStatus(message: "未启用麦克风，本次录像无声音。") }
+            }
+        }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: proceed(true)
+        case .notDetermined: AVCaptureDevice.requestAccess(for: .audio, completionHandler: proceed)
+        default: proceed(false)
+        }
+    }
+
+    private func configureAudioInput() {
+        guard audioDeviceInput == nil else { return }
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playAndRecord, mode: .videoRecording, options: [.defaultToSpeaker, .allowBluetooth])
+            try audioSession.setActive(true)
+            guard let device = AVCaptureDevice.default(for: .audio) else { return }
+            let input = try AVCaptureDeviceInput(device: device)
+            session.beginConfiguration()
+            defer { session.commitConfiguration() }
+            guard session.canAddInput(input), session.canAddOutput(audioOutput) else { return }
+            session.addInput(input)
+            session.addOutput(audioOutput)
+            audioOutput.setSampleBufferDelegate(self, queue: videoOutputQueue)
+            audioDeviceInput = input
+        } catch {
+            publishStatus(message: "麦克风暂不可用，本次仅录制画面。")
+        }
+    }
+
+    private func releaseAudioInput() {
+        guard let input = audioDeviceInput else { return }
+        session.beginConfiguration()
+        session.removeOutput(audioOutput)
+        session.removeInput(input)
+        audioDeviceInput = nil
+        session.commitConfiguration()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func configureMovieOutput() {
@@ -725,32 +920,37 @@ final class CameraController: NSObject, ObservableObject {
 
     private func startRecording() {
         sessionQueue.async { [weak self] in
-            guard let self, self.isConfigured else { return }
+            guard let self, self.isConfigured, self.shouldRunSession, !self.recordingActive, !self.finishingRecording else { return }
             if let previewRecordingSink = self.previewRecordingSink {
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
                     .appendingPathExtension("mp4")
                 guard !previewRecordingSink.isStabilizedRecording else { return }
                 self.isVideoOrientationLocked = true
-                previewRecordingSink.startStabilizedRecording(to: url) { [weak self] result in
-                    guard let self else { return }
-                    self.publishStatus {
-                        $0.isRecording = false
-                        $0.recordingStartedAt = nil
-                    }
-                    self.unlockVideoOrientationAfterRecording()
-
-                    switch result {
-                    case .success(let outputURL):
-                        self.saveVideo(at: outputURL)
-                    case .failure(let error):
-                        try? FileManager.default.removeItem(at: url)
-                        self.publishStatus(error: self.recordingErrorMessage(for: error))
-                    }
-                }
+                self.recordingActive = true
                 self.publishStatus {
                     $0.isRecording = true
                     $0.recordingStartedAt = Date()
+                }
+                previewRecordingSink.startStabilizedRecording(to: url, includeAudio: self.audioDeviceInput != nil) { [weak self] result in
+                    guard let self else { return }
+                    self.sessionQueue.async {
+                        self.recordingActive = false
+                        self.finishingRecording = false
+                        self.releaseAudioInput()
+                        self.publishStatus {
+                            $0.isRecording = false
+                            $0.isFinishingRecording = false
+                            $0.recordingStartedAt = nil
+                        }
+                        self.unlockVideoOrientationAfterRecording()
+                        switch result {
+                        case .success(let outputURL): self.saveVideo(at: outputURL)
+                        case .failure(let error):
+                            self.publishStatus(error: self.recordingErrorMessage(for: error))
+                            self.endFinishingBackgroundTask()
+                        }
+                    }
                 }
                 return
             }
@@ -760,6 +960,7 @@ final class CameraController: NSObject, ObservableObject {
                 .appendingPathExtension("mov")
             guard !self.movieOutput.isRecording else { return }
             self.isVideoOrientationLocked = true
+            self.recordingActive = true
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
             self.publishStatus {
                 $0.isRecording = true
@@ -770,15 +971,18 @@ final class CameraController: NSObject, ObservableObject {
 
     private func stopRecording() {
         sessionQueue.async { [weak self] in
-            guard let self else { return }
-            if let previewRecordingSink = self.previewRecordingSink,
-               previewRecordingSink.isStabilizedRecording {
-                previewRecordingSink.stopStabilizedRecording()
-                return
-            }
+            self?.stopRecordingOnSessionQueue()
+        }
+    }
 
-            guard self.movieOutput.isRecording else { return }
-            self.movieOutput.stopRecording()
+    private func stopRecordingOnSessionQueue() {
+        guard recordingActive, !finishingRecording else { return }
+        finishingRecording = true
+        publishStatus { $0.isFinishingRecording = true }
+        if let previewRecordingSink, previewRecordingSink.isStabilizedRecording {
+            previewRecordingSink.stopStabilizedRecording()
+        } else if movieOutput.isRecording {
+            movieOutput.stopRecording()
         }
     }
 
@@ -852,57 +1056,157 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     private func savePhotoData(_ data: Data) {
-        publishStatus { $0.isSaving = true }
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] authorization in
-            guard authorization == .authorized || authorization == .limited else {
-                self?.publishStatus { status in
-                    status.isSaving = false
-                    status.errorMessage = "未获得照片保存权限。"
-                }
-                return
-            }
-
-            PHPhotoLibrary.shared().performChanges {
-                let request = PHAssetCreationRequest.forAsset()
-                request.addResource(with: .photo, data: data, options: nil)
-            } completionHandler: { success, error in
-                self?.publishStatus { status in
-                    status.isSaving = false
-                    status.lastMessage = success ? "照片已保存。" : nil
-                    status.errorMessage = error?.localizedDescription
-                }
-                if success {
-                    self?.clearStatusMessage("照片已保存。")
-                }
+        mediaQueue.async {
+            do {
+                let url = try self.pendingDirectory().appendingPathComponent("photo-\(UUID().uuidString).jpg")
+                try data.write(to: url, options: .atomic)
+                self.savePendingMedia(at: url)
+            } catch {
+                self.publishStatus(error: "照片暂存失败：\(error.localizedDescription)")
+                self.endFinishingBackgroundTask()
             }
         }
     }
 
     private func saveVideo(at url: URL) {
+        mediaQueue.async {
+            do {
+                let destination = try self.pendingDirectory().appendingPathComponent(url.lastPathComponent)
+                if url != destination { try FileManager.default.moveItem(at: url, to: destination) }
+                self.savePendingMedia(at: destination)
+            } catch {
+                self.publishStatus(error: "视频仍保留在本机，暂存失败：\(error.localizedDescription)")
+                self.endFinishingBackgroundTask()
+            }
+        }
+    }
+
+    private func pendingDirectory() throws -> URL {
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PendingCaptures", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func pendingURLs() -> [URL] {
+        guard let directory = try? pendingDirectory() else { return [] }
+        return ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
+            .filter { ["jpg", "mp4", "mov"].contains($0.pathExtension.lowercased()) }
+    }
+
+    func refreshPendingMedia() {
+        mediaQueue.async {
+            let count = self.pendingURLs().count
+            self.publish { $0.pendingMediaCount = count }
+        }
+    }
+
+    func retryPendingMedia() {
+        mediaQueue.async {
+            for url in self.pendingURLs() { self.savePendingMedia(at: url) }
+        }
+    }
+
+    private func savePendingMedia(at url: URL) {
+        guard savingURLs.insert(url).inserted else { return }
         publishStatus { $0.isSaving = true }
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] authorization in
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { authorization in
             guard authorization == .authorized || authorization == .limited else {
-                self?.publishStatus { status in
-                    status.isSaving = false
-                    status.errorMessage = "未获得照片保存权限。"
-                }
+                self.completeMediaSave(url: url, success: false, message: "未获得相册权限，素材已保留，可稍后重新保存。")
                 return
             }
-
+            let isPhoto = url.pathExtension.lowercased() == "jpg"
             PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
-                request.addResource(with: .video, fileURL: url, options: nil)
+                request.isFavorite = url.lastPathComponent.hasPrefix("best-")
+                request.addResource(with: isPhoto ? .photo : .video, fileURL: url, options: nil)
             } completionHandler: { success, error in
-                try? FileManager.default.removeItem(at: url)
-                self?.publishStatus { status in
-                    status.isSaving = false
-                    status.lastMessage = success ? "视频已保存。" : nil
-                    status.errorMessage = error?.localizedDescription
+                self.completeMediaSave(url: url, success: success, message: error?.localizedDescription)
+            }
+        }
+    }
+
+    private func completeMediaSave(url: URL, success: Bool, message: String?) {
+        mediaQueue.async {
+            if success { try? FileManager.default.removeItem(at: url) }
+            self.savingURLs.remove(url)
+            let count = self.pendingURLs().count
+            let saving = !self.savingURLs.isEmpty
+            self.publish {
+                $0.pendingMediaCount = count
+                $0.status.isSaving = saving
+                $0.status.lastMessage = success ? "已保存到相册。" : nil
+                $0.status.errorMessage = success ? nil : (message ?? "保存失败，素材已保留，请重新保存。")
+            }
+            if success { self.clearStatusMessage("已保存到相册。") }
+            if !saving { self.endFinishingBackgroundTask() }
+        }
+    }
+
+    private func completePhoto(_ result: Result<Data, Error>) {
+        sessionQueue.async {
+            switch result {
+            case .success(let data):
+                if self.burstSequenceActive {
+                    self.mediaQueue.async {
+                        do {
+                            let url = try self.pendingDirectory().appendingPathComponent("burst-\(UUID().uuidString).jpg")
+                            try data.write(to: url, options: .atomic)
+                            let score = BurstPhotoCoordinator.sharpness(of: data)
+                            self.sessionQueue.async {
+                                self.burstFiles.append((url, score))
+                                self.finishPhotoStep()
+                            }
+                        } catch {
+                            self.sessionQueue.async {
+                                self.publishStatus(error: "连拍暂存失败：\(error.localizedDescription)")
+                                self.burstRemaining = 0
+                                self.finishPhotoStep()
+                            }
+                        }
+                    }
+                    return
                 }
-                if success {
-                    self?.clearStatusMessage("视频已保存。")
+                self.savePhotoData(data)
+            case .failure(let error):
+                self.publishStatus(error: error.localizedDescription)
+                self.burstRemaining = 0
+                if self.burstFiles.isEmpty { self.endFinishingBackgroundTask() }
+            }
+            self.finishPhotoStep()
+        }
+    }
+
+    private func finishPhotoStep() {
+        photoBusy = false
+        publishStatus { $0.isCapturingPhoto = false }
+        if burstRemaining > 0 { burstRemaining -= 1 }
+        if burstRemaining > 0, shouldRunSession {
+            sessionQueue.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self else { return }
+                if self.shouldRunSession { self.capturePhotoOnSessionQueue() }
+                else { self.burstRemaining = 0; self.finishPhotoStep() }
+            }
+        } else {
+            burstRemaining = 0
+            burstSequenceActive = false
+            let files = burstFiles
+            burstFiles = []
+            if !files.isEmpty {
+                mediaQueue.async {
+                    let best = files.max(by: { $0.score < $1.score })?.url
+                    for item in files {
+                        var url = item.url
+                        if url == best {
+                            let selected = url.deletingLastPathComponent().appendingPathComponent("best-" + url.lastPathComponent)
+                            if (try? FileManager.default.moveItem(at: url, to: selected)) != nil { url = selected }
+                        }
+                        self.savePendingMedia(at: url)
+                    }
                 }
             }
+            publishStatus { $0.isCapturingBurst = false }
+            applyRequestedVideoRotation()
         }
     }
 
@@ -966,17 +1270,26 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
         didFinishProcessingPhoto photo: AVCapturePhoto,
         error: Error?
     ) {
-        if let error {
-            publishStatus(error: error.localizedDescription)
-            return
+        sessionQueue.async {
+            let context = self.photoContexts.removeValue(forKey: photo.resolvedSettings.uniqueID)
+            if let error { self.completePhoto(.failure(error)); return }
+            guard let data = photo.fileDataRepresentation(), let context,
+                  let sink = self.previewPhotoSink else {
+                self.completePhoto(.failure(NSError(domain: "PUROO.Photo", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "照片数据或取景信息不可用。"])))
+                return
+            }
+            sink.processPhoto(data, context: context) { [weak self] result in self?.completePhoto(result) }
         }
+    }
 
-        guard let data = photo.fileDataRepresentation() else {
-            publishStatus(error: "照片数据不可用。")
-            return
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings, error: Error?) {
+        guard let error else { return }
+        sessionQueue.async {
+            if self.photoContexts.removeValue(forKey: resolvedSettings.uniqueID) != nil {
+                self.completePhoto(.failure(error))
+            }
         }
-
-        savePhotoData(data)
     }
 }
 
@@ -987,8 +1300,14 @@ extension CameraController: AVCaptureFileOutputRecordingDelegate {
         from connections: [AVCaptureConnection],
         error: Error?
     ) {
+        sessionQueue.async {
+            self.recordingActive = false
+            self.finishingRecording = false
+            self.releaseAudioInput()
+        }
         publishStatus {
             $0.isRecording = false
+            $0.isFinishingRecording = false
             $0.recordingStartedAt = nil
         }
         unlockVideoOrientationAfterRecording()
@@ -1002,12 +1321,16 @@ extension CameraController: AVCaptureFileOutputRecordingDelegate {
     }
 }
 
-extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
+extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        if output === audioOutput {
+            frameSink?.receiveAudio(sampleBuffer)
+            return
+        }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
             let width = CVPixelBufferGetWidth(pixelBuffer)
@@ -1029,7 +1352,7 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
                 frameWidth: width,
                 frameHeight: height
             )
-            previewFrameSink?.cameraController(
+            frameSink?.cameraController(
                 self,
                 didOutput: pixelBuffer,
                 metadata: metadata

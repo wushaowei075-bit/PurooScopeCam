@@ -356,20 +356,6 @@ struct StabilitySample: Equatable {
     )
 }
 
-struct PreviewRenderTransform: Equatable {
-    var scale: CGFloat
-    var rotationRadians: CGFloat
-    var translationX: CGFloat
-    var translationY: CGFloat
-
-    static let identity = PreviewRenderTransform(
-        scale: 1,
-        rotationRadians: 0,
-        translationX: 0,
-        translationY: 0
-    )
-}
-
 struct CaptureStatus: Equatable {
     var activeStabilizationMode: AVCaptureVideoStabilizationMode = .off
     var activePreviewStabilizationMode: AVCaptureVideoStabilizationMode = .off
@@ -378,6 +364,9 @@ struct CaptureStatus: Equatable {
     var isRecording = false
     var recordingStartedAt: Date?
     var isSaving = false
+    var isCapturingPhoto = false
+    var isCapturingBurst = false
+    var isFinishingRecording = false
     var lastMessage: String?
     var errorMessage: String?
 }

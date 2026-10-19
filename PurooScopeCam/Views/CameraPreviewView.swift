@@ -157,9 +157,25 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
     func startStabilizedRecording(
         to outputURL: URL,
+        includeAudio: Bool,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
-        renderer.startRecording(to: outputURL, completion: completion)
+        renderer.startRecording(to: outputURL, includeAudio: includeAudio, completion: completion)
+    }
+
+    func receiveAudio(_ sampleBuffer: CMSampleBuffer) { renderer.appendAudio(sampleBuffer) }
+
+    func resetPreview() {
+        stabilizationEngine.reset()
+        renderer.resetStabilizationState()
+    }
+
+    func sourceFocusPoint(from point: CGPoint) -> CGPoint? { renderer.sourceFocusPoint(from: point) }
+
+    func photoContext() -> StabilizedPhotoContext? { renderer.photoContext() }
+
+    func processPhoto(_ data: Data, context: StabilizedPhotoContext, completion: @escaping (Result<Data, Error>) -> Void) {
+        renderer.processPhoto(data, context: context, completion: completion)
     }
 
     func stopStabilizedRecording() {
@@ -198,7 +214,8 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         renderer.enqueue(
             pixelBuffer: pixelBuffer,
             motionTime: frameTime,
-            sourceTimestamp: sourceTimestamp.isFinite ? sourceTimestamp : frameTime
+            sourceTimestamp: sourceTimestamp.isFinite ? sourceTimestamp : frameTime,
+            viewport: currentViewportSize
         )
         if preference.usesElectronicPreviewStabilization, tuning.usesDigitalStabilization {
             let exposureHalfDuration = min(max(metadata.exposureDuration * 0.5, 0), 1.0 / 30.0)
@@ -465,6 +482,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         var motionTime: TimeInterval
         var sourceTimestamp: TimeInterval
         var isReady: Bool
+        var viewport: CGSize
     }
 
     private struct TimedRenderTransform {
@@ -521,7 +539,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     func enqueue(
         pixelBuffer: CVPixelBuffer,
         motionTime: TimeInterval,
-        sourceTimestamp: TimeInterval
+        sourceTimestamp: TimeInterval,
+        viewport: CGSize
     ) {
         guard motionTime.isFinite, sourceTimestamp.isFinite else { return }
         stateLock.lock()
@@ -531,7 +550,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 pixelBuffer: pixelBuffer,
                 motionTime: motionTime,
                 sourceTimestamp: sourceTimestamp,
-                isReady: false
+                isReady: false,
+                viewport: viewport
             )
         )
         // 队列里的每一帧都占着采集输出的像素缓冲池。池子耗尽时相机会直接
@@ -549,6 +569,10 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func setRenderTransform(_ transform: PreviewRenderTransform, at timestamp: TimeInterval) {
         stateLock.lock()
+        guard frameQueue.contains(where: { abs($0.motionTime - timestamp) < 0.0005 }) else {
+            stateLock.unlock()
+            return
+        }
         renderTransformHistory.append(
             TimedRenderTransform(
                 transform: transform,
@@ -563,13 +587,30 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func markFrameReady(at timestamp: TimeInterval) {
         stateLock.lock()
+        var readyFrame: QueuedPreviewFrame?
+        var transform = PreviewRenderTransform.identity
+        let scale = cropWindowScale
         if let index = frameQueue.lastIndex(where: { abs($0.motionTime - timestamp) < 0.0005 }) {
             if !frameQueue[index].isReady {
                 frameQueue[index].isReady = true
                 readyFrameCount += 1
+                readyFrame = frameQueue[index]
+                transform = renderTransformForFrame(at: timestamp)
             }
         }
         stateLock.unlock()
+        // Recording consumes completed stabilization results, never display callbacks.
+        if let readyFrame, recorder.isRecording {
+            let size = CGSize(width: CVPixelBufferGetWidth(readyFrame.pixelBuffer), height: CVPixelBufferGetHeight(readyFrame.pixelBuffer))
+            let image = CIImage(cvPixelBuffer: readyFrame.pixelBuffer)
+            let output = CameraGeometry.outputSize(for: size)
+            let stabilized = image.transformed(by: imageToOutputTransform(
+                imageExtent: image.extent, outputSize: output, logicalViewport: readyFrame.viewport,
+                previewTransform: transform, cropWindowScale: scale
+            ))
+            recorder.append(stabilizedImage: stabilized, sourceTimestamp: readyFrame.sourceTimestamp,
+                            outputSize: output, ciContext: ciContext, colorSpace: colorSpace)
+        }
     }
 
     func setPreviewDelayFrames(_ frameCount: Int) {
@@ -607,9 +648,53 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func startRecording(
         to outputURL: URL,
+        includeAudio: Bool,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
-        recorder.startRecording(to: outputURL, completion: completion)
+        recorder.startRecording(to: outputURL, includeAudio: includeAudio, completion: completion)
+    }
+
+    func appendAudio(_ sampleBuffer: CMSampleBuffer) { recorder.appendAudio(sampleBuffer) }
+
+    func photoContext() -> StabilizedPhotoContext? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard let frame = displayedPhotoFrame else { return nil }
+        return StabilizedPhotoContext(
+            sourceSize: CGSize(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer)),
+            viewport: frame.logicalViewport, transform: frame.transform, cropScale: frame.cropScale
+        )
+    }
+
+    func sourceFocusPoint(from normalized: CGPoint) -> CGPoint? {
+        guard let context = photoContext() else { return nil }
+        return CameraGeometry.sourcePoint(
+            from: CGPoint(x: normalized.x * context.viewport.width, y: normalized.y * context.viewport.height),
+            source: context.sourceSize, viewport: context.viewport,
+            correction: context.transform, cropScale: context.cropScale
+        )
+    }
+
+    func processPhoto(_ data: Data, context: StabilizedPhotoContext, completion: @escaping (Result<Data, Error>) -> Void) {
+        photoQueue.async {
+            autoreleasepool {
+                guard let image = CIImage(data: data, options: [.applyOrientationProperty: true]) else {
+                    completion(.failure(StabilizedPhotoCaptureError.encodingFailed))
+                    return
+                }
+                let outputSize = CameraGeometry.outputSize(for: image.extent.size)
+                let transformed = image.transformed(by: self.imageToOutputTransform(
+                    imageExtent: image.extent, outputSize: outputSize, logicalViewport: context.viewport,
+                    previewTransform: context.transform, cropWindowScale: context.cropScale
+                ))
+                guard let jpeg = self.ciContext.jpegRepresentation(of: transformed.cropped(to: CGRect(origin: .zero, size: outputSize)),
+                                                                 colorSpace: self.colorSpace, options: [:]) else {
+                    completion(.failure(StabilizedPhotoCaptureError.encodingFailed))
+                    return
+                }
+                completion(.success(jpeg))
+            }
+        }
     }
 
     func stopRecording() {
@@ -662,7 +747,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         let recording = recorder.isRecording
         stateLock.lock()
-        let queuedFrame = nextFrameForDisplay(preferOldestReady: recording)
+        let queuedFrame = nextFrameForDisplay(preferOldestReady: false)
         let transform = queuedFrame.map { renderTransformForFrame(at: $0.motionTime) } ?? .identity
         let cropScale = cropWindowScale
         let telemetry: [String: Any]?
@@ -715,29 +800,6 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
             logicalViewport: view.bounds.size
         )
         stateLock.unlock()
-
-        if recording {
-            let recordingSize = CGSize(
-                width: CVPixelBufferGetWidth(queuedFrame.pixelBuffer),
-                height: CVPixelBufferGetHeight(queuedFrame.pixelBuffer)
-            )
-            let recordingImage = image.transformed(
-                by: imageToOutputTransform(
-                    imageExtent: image.extent,
-                    outputSize: recordingSize,
-                    logicalViewport: view.bounds.size,
-                    previewTransform: transform,
-                    cropWindowScale: cropScale
-                )
-            )
-            recorder.append(
-                stabilizedImage: recordingImage,
-                sourceTimestamp: queuedFrame.sourceTimestamp,
-                outputSize: recordingSize,
-                ciContext: ciContext,
-                colorSpace: colorSpace
-            )
-        }
 
         ciContext.render(
             previewImage,
@@ -836,26 +898,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         previewTransform: PreviewRenderTransform,
         cropWindowScale: CGFloat
     ) -> CGAffineTransform {
-        let imageWidth = max(imageExtent.width, 1)
-        let imageHeight = max(imageExtent.height, 1)
-        let baseScale = max(outputSize.width / imageWidth, outputSize.height / imageHeight)
-        let stabilizedScale = baseScale * max(previewTransform.scale, cropWindowScale)
-        let rotation = previewTransform.rotationRadians
-        let cosine = cos(rotation)
-        let sine = sin(rotation)
-        let normalizedX = previewTransform.translationX / max(logicalViewport.width, 1)
-        let normalizedY = previewTransform.translationY / max(logicalViewport.height, 1)
-        let outputCenterX = outputSize.width * (0.5 + normalizedX)
-        let outputCenterY = outputSize.height * (0.5 - normalizedY)
-        let inputCenterX = imageExtent.midX
-        let inputCenterY = imageExtent.midY
-        let a = stabilizedScale * cosine
-        let b = stabilizedScale * sine
-        let c = -stabilizedScale * sine
-        let d = stabilizedScale * cosine
-        let tx = outputCenterX - a * inputCenterX - c * inputCenterY
-        let ty = outputCenterY - b * inputCenterX - d * inputCenterY
-        return CGAffineTransform(a: a, b: b, c: c, d: d, tx: tx, ty: ty)
+        CameraGeometry.transform(source: imageExtent, output: outputSize, viewport: logicalViewport,
+                                 correction: previewTransform, cropScale: cropWindowScale)
     }
 }
 
@@ -888,6 +932,10 @@ private final class StabilizedPreviewRecorder {
     private var completion: ((Result<URL, Error>) -> Void)?
     private var writer: AVAssetWriter?
     private var input: AVAssetWriterInput?
+    private var audioInput: AVAssetWriterInput?
+    private var includeAudio = false
+    private var pendingAudioCount = 0
+    private var lastAudioTimestamp: CMTime?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var firstSourceTimestamp: TimeInterval?
     private var lastSourceTimestamp: TimeInterval?
@@ -914,6 +962,7 @@ private final class StabilizedPreviewRecorder {
 
     func startRecording(
         to outputURL: URL,
+        includeAudio: Bool,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
         lock.lock()
@@ -925,6 +974,10 @@ private final class StabilizedPreviewRecorder {
         try? FileManager.default.removeItem(at: outputURL)
         self.outputURL = outputURL
         self.completion = completion
+        self.includeAudio = includeAudio
+        audioInput = nil
+        pendingAudioCount = 0
+        lastAudioTimestamp = nil
         writer = nil
         input = nil
         adaptor = nil
@@ -955,6 +1008,28 @@ private final class StabilizedPreviewRecorder {
         lock.lock()
         targetFrameRate = max(24, min(frameRate, 60))
         lock.unlock()
+    }
+
+    func appendAudio(_ sampleBuffer: CMSampleBuffer) {
+        lock.lock()
+        guard includeAudio, state == .waitingForFirstFrame || state == .recording,
+              pendingAudioCount < 8 else { lock.unlock(); return }
+        pendingAudioCount += 1
+        lock.unlock()
+        recordingQueue.async {
+            self.lock.lock()
+            defer {
+                self.pendingAudioCount = max(0, self.pendingAudioCount - 1)
+                self.lock.unlock()
+            }
+            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            guard self.state == .recording, let first = self.firstSourceTimestamp,
+                  let audioInput = self.audioInput, audioInput.isReadyForMoreMediaData,
+                  CMSampleBufferDataIsReady(sampleBuffer), timestamp.isValid,
+                  CMTimeGetSeconds(timestamp) >= first,
+                  self.lastAudioTimestamp.map({ CMTimeCompare(timestamp, $0) > 0 }) ?? true else { return }
+            if audioInput.append(sampleBuffer) { self.lastAudioTimestamp = timestamp }
+        }
     }
 
     func append(
@@ -1021,7 +1096,7 @@ private final class StabilizedPreviewRecorder {
         }
         if state == .waitingForFirstFrame {
             do {
-                try startWriterLocked(outputSize: outputSize)
+                try startWriterLocked(outputSize: outputSize, sourceTimestamp: sourceTimestamp)
             } catch {
                 finishLocked(result: .failure(error))
                 return
@@ -1053,9 +1128,8 @@ private final class StabilizedPreviewRecorder {
         }
         let firstTimestamp = firstSourceTimestamp ?? sourceTimestamp
         firstSourceTimestamp = firstTimestamp
-        let relativeSeconds = max(0, sourceTimestamp - firstTimestamp)
         let presentationTime = CMTime(
-            seconds: relativeSeconds,
+            seconds: sourceTimestamp,
             preferredTimescale: 60_000
         )
         if let lastPresentationTime,
@@ -1111,7 +1185,7 @@ private final class StabilizedPreviewRecorder {
         lock.unlock()
     }
 
-    private func startWriterLocked(outputSize: CGSize) throws {
+    private func startWriterLocked(outputSize: CGSize, sourceTimestamp: TimeInterval) throws {
         guard let outputURL else {
             throw StabilizedPreviewRecorderError.outputURLMissing
         }
@@ -1157,16 +1231,28 @@ private final class StabilizedPreviewRecorder {
             throw StabilizedPreviewRecorderError.inputUnavailable
         }
         writer.add(input)
+        if includeAudio {
+            let audio = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 44_100,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 128_000
+            ])
+            audio.expectsMediaDataInRealTime = true
+            guard writer.canAdd(audio) else { throw StabilizedPreviewRecorderError.inputUnavailable }
+            writer.add(audio)
+            audioInput = audio
+        }
         guard writer.startWriting() else {
             throw writer.error ?? StabilizedPreviewRecorderError.writerFailed
         }
-        writer.startSession(atSourceTime: .zero)
+        writer.startSession(atSourceTime: CMTime(seconds: sourceTimestamp, preferredTimescale: 60_000))
         self.writer = writer
         self.input = input
         self.adaptor = adaptor
         recordingFrameRate = expectedFrameRate
         writtenFrameCount = 0
-        firstSourceTimestamp = nil
+        firstSourceTimestamp = sourceTimestamp
         lastSourceTimestamp = nil
         lastPresentationTime = nil
         state = .recording
@@ -1179,15 +1265,8 @@ private final class StabilizedPreviewRecorder {
         let maximumWidth: CGFloat = isPortrait ? 2160 : 3840
         let maximumHeight: CGFloat = isPortrait ? 3840 : 2160
         let scale = min(maximumWidth / sourceWidth, maximumHeight / sourceHeight, 1)
-        return (
-            compatibleVideoDimension(sourceWidth * scale),
-            compatibleVideoDimension(sourceHeight * scale)
-        )
-    }
-
-    private func compatibleVideoDimension(_ value: CGFloat) -> Int {
-        let rounded = max(16, Int(value.rounded(.down)))
-        return max(16, rounded - (rounded % 16))
+        let size = CameraGeometry.outputSize(for: CGSize(width: sourceWidth * scale, height: sourceHeight * scale))
+        return (Int(size.width), Int(size.height))
     }
 
     private func finishWriterLocked() {
@@ -1197,6 +1276,7 @@ private final class StabilizedPreviewRecorder {
         }
         state = .finishing
         input.markAsFinished()
+        audioInput?.markAsFinished()
         let completion = self.completion
         let frameCount = writtenFrameCount
         let attemptedCount = attemptedFrameCount
@@ -1249,6 +1329,7 @@ private final class StabilizedPreviewRecorder {
         completion = nil
         writer = nil
         input = nil
+        audioInput = nil
         adaptor = nil
         firstSourceTimestamp = nil
         lastSourceTimestamp = nil
