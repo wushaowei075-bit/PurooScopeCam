@@ -1493,9 +1493,11 @@ private final class ComplementaryMotionFusion {
         let axisCorrelation = correlation.observableAxisCorrelation
         // 可信度只看残差与相关性。不再检查倍率是否接近某个出厂参考值——
         // 那会让任何非标定倍率的望远镜被误判为标定失败并静默退回纯视觉稳像。
+        // A regression at exactly 30x can round a few ulps above the bound.
+        let gainTolerance: CGFloat = 0.000000001
         let magnificationIsFinite = targetMagnification.isFinite &&
-            targetMagnification >= Self.minimumMagnification * 0.5 &&
-            targetMagnification <= Self.maximumMagnification
+            targetMagnification >= Self.minimumMagnification * 0.5 - gainTolerance &&
+            targetMagnification <= Self.maximumMagnification + gainTolerance
         let measurementIsReliable = magnificationIsFinite &&
             axisCorrelation >= 0.78 &&
             correlation.normalizedError <= 0.55

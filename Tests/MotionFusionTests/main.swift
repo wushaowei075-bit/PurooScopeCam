@@ -64,6 +64,12 @@ private let quietNoise = simulate { t in
 }
 check(quietNoise.gyroTrust > 0.80, "Noise on an unexcited axis must not veto the moving axis")
 
+private let aboveRange = simulate(magnification: 30) { t in
+    let x = CGFloat(0.0006 * sin(2 * .pi * 9 * t))
+    return (x, 0, x / 32, 0)
+}
+check(aboveRange.gyroTrust < 0.40, "Boundary rounding tolerance must not admit an out-of-range gain")
+
 // A coherent gyro should help when the visual measurement contains fine-scale
 // noise; the old energy floor silently reverted this case to visual-only.
 for fps in [30, 60] {
