@@ -346,6 +346,10 @@ private struct PhotoAssetViewer: View {
                 .ignoresSafeArea()
         }
         .onDisappear { shareGeneration = UUID() }
+        .onChange(of: assets.map(\.id)) { _, ids in
+            guard !ids.contains(currentAssetID) else { return }
+            if let first = ids.first { currentAssetID = first } else { onBack() }
+        }
         .alert(
             "无法完成操作",
             isPresented: Binding(

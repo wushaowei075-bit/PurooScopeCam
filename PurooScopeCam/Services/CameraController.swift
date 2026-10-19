@@ -122,6 +122,7 @@ final class CameraController: NSObject, ObservableObject {
     private let movieOutput = AVCaptureMovieFileOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
     private var audioDeviceInput: AVCaptureDeviceInput?
+    private var audioSessionActivated = false
     private let sinkLock = NSLock()
     private let mediaQueue = DispatchQueue(label: "com.puroo.scope.media", qos: .utility)
 
@@ -193,7 +194,10 @@ final class CameraController: NSObject, ObservableObject {
                 self.restoreContinuousAutoControlsOnSessionQueue(recenter: false)
                 self.session.startRunning()
             }
-            self.publishStatus { $0.isSessionRunning = self.session.isRunning }
+            self.publishStatus {
+                $0.isSessionRunning = self.session.isRunning
+                if self.session.isRunning && $0.errorMessage == "相机发生中断，正在恢复。" { $0.errorMessage = nil }
+            }
         }
     }
 
@@ -208,6 +212,7 @@ final class CameraController: NSObject, ObservableObject {
             self.frameSink?.resetPreview()
             self.publishStatus { $0.isSessionRunning = false }
             if !self.recordingActive && !self.finishingRecording && !self.photoBusy {
+                self.releaseAudioInput()
                 self.endBackgroundTaskWhenSavesFinish()
             }
         }
@@ -862,10 +867,17 @@ final class CameraController: NSObject, ObservableObject {
 
     private func configureAudioInput() {
         guard audioDeviceInput == nil else { return }
+        defer {
+            if audioDeviceInput == nil && audioSessionActivated {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                audioSessionActivated = false
+            }
+        }
         do {
             let audioSession = AVAudioSession.sharedInstance()
             try audioSession.setCategory(.playAndRecord, mode: .videoRecording, options: [.defaultToSpeaker, .allowBluetooth])
             try audioSession.setActive(true)
+            audioSessionActivated = true
             guard let device = AVCaptureDevice.default(for: .audio) else { return }
             let input = try AVCaptureDeviceInput(device: device)
             session.beginConfiguration()
@@ -881,13 +893,17 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     private func releaseAudioInput() {
-        guard let input = audioDeviceInput else { return }
-        session.beginConfiguration()
-        session.removeOutput(audioOutput)
-        session.removeInput(input)
-        audioDeviceInput = nil
-        session.commitConfiguration()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if let input = audioDeviceInput {
+            session.beginConfiguration()
+            session.removeOutput(audioOutput)
+            session.removeInput(input)
+            audioDeviceInput = nil
+            session.commitConfiguration()
+        }
+        if audioSessionActivated {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            audioSessionActivated = false
+        }
     }
 
     private func configureMovieOutput() {
