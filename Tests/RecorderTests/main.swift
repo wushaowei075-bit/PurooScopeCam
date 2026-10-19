@@ -66,14 +66,20 @@ private func verifyClip(_ recorder: StabilizedPreviewRecorder, size: CGSize, aud
         reader.add(output)
         precondition(reader.startReading())
         var count = 0
+        var sampleCount = 0
         var last = CMTime.negativeInfinity
         while let sample = output.copyNextSampleBuffer() {
             let time = CMSampleBufferGetPresentationTimeStamp(sample)
             precondition(CMTimeCompare(time, last) > 0, "Track timestamps must increase")
             last = time
             count += 1
+            sampleCount += CMSampleBufferGetNumSamples(sample)
         }
-        precondition(reader.status == .completed && count >= 8, "Readable media samples")
+        let diagnostic = "Readback \(track.mediaType.rawValue): buffers=\(count), samples=\(sampleCount), status=\(reader.status.rawValue), error=\(String(describing: reader.error))\n"
+        FileHandle.standardError.write(Data(diagnostic.utf8))
+        // Audio readers may combine many PCM samples into one buffer.
+        let minimumBuffers = track.mediaType == .video ? 8 : 1
+        precondition(reader.status == .completed && count >= minimumBuffers && sampleCount > 0, diagnostic)
     }
     print("PASS: encoded \(Int(size.width))x\(Int(size.height)), audio=\(audio), no display callbacks")
 }
