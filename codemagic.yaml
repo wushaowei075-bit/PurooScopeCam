@@ -62,6 +62,10 @@ workflows:
           mkdir -p build
           swiftc PurooScopeCam/Models/CameraGeometry.swift Tests/CameraGeometryTests/main.swift -o build/camera-geometry-tests
           build/camera-geometry-tests
+      - name: Test small-motion fusion and high-frequency fallback
+        script: |
+          set -euo pipefail
+          bash Tests/MotionFusionTests/run.sh
       - name: Build unsigned iPhoneOS app
         script: |
           set -euo pipefail
