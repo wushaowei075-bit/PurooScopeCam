@@ -946,6 +946,7 @@ private final class StabilizedPreviewRecorder {
     private var outputHeight = 0
     private var targetFrameRate = 60
     private var pendingAppendCount = 0
+    private var recordingGeneration: UInt64 = 0
     private var attemptedFrameCount: Int64 = 0
     private var pendingDropCount: Int64 = 0
     private var writerNotReadyDropCount: Int64 = 0
@@ -972,6 +973,7 @@ private final class StabilizedPreviewRecorder {
             return
         }
         try? FileManager.default.removeItem(at: outputURL)
+        recordingGeneration &+= 1
         self.outputURL = outputURL
         self.completion = completion
         self.includeAudio = includeAudio
@@ -999,8 +1001,11 @@ private final class StabilizedPreviewRecorder {
     }
 
     func stopRecording() {
+        lock.lock()
+        let generation = recordingGeneration
+        lock.unlock()
         recordingQueue.async { [weak self] in
-            self?.stopRecordingOnQueue()
+            self?.stopRecordingOnQueue(generation: generation)
         }
     }
 
@@ -1015,9 +1020,11 @@ private final class StabilizedPreviewRecorder {
         guard includeAudio, state == .waitingForFirstFrame || state == .recording,
               pendingAudioCount < 8 else { lock.unlock(); return }
         pendingAudioCount += 1
+        let generation = recordingGeneration
         lock.unlock()
         recordingQueue.async {
             self.lock.lock()
+            guard self.recordingGeneration == generation else { self.lock.unlock(); return }
             defer {
                 self.pendingAudioCount = max(0, self.pendingAudioCount - 1)
                 self.lock.unlock()
@@ -1054,22 +1061,25 @@ private final class StabilizedPreviewRecorder {
             return
         }
         pendingAppendCount += 1
+        let generation = recordingGeneration
         lock.unlock()
         recordingQueue.async { [weak self] in
             guard let self else { return }
-            defer { self.decrementPendingAppendCount() }
+            defer { self.decrementPendingAppendCount(generation: generation) }
             self.appendOnRecordingQueue(
                 stabilizedImage: stabilizedImage,
                 sourceTimestamp: sourceTimestamp,
                 outputSize: outputSize,
                 ciContext: ciContext,
-                colorSpace: colorSpace
+                colorSpace: colorSpace,
+                generation: generation
             )
         }
     }
 
-    private func stopRecordingOnQueue() {
+    private func stopRecordingOnQueue(generation: UInt64) {
         lock.lock()
+        guard recordingGeneration == generation else { lock.unlock(); return }
         switch state {
         case .idle:
             lock.unlock()
@@ -1087,10 +1097,11 @@ private final class StabilizedPreviewRecorder {
         sourceTimestamp: TimeInterval,
         outputSize: CGSize,
         ciContext: CIContext,
-        colorSpace: CGColorSpace
+        colorSpace: CGColorSpace,
+        generation: UInt64
     ) {
         lock.lock()
-        guard state == .waitingForFirstFrame || state == .recording else {
+        guard recordingGeneration == generation, state == .waitingForFirstFrame || state == .recording else {
             lock.unlock()
             return
         }
@@ -1179,9 +1190,9 @@ private final class StabilizedPreviewRecorder {
         lock.unlock()
     }
 
-    private func decrementPendingAppendCount() {
+    private func decrementPendingAppendCount(generation: UInt64) {
         lock.lock()
-        pendingAppendCount = max(0, pendingAppendCount - 1)
+        if recordingGeneration == generation { pendingAppendCount = max(0, pendingAppendCount - 1) }
         lock.unlock()
     }
 

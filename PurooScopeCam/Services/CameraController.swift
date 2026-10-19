@@ -208,7 +208,7 @@ final class CameraController: NSObject, ObservableObject {
             self.frameSink?.resetPreview()
             self.publishStatus { $0.isSessionRunning = false }
             if !self.recordingActive && !self.finishingRecording && !self.photoBusy {
-                self.endFinishingBackgroundTask()
+                self.endBackgroundTaskWhenSavesFinish()
             }
         }
     }
@@ -234,6 +234,12 @@ final class CameraController: NSObject, ObservableObject {
             guard self.backgroundTask != .invalid else { return }
             UIApplication.shared.endBackgroundTask(self.backgroundTask)
             self.backgroundTask = .invalid
+        }
+    }
+
+    private func endBackgroundTaskWhenSavesFinish() {
+        mediaQueue.async {
+            if self.savingURLs.isEmpty { self.endFinishingBackgroundTask() }
         }
     }
 
@@ -757,7 +763,7 @@ final class CameraController: NSObject, ObservableObject {
     private func notifyPreviewFrameRate(_ frameRate: Int) {
         videoOutputQueue.async { [weak self] in
             guard let self else { return }
-            self.previewFrameSink?.cameraController(self, didUpdateTargetFrameRate: frameRate)
+            self.frameSink?.cameraController(self, didUpdateTargetFrameRate: frameRate)
         }
     }
 
@@ -816,7 +822,7 @@ final class CameraController: NSObject, ObservableObject {
                 self.stopRecordingOnSessionQueue()
                 self.publishStatus { $0.isSessionRunning = false }
                 self.publishStatus(message: wasRecording ? "相机暂时中断，已结束当前录像。" : "相机暂时中断，等待恢复。")
-                if !self.recordingActive && !self.photoBusy { self.endFinishingBackgroundTask() }
+                if !self.recordingActive && !self.photoBusy { self.endBackgroundTaskWhenSavesFinish() }
             }
         })
         for name in [AVCaptureSession.interruptionEndedNotification, AVCaptureSession.runtimeErrorNotification] {
@@ -922,10 +928,8 @@ final class CameraController: NSObject, ObservableObject {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured, self.shouldRunSession, !self.recordingActive, !self.finishingRecording else { return }
             if let previewRecordingSink = self.previewRecordingSink {
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
-                    .appendingPathExtension("mp4")
                 guard !previewRecordingSink.isStabilizedRecording else { return }
+                guard let url = self.makeRecordingURL(extension: "mp4") else { self.releaseAudioInput(); return }
                 self.isVideoOrientationLocked = true
                 self.recordingActive = true
                 self.publishStatus {
@@ -955,10 +959,8 @@ final class CameraController: NSObject, ObservableObject {
                 return
             }
 
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("puroo-scope-\(UUID().uuidString)")
-                .appendingPathExtension("mov")
             guard !self.movieOutput.isRecording else { return }
+            guard let url = self.makeRecordingURL(extension: "mov") else { self.releaseAudioInput(); return }
             self.isVideoOrientationLocked = true
             self.recordingActive = true
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
@@ -966,6 +968,18 @@ final class CameraController: NSObject, ObservableObject {
                 $0.isRecording = true
                 $0.recordingStartedAt = Date()
             }
+        }
+    }
+
+    private func makeRecordingURL(extension fileExtension: String) -> URL? {
+        do {
+            let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("RecordingRecovery", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            return folder.appendingPathComponent("puroo-scope-\(UUID().uuidString)").appendingPathExtension(fileExtension)
+        } catch {
+            publishStatus(error: "无法创建录像文件：\(error.localizedDescription)")
+            return nil
         }
     }
 

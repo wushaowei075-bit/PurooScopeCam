@@ -58,7 +58,11 @@ private func verifyClip(_ recorder: StabilizedPreviewRecorder, size: CGSize, aud
     precondition(asset.duration.seconds > 0.3 && asset.duration.seconds < 1.5, "PTS must be relative to session start, not uptime")
     for track in video + sound {
         let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        // Decode video before checking presentation order; compressed B-frames arrive in decode order.
+        let settings: [String: Any] = track.mediaType == .video
+            ? [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            : [AVFormatIDKey: kAudioFormatLinearPCM]
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
         reader.add(output)
         precondition(reader.startReading())
         var count = 0
