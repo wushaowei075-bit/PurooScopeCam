@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1A0000010000000000000012 /* StabilizationDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000012; };
+		1A0000010000000000000013 /* PhaseCorrelationEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000013; };
 		1A000001000000000000000F /* CameraGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000011 /* CameraGeometry.swift */; };
 		1A0000010000000000000001 /* PurooScopeCamApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000001 /* PurooScopeCamApp.swift */; };
 		1A0000010000000000000002 /* CaptureModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000002 /* CaptureModels.swift */; };
@@ -25,6 +27,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		1A0001010000000000000012 /* StabilizationDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StabilizationDiagnostics.swift; sourceTree = "<group>"; };
+		1A0001010000000000000013 /* PhaseCorrelationEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhaseCorrelationEstimator.swift; sourceTree = "<group>"; };
 		1A0001010000000000000011 /* CameraGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGeometry.swift; sourceTree = "<group>"; };
 		1A0001010000000000000001 /* PurooScopeCamApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurooScopeCamApp.swift; sourceTree = "<group>"; };
 		1A0001010000000000000002 /* CaptureModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureModels.swift; sourceTree = "<group>"; };
@@ -81,6 +85,7 @@
 			children = (
 				1A0001010000000000000002 /* CaptureModels.swift */,
 				1A0001010000000000000011 /* CameraGeometry.swift */,
+				1A0001010000000000000012 /* StabilizationDiagnostics.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -91,6 +96,7 @@
 				1A0001010000000000000003 /* CameraController.swift */,
 				1A0001010000000000000004 /* MotionStabilityMonitor.swift */,
 				1A0001010000000000000005 /* FrameStabilizationEngine.swift */,
+				1A0001010000000000000013 /* PhaseCorrelationEstimator.swift */,
 				1A0001010000000000000006 /* BurstPhotoCoordinator.swift */,
 			);
 			path = Services;
@@ -188,6 +194,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A0000010000000000000001 /* PurooScopeCamApp.swift in Sources */,
+				1A0000010000000000000012 /* StabilizationDiagnostics.swift in Sources */,
+				1A0000010000000000000013 /* PhaseCorrelationEstimator.swift in Sources */,
 				1A0000010000000000000002 /* CaptureModels.swift in Sources */,
 				1A000001000000000000000F /* CameraGeometry.swift in Sources */,
 				1A0000010000000000000003 /* CameraController.swift in Sources */,
@@ -326,7 +334,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PurooScopeCam/Info.plist;
@@ -350,7 +358,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PurooScopeCam/Info.plist;

@@ -35,6 +35,11 @@ struct CameraFrameMetadata {
     var focalLengthPixelsY: CGFloat
     var frameWidth: Int
     var frameHeight: Int
+    var callbackTime: TimeInterval
+    var iso: Float
+    var exposureTargetOffset: Float
+    var activeSystemStabilization: Int
+    var maximumExposureDuration: Double
 }
 
 protocol CameraFrameSink: AnyObject {
@@ -149,6 +154,10 @@ final class CameraController: NSObject, ObservableObject {
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var savingURLs: Set<URL> = []
     private var requestedQualityOnQueue: CaptureQualityOption = .automatic
+    private var stabilizationExposureEnabled = true // sessionQueue only
+    private var exposurePolicy = StabilizationExposurePolicy()
+    private var lastExposurePolicyRequest: TimeInterval = 0 // videoOutputQueue only
+    private var appliedExposureCap: Double?
 
     private struct CaptureQualityApplication {
         var options: [CaptureQualityOption]
@@ -294,7 +303,10 @@ final class CameraController: NSObject, ObservableObject {
 
         let desiredZoomFactor = requestedZoomFactor
         sessionQueue.async { [weak self] in
-            self?.applyZoomFactorOnSessionQueue(desiredZoomFactor)
+            guard let self else { return }
+            self.applyZoomFactorOnSessionQueue(desiredZoomFactor)
+            self.stabilizationExposureEnabled = enabled
+            self.updateStabilizationExposureOnSessionQueue()
         }
     }
 
@@ -626,6 +638,34 @@ final class CameraController: NSObject, ObservableObject {
             device.whiteBalanceMode = .continuousAutoWhiteBalance
         }
         device.isSubjectAreaChangeMonitoringEnabled = true
+        exposurePolicy = StabilizationExposurePolicy()
+        appliedExposureCap = nil
+        device.activeMaxExposureDuration = .invalid
+    }
+
+    private func updateStabilizationExposureOnSessionQueue() {
+        guard let device = videoDeviceInput?.device else { return }
+        let proposed = exposurePolicy.update(enabled: stabilizationExposureEnabled,
+            automatic: device.exposureMode == .continuousAutoExposure,
+            duration: CMTimeGetSeconds(device.exposureDuration), iso: Double(device.iso),
+            maximumISO: Double(device.activeFormat.maxISO), targetOffset: Double(device.exposureTargetOffset))
+        let cap = StabilizationExposurePolicy.boundedDuration(proposed,
+            minimum: CMTimeGetSeconds(device.activeFormat.minExposureDuration),
+            maximum: CMTimeGetSeconds(device.activeFormat.maxExposureDuration))
+        guard cap != appliedExposureCap else { return }
+        do {
+            try device.lockForConfiguration()
+            device.activeMaxExposureDuration = cap.map { CMTime(seconds: $0, preferredTimescale: 1_000_000) } ?? .invalid
+            device.unlockForConfiguration()
+            appliedExposureCap = cap
+            StabilizationTraceRecorder.shared.recordControl("exposure_policy", values: [
+                "max_exposure_s": cap ?? -1, "short_exposure": cap != nil,
+                "continuous_ae": device.exposureMode == .continuousAutoExposure,
+                "iso": device.iso, "exposure_target_offset": device.exposureTargetOffset
+            ])
+        } catch {
+            StabilizationTraceRecorder.shared.recordControl("exposure_policy_failed")
+        }
     }
 
     private func configureCaptureQuality(_ device: AVCaptureDevice) -> CaptureQualityApplication {
@@ -1362,6 +1402,11 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapt
             return
         }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let callbackTime = CACurrentMediaTime()
+        if callbackTime - lastExposurePolicyRequest >= 1 {
+            lastExposurePolicyRequest = callbackTime
+            sessionQueue.async { [weak self] in self?.updateStabilizationExposureOnSessionQueue() }
+        }
         if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
             let width = CVPixelBufferGetWidth(pixelBuffer)
             let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -1380,7 +1425,12 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapt
                 focalLengthPixelsX: focalLengths.x,
                 focalLengthPixelsY: focalLengths.y,
                 frameWidth: width,
-                frameHeight: height
+                frameHeight: height,
+                callbackTime: callbackTime,
+                iso: videoDeviceInput?.device.iso ?? 0,
+                exposureTargetOffset: videoDeviceInput?.device.exposureTargetOffset ?? 0,
+                activeSystemStabilization: connection.activeVideoStabilizationMode.rawValue,
+                maximumExposureDuration: videoDeviceInput.map { CMTimeGetSeconds($0.device.activeMaxExposureDuration) } ?? 0
             )
             frameSink?.cameraController(
                 self,

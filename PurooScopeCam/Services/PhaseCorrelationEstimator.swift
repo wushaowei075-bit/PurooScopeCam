@@ -1,0 +1,109 @@
+import Accelerate
+import Foundation
+
+struct PhaseCorrelationEstimate {
+    var dx: Double
+    var dy: Double
+    var peakToSidelobe: Double
+    var peakRatio: Double
+    var accepted: Bool
+}
+
+// Shadow estimator only. Its result never controls the production crop.
+final class PhaseCorrelationEstimator {
+    private let size = 256
+    private let logSize: vDSP_Length = 8
+    private let setup = vDSP_create_fftsetup(8, FFTRadix(kFFTRadix2))
+
+    deinit { if let setup { vDSP_destroy_fftsetup(setup) } }
+
+    func estimate(reference: [Float], current: [Float], gridSize: Int) -> PhaseCorrelationEstimate? {
+        guard setup != nil, gridSize >= size, reference.count == gridSize * gridSize,
+              current.count == reference.count else { return nil }
+        var ar = windowed(reference, gridSize: gridSize)
+        var br = windowed(current, gridSize: gridSize)
+        guard ar.reduce(Float(0), { $0 + $1 * $1 }) > 1,
+              br.reduce(Float(0), { $0 + $1 * $1 }) > 1 else { return nil }
+        var ai = [Float](repeating: 0, count: ar.count)
+        var bi = ai
+        transform(&ar, &ai, direction: FFTDirection(FFT_FORWARD))
+        transform(&br, &bi, direction: FFTDirection(FFT_FORWARD))
+        var maximumMagnitude: Float = 0
+        for i in ar.indices {
+            let real = ar[i] * br[i] + ai[i] * bi[i]
+            let imaginary = ar[i] * bi[i] - ai[i] * br[i]
+            ar[i] = real
+            ai[i] = imaginary
+            maximumMagnitude = max(maximumMagnitude, hypot(real, imaginary))
+        }
+        // Do not amplify empty frequency bins and window leakage to unit energy.
+        let spectralFloor = max(maximumMagnitude * 0.0001, 0.000001)
+        for i in ar.indices {
+            let denominator = max(hypot(ar[i], ai[i]), spectralFloor)
+            ar[i] /= denominator
+            ai[i] /= denominator
+        }
+        transform(&ar, &ai, direction: FFTDirection(FFT_INVERSE))
+        guard let peakIndex = ar.indices.max(by: { ar[$0] < ar[$1] }) else { return nil }
+        let px = peakIndex % size
+        let py = peakIndex / size
+        func value(_ x: Int, _ y: Int) -> Double {
+            Double(ar[((y + size) % size) * size + (x + size) % size])
+        }
+        func subpixel(_ minus: Double, _ center: Double, _ plus: Double) -> Double {
+            let denominator = minus - 2 * center + plus
+            guard abs(denominator) > 0.000001 else { return 0 }
+            return min(max(0.5 * (minus - plus) / denominator, -0.5), 0.5)
+        }
+        let peak = value(px, py)
+        let dx = Double(px > size / 2 ? px - size : px) + subpixel(value(px - 1, py), peak, value(px + 1, py))
+        let dy = Double(py > size / 2 ? py - size : py) + subpixel(value(px, py - 1), peak, value(px, py + 1))
+        var sum = 0.0
+        var squareSum = 0.0
+        var count = 0.0
+        var second = 0.0
+        for y in 0..<size {
+            for x in 0..<size {
+                let distanceX = min(abs(x - px), size - abs(x - px))
+                let distanceY = min(abs(y - py), size - abs(y - py))
+                if distanceX <= 3 && distanceY <= 3 { continue }
+                let sample = value(x, y)
+                sum += sample
+                squareSum += sample * sample
+                count += 1
+                second = max(second, sample)
+            }
+        }
+        let mean = sum / count
+        let deviation = sqrt(max(squareSum / count - mean * mean, 0.000001))
+        let psr = (peak - mean) / deviation
+        let ratio = peak / max(second, 0.000001)
+        return PhaseCorrelationEstimate(dx: dx, dy: dy, peakToSidelobe: psr, peakRatio: ratio,
+            accepted: psr >= 8 && ratio >= 1.15 && abs(dx) <= 8 && abs(dy) <= 8)
+    }
+
+    private func windowed(_ input: [Float], gridSize: Int) -> [Float] {
+        let offset = (gridSize - size) / 2
+        let mean = input.reduce(0, +) / Float(input.count)
+        let radius = Double(gridSize) * 0.43
+        var output = [Float](repeating: 0, count: size * size)
+        for y in 0..<size {
+            for x in 0..<size {
+                let distance = hypot(Double(x) - 127.5, Double(y) - 127.5) / radius
+                let weight = distance < 1 ? 0.5 * (1 + cos(.pi * distance)) : 0
+                output[y * size + x] = (input[(y + offset) * gridSize + x + offset] - mean) * Float(weight)
+            }
+        }
+        return output
+    }
+
+    private func transform(_ real: inout [Float], _ imaginary: inout [Float], direction: FFTDirection) {
+        guard let setup else { return }
+        real.withUnsafeMutableBufferPointer { realBuffer in
+            imaginary.withUnsafeMutableBufferPointer { imaginaryBuffer in
+                var split = DSPSplitComplex(realp: realBuffer.baseAddress!, imagp: imaginaryBuffer.baseAddress!)
+                vDSP_fft2d_zip(setup, &split, 1, 0, logSize, logSize, direction)
+            }
+        }
+    }
+}

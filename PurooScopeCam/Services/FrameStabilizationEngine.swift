@@ -48,6 +48,9 @@ struct StabilizationDebugSnapshot {
     var focalLengthPixelsY: CGFloat
     var frameWidth: Int
     var frameHeight: Int
+    var calibrationState: String
+    var calibrationAgeSeconds: Double
+    var calibrationSamples: Int
 
     func overlayText(systemModeName: String) -> String {
         """
@@ -75,6 +78,7 @@ final class StabilizationTraceRecorder {
     private var fileHandle: FileHandle?
     private var writeBuffer = Data()
     private var isActive = false
+    private var replayPairCount = 0
 
     private init() {}
 
@@ -108,11 +112,12 @@ final class StabilizationTraceRecorder {
                 FileManager.default.createFile(atPath: fileURL.path, contents: nil)
                 self.fileHandle = try FileHandle(forWritingTo: fileURL)
                 self.isActive = true
+                self.replayPairCount = 0
 
                 var header = metadata
                 header["type"] = "session"
                 header["created_at"] = ISO8601DateFormatter().string(from: Date())
-                header["format_version"] = 7
+                header["format_version"] = 8
                 self.appendJSONObject(header)
                 self.flushIfNeeded(force: true)
             } catch {
@@ -160,6 +165,25 @@ final class StabilizationTraceRecorder {
         record(type: "control", timestamp: CACurrentMediaTime(), values: payload)
     }
 
+    func recordComparison(_ values: [String: Any], reference: [Float], current: [Float],
+                          completion: @escaping () -> Void) {
+        queue.async { [weak self] in
+            defer { completion() }
+            guard let self, self.isActive else { return }
+            var payload = values
+            payload["type"] = "estimator_comparison"
+            // Only twelve low-resolution pairs per trace, never full camera frames.
+            if self.replayPairCount < 12 {
+                payload["luma_encoding"] = "float32-le-base64"
+                payload["reference_luma"] = reference.withUnsafeBytes { Data($0).base64EncodedString() }
+                payload["current_luma"] = current.withUnsafeBytes { Data($0).base64EncodedString() }
+                self.replayPairCount += 1
+            }
+            self.appendJSONObject(payload)
+            self.flushIfNeeded(force: false)
+        }
+    }
+
     func recordFrame(_ result: StabilizationFrameResult) {
         let debug = result.debug
         record(
@@ -197,6 +221,9 @@ final class StabilizationTraceRecorder {
                 "gyro_correlation_y": debug.gyroCorrelationY,
                 "gyro_nrmse": debug.gyroNormalizedError,
                 "gyro_calibration_valid": debug.isGyroCalibrationValid,
+                "calibration_state": debug.calibrationState,
+                "calibration_age_s": debug.calibrationAgeSeconds,
+                "calibration_samples": debug.calibrationSamples,
                 "auto_offset_ms": debug.automaticTimeOffsetMilliseconds,
                 "analysis_ms": debug.analysisMilliseconds,
                 "analysis_drops": debug.droppedAnalysisFrames,
@@ -382,6 +409,16 @@ final class FrameStabilizationEngine {
             frameWidth: CGFloat(CVPixelBufferGetWidth(input.pixelBuffer)),
             frameHeight: CGFloat(CVPixelBufferGetHeight(input.pixelBuffer))
         )
+        let precedingSample = input.motionSamples.last { $0.timestamp <= input.motionReferenceTime }
+        let followingSample = input.motionSamples.first { $0.timestamp >= input.motionReferenceTime }
+        StabilizationTraceRecorder.shared.recordControl("imu_frame_alignment", values: [
+            "frame_t": input.timestamp,
+            "reference_t": input.motionReferenceTime,
+            "reference_convention": "mapped_pts_minus_half_exposure_unverified",
+            "imu_before_ms": precedingSample.map { (input.motionReferenceTime - $0.timestamp) * 1000 } ?? -1,
+            "imu_after_ms": followingSample.map { ($0.timestamp - input.motionReferenceTime) * 1000 } ?? -1,
+            "bracketed": precedingSample != nil && followingSample != nil
+        ])
         let fused = fusion.update(
             timestamp: input.timestamp,
             visual: visual,
@@ -446,7 +483,10 @@ final class FrameStabilizationEngine {
             focalLengthPixelsX: input.focalLengthPixelsX,
             focalLengthPixelsY: input.focalLengthPixelsY,
             frameWidth: CVPixelBufferGetWidth(input.pixelBuffer),
-            frameHeight: CVPixelBufferGetHeight(input.pixelBuffer)
+            frameHeight: CVPixelBufferGetHeight(input.pixelBuffer),
+            calibrationState: fused.calibrationState,
+            calibrationAgeSeconds: fused.calibrationAgeSeconds,
+            calibrationSamples: fused.calibrationSamples
         )
         let result = StabilizationFrameResult(
             timestamp: input.timestamp,
@@ -509,6 +549,7 @@ private final class SubpixelFrameMotionTracker {
     private let anchorStride = 28
     private var previousFrame: AnalysisFrame?
     private var previousTimestamp: TimeInterval?
+    private let shadow = VisualEstimatorShadow()
 
     func reset() {
         previousFrame = nil
@@ -526,21 +567,20 @@ private final class SubpixelFrameMotionTracker {
         self.previousFrame = current
         self.previousTimestamp = timestamp
         let elapsed = timestamp - previousTimestamp
-        guard elapsed.isFinite, elapsed > 0, elapsed < 0.12 else { return nil }
-        guard let estimate = estimateShift(reference: previousFrame, current: current) else {
-            return nil
+        guard elapsed.isFinite, elapsed > 0, elapsed < 0.12,
+              previousFrame.sourceWidth == current.sourceWidth,
+              previousFrame.sourceHeight == current.sourceHeight else { return nil }
+        let estimate = estimateShift(reference: previousFrame, current: current)
+        let observation = estimate.map {
+            VisualMotionObservation(timestamp: timestamp,
+                deltaX: $0.dx * current.sourceStep / CGFloat(max(current.sourceWidth, 1)),
+                deltaY: $0.dy * current.sourceStep / CGFloat(max(current.sourceHeight, 1)),
+                confidence: $0.confidence, vectorCount: $0.vectorCount, texture: $0.texture)
         }
-
-        let sourceShiftX = estimate.dx * current.sourceStep
-        let sourceShiftY = estimate.dy * current.sourceStep
-        return VisualMotionObservation(
-            timestamp: timestamp,
-            deltaX: sourceShiftX / CGFloat(max(current.sourceWidth, 1)),
-            deltaY: sourceShiftY / CGFloat(max(current.sourceHeight, 1)),
-            confidence: estimate.confidence,
-            vectorCount: estimate.vectorCount,
-            texture: estimate.texture
-        )
+        shadow.submit(reference: previousFrame.luma, current: current.luma, gridSize: gridSize,
+            previousTime: previousTimestamp, time: timestamp, sourceStep: current.sourceStep,
+            width: current.sourceWidth, height: current.sourceHeight, visual: observation)
+        return observation
     }
 
     private func estimateShift(
@@ -968,6 +1008,41 @@ private final class SubpixelFrameMotionTracker {
     }
 }
 
+private final class VisualEstimatorShadow {
+    private let queue = DispatchQueue(label: "com.puroo.scope.estimatorComparison", qos: .utility)
+    private let available = DispatchSemaphore(value: 1)
+    private let estimator = PhaseCorrelationEstimator()
+    private var counter = 0
+
+    func submit(reference: [Float], current: [Float], gridSize: Int,
+                previousTime: Double, time: Double, sourceStep: CGFloat,
+                width: Int, height: Int, visual: VisualMotionObservation?) {
+        counter += 1
+        guard counter.isMultiple(of: 6), available.wait(timeout: .now()) == .success else { return }
+        // Arrays are immutable copies of the sampled grid; no capture-pool buffers escape.
+        queue.async {
+            let start = CACurrentMediaTime()
+            let phase = self.estimator.estimate(reference: reference, current: current, gridSize: gridSize)
+            let values: [String: Any] = [
+                "t": time, "previous_t": previousTime, "grid_size": gridSize,
+                "source_step": sourceStep, "frame_w": width, "frame_h": height,
+                "ncc_available": visual != nil,
+                "ncc_dx": visual?.deltaX ?? 0, "ncc_dy": visual?.deltaY ?? 0,
+                "ncc_confidence": visual?.confidence ?? 0,
+                "phase_available": phase != nil, "phase_accepted": phase?.accepted ?? false,
+                "phase_dx": (phase?.dx ?? 0) * Double(sourceStep) / Double(width),
+                "phase_dy": (phase?.dy ?? 0) * Double(sourceStep) / Double(height),
+                "phase_psr": phase?.peakToSidelobe ?? 0, "phase_peak_ratio": phase?.peakRatio ?? 0,
+                "phase_ms": (CACurrentMediaTime() - start) * 1000,
+                "production_estimator": "ncc", "shadow_only": true
+            ]
+            StabilizationTraceRecorder.shared.recordComparison(values, reference: reference, current: current) {
+                self.available.signal()
+            }
+        }
+    }
+}
+
 private struct GyroMotionCandidate {
     var automaticOffset: TimeInterval
     var deltaX: CGFloat
@@ -1199,10 +1274,13 @@ private struct FusedMotionDelta {
     var gyroCorrelationY: CGFloat
     var gyroNormalizedError: CGFloat
     var isGyroCalibrationValid: Bool
+    var calibrationState: String
+    var calibrationAgeSeconds: Double
+    var calibrationSamples: Int
 }
 
 private final class ComplementaryMotionFusion {
-    private static let referenceTrust: CGFloat = 0.70
+    private static let referenceTrust: CGFloat = 0
     private static let minimumMagnification = CGFloat(TelescopeMagnificationOption.minimum)
     private static let maximumMagnification = CGFloat(TelescopeMagnificationOption.maximum)
 
@@ -1214,6 +1292,11 @@ private final class ComplementaryMotionFusion {
         var gyroEnergyX: CGFloat = 0
         var gyroEnergyY: CGFloat = 0
         var sampleCount: Int = 0
+        var weightSum: CGFloat = 0
+
+        var isObservable: Bool {
+            weightSum > 0 && (visualEnergyX + visualEnergyY) / weightSum >= 0.000025 * 0.000025
+        }
 
         /// 两轴合并的单参数最小二乘解。
         ///
@@ -1275,6 +1358,9 @@ private final class ComplementaryMotionFusion {
     private var referenceMagnification = CGFloat(StabilizationTuning.defaultOpticalMagnification)
     private var calibrationTrust = ComplementaryMotionFusion.referenceTrust
     private var lastCalibrationSampleCount = 0
+    private var lastCalibrationObservation: TimeInterval?
+    private var calibrationState = "unverified"
+    private var measurementIsValidated = false
     private var visualLowVelocityX: CGFloat = 0
     private var visualLowVelocityY: CGFloat = 0
     private var gyroLowVelocityX: CGFloat = 0
@@ -1292,6 +1378,9 @@ private final class ComplementaryMotionFusion {
             estimatedMagnification = referenceMagnification
             calibrationTrust = Self.referenceTrust
             lastCalibrationSampleCount = 0
+            lastCalibrationObservation = nil
+            calibrationState = "unverified"
+            measurementIsValidated = false
         }
     }
 
@@ -1308,6 +1397,9 @@ private final class ComplementaryMotionFusion {
         correlations.removeAll(keepingCapacity: true)
         calibrationTrust = Self.referenceTrust
         lastCalibrationSampleCount = 0
+        lastCalibrationObservation = nil
+        calibrationState = "unverified"
+        measurementIsValidated = false
     }
 
     func update(
@@ -1325,12 +1417,23 @@ private final class ComplementaryMotionFusion {
         }
         let dt = CGFloat(min(max(elapsed, 1.0 / 120.0), 1.0 / 20.0))
 
+        // A reference magnification is a prior, not a validated measurement.
+        // Expire stale evidence before accepting new samples after an interruption.
+        if let lastCalibrationObservation, timestamp - lastCalibrationObservation > 2 {
+            correlations.removeAll(keepingCapacity: true)
+            lastCalibrationSampleCount = 0
+            calibrationTrust = 0
+            measurementIsValidated = false
+            calibrationState = "stale"
+            self.lastCalibrationObservation = nil
+        }
+
         if let visual {
             updateLagCorrelations(visual: visual, candidates: gyroCandidates)
         }
         let selected = selectedCandidate(from: gyroCandidates)
         let calibration = updateMagnificationFromSelectedCorrelation()
-        let gyroTrust: CGFloat = selected == nil ? 0 : calibration.trust
+        let gyroTrust: CGFloat = selected == nil || !calibration.isValid ? 0 : calibration.trust
 
         let visualVelocityX = visual.map { $0.deltaX / dt }
         let visualVelocityY = visual.map { $0.deltaY / dt }
@@ -1421,7 +1524,10 @@ private final class ComplementaryMotionFusion {
             gyroCorrelationX: calibration.correlationX,
             gyroCorrelationY: calibration.correlationY,
             gyroNormalizedError: calibration.normalizedError,
-            isGyroCalibrationValid: selected != nil && calibration.isValid
+            isGyroCalibrationValid: selected != nil && calibration.isValid,
+            calibrationState: selected == nil ? "missing_imu" : calibrationState,
+            calibrationAgeSeconds: lastCalibrationObservation.map { max(0, timestamp - $0) } ?? -1,
+            calibrationSamples: correlations[selectedOffsetKey]?.sampleCount ?? 0
         )
     }
 
@@ -1431,12 +1537,13 @@ private final class ComplementaryMotionFusion {
     ) {
         guard visual.confidence >= 0.55, visual.vectorCount >= 6 else { return }
         let motionMagnitude = hypot(visual.deltaX, visual.deltaY)
-        guard motionMagnitude >= 0.00025, motionMagnitude <= 0.012 else { return }
+        guard motionMagnitude.isFinite, motionMagnitude <= 0.012 else { return }
         let decay: CGFloat = 0.990
         let weight = visual.confidence * visual.confidence
         let visualX = clamp(visual.deltaX, min: -0.012, max: 0.012)
         let visualY = clamp(visual.deltaY, min: -0.012, max: 0.012)
         for candidate in candidates {
+            guard candidate.deltaX.isFinite, candidate.deltaY.isFinite else { continue }
             let key = Int((candidate.automaticOffset * 1000).rounded())
             var correlation = correlations[key] ?? LagCorrelation()
             let gyroX = clamp(candidate.deltaX, min: -0.012, max: 0.012)
@@ -1448,7 +1555,9 @@ private final class ComplementaryMotionFusion {
             correlation.gyroEnergyX = correlation.gyroEnergyX * decay + weight * gyroX * gyroX
             correlation.gyroEnergyY = correlation.gyroEnergyY * decay + weight * gyroY * gyroY
             correlation.sampleCount += 1
+            correlation.weightSum = correlation.weightSum * decay + weight
             correlations[key] = correlation
+            lastCalibrationObservation = visual.timestamp
         }
     }
 
@@ -1467,16 +1576,19 @@ private final class ComplementaryMotionFusion {
         isValid: Bool
     ) {
         guard let correlation = correlations[selectedOffsetKey] else {
-            return (calibrationTrust, 0, 0, 0, true)
+            return (0, 0, 0, 1, false)
         }
         let targetMagnification = correlation.combinedGain
-        guard correlation.sampleCount >= 64 else {
+        guard correlation.sampleCount >= 64, correlation.isObservable else {
+            calibrationState = correlation.isObservable ? "learning" : "low_excitation"
+            measurementIsValidated = false
+            calibrationTrust = 0
             return (
-                calibrationTrust,
+                0,
                 correlation.correlationX,
                 correlation.correlationY,
                 correlation.normalizedError,
-                true
+                false
             )
         }
         guard correlation.sampleCount > lastCalibrationSampleCount else {
@@ -1485,7 +1597,7 @@ private final class ComplementaryMotionFusion {
                 correlation.correlationX,
                 correlation.correlationY,
                 correlation.normalizedError,
-                calibrationTrust >= 0.20
+                measurementIsValidated && calibrationTrust >= 0.20
             )
         }
         lastCalibrationSampleCount = correlation.sampleCount
@@ -1501,6 +1613,8 @@ private final class ComplementaryMotionFusion {
         let measurementIsReliable = magnificationIsFinite &&
             axisCorrelation >= 0.78 &&
             correlation.normalizedError <= 0.55
+        measurementIsValidated = measurementIsReliable
+        calibrationState = measurementIsReliable ? "validated" : "rejected"
 
         if measurementIsReliable {
             estimatedMagnification += clamp(
@@ -1513,13 +1627,15 @@ private final class ComplementaryMotionFusion {
                 min: Self.minimumMagnification,
                 max: Self.maximumMagnification
             )
+            measurementIsValidated = abs(estimatedMagnification - targetMagnification) / max(abs(targetMagnification), 0.5) <= 0.15
+            calibrationState = measurementIsValidated ? "validated" : "gain_converging"
             let correlationQuality = clamp((axisCorrelation - 0.72) / 0.23, min: 0, max: 1)
             let residualQuality = clamp(
                 (0.58 - correlation.normalizedError) / 0.34,
                 min: 0,
                 max: 1
             )
-            let targetTrust = 0.70 + 0.15 * correlationQuality * residualQuality
+            let targetTrust: CGFloat = measurementIsValidated ? 0.70 + 0.15 * correlationQuality * residualQuality : 0
             calibrationTrust += (targetTrust - calibrationTrust) * 0.04
         } else if axisCorrelation < 0.25 || correlation.normalizedError > 0.90 {
             calibrationTrust += (0 - calibrationTrust) * 0.08
@@ -1532,7 +1648,7 @@ private final class ComplementaryMotionFusion {
             correlation.correlationX,
             correlation.correlationY,
             correlation.normalizedError,
-            calibrationTrust >= 0.20
+            measurementIsValidated && calibrationTrust >= 0.20
         )
     }
 

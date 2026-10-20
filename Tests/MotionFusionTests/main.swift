@@ -39,7 +39,7 @@ private func simulate(
 // Correlation must not depend on amplitude, optical ratio, or a quiet axis.
 for fps in [24, 30, 60] {
     for magnification in [1.0, 10.0, 30.0] {
-        for amplitude in [CGFloat(0.0003), 0.0006, 0.003] {
+        for amplitude in [CGFloat(0.00005), 0.0001, 0.0003, 0.0006, 0.003] {
             for axis in ["x", "y", "xy"] {
                 let result = simulate(fps: fps, magnification: magnification) { t in
                     let x: CGFloat = axis == "y" ? 0 : amplitude * CGFloat(sin(2 * .pi * 9 * t))
@@ -193,6 +193,36 @@ for fps in [30, 60] {
     print("Ideal 9Hz tremor \(fps)fps: residual frame-motion ratio=\(residual), panFrames=\(panFrames)")
     check(residual < 0.30, "Keep effective cancellation with the existing trajectory gains")
     check(panFrames == 0, "Stationary tremor must not be treated as a pan")
+}
+
+// Cold start and fine signals below the former per-frame admission threshold.
+private let cold = ComplementaryMotionFusion()
+for i in 0..<63 {
+    let t = Double(i) / 60
+    let x = CGFloat(0.0001 * sin(Double(i)))
+    let result = cold.update(timestamp: t, visual: observation(t, x, 0),
+        gyroCandidates: [candidate(x / 10, 0)], tuning: tuning)
+    check(!result.isGyroCalibrationValid && result.gyroTrust == 0, "A prior is not a calibration")
+    check(abs(result.deltaX - x) < 1e-12, "Visual fallback works immediately, without a warm-up pause")
+}
+private let flat = simulate { _ in (0, 0, 0.00001, 0) }
+check(!flat.isGyroCalibrationValid && flat.gyroTrust == 0, "No excitation must not authorize gyro correction")
+private let fineWrong = simulate { t in
+    let x = CGFloat(0.0001 * sin(2 * .pi * 9 * t))
+    return (x, 0, -x / 10, 0)
+}
+check(!fineWrong.isGyroCalibrationValid && fineWrong.gyroTrust == 0, "Reject a reversed fine signal")
+private let stale = cold.update(timestamp: 10, visual: nil, gyroCandidates: [candidate(0.0001, 0)], tuning: tuning)
+check(stale.calibrationState == "stale" && stale.gyroTrust == 0, "Stale calibration loses authority")
+private let wrongPrior = ComplementaryMotionFusion()
+for i in 0..<300 {
+    let t = Double(i) / 60
+    let x = CGFloat(0.0002 * sin(Double(i)))
+    let result = wrongPrior.update(timestamp: t, visual: observation(t, x, 0),
+        gyroCandidates: [candidate(x, 0)], tuning: tuning)
+    if abs(result.opticalMagnification - 1) > 0.15 {
+        check(result.gyroTrust == 0, "A correlated but wrongly scaled gyro must not steer the crop")
+    }
 }
 
 print("Missing-gyro reconstruction error: \(largestMissingError)")

@@ -32,6 +32,8 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var lastOverviewUpdateTime: TimeInterval = 0
     private var lastDebugOverlayUpdateTime: TimeInterval = 0
     private var lastVideoRotationAngle: CGFloat = 90
+    private var lastActiveSystemMode: Int?
+    private var lastSourceSize = CGSize.zero
     private var isOverviewBusy = false
 
     override init(frame: CGRect) {
@@ -141,7 +143,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         stabilizationEngine.reset()
         if monitor != nil {
             StabilizationTraceRecorder.shared.startSession(metadata: [
-                "pipeline": "noninertial-virtual-camera-v7",
+                "pipeline": "noninertial-virtual-camera-v8-validated-fusion",
+                "shadow_estimator": "regularized_phase_correlation_256",
+                "maximum_replay_pairs": 12,
                 "motion_rate_hz": 240,
                 "visual_grid": FrameStabilizationEngine.visualGridSize,
                 "preview_delay_frames": 1
@@ -193,8 +197,12 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         didOutput pixelBuffer: CVPixelBuffer,
         metadata: CameraFrameMetadata
     ) {
-        if abs(metadata.videoRotationAngle - lastVideoRotationAngle) > 0.5 {
+        let sourceSize = CGSize(width: metadata.frameWidth, height: metadata.frameHeight)
+        if abs(metadata.videoRotationAngle - lastVideoRotationAngle) > 0.5 ||
+            lastActiveSystemMode != metadata.activeSystemStabilization || lastSourceSize != sourceSize {
             lastVideoRotationAngle = metadata.videoRotationAngle
+            lastActiveSystemMode = metadata.activeSystemStabilization
+            lastSourceSize = sourceSize
             stabilizationEngine.reset()
             renderer.resetStabilizationState()
             DispatchQueue.main.async { [weak self] in
@@ -239,6 +247,17 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             renderer.setRenderTransform(.identity, at: frameTime)
             renderer.markFrameReady(at: frameTime)
         }
+        StabilizationTraceRecorder.shared.recordControl("capture_timing", values: [
+            "frame_t": frameTime, "source_pts": sourceTimestamp.isFinite ? sourceTimestamp : -1,
+            "callback_t": metadata.callbackTime,
+            "capture_age_ms": (metadata.callbackTime - frameTime) * 1000,
+            "exposure_s": metadata.exposureDuration, "iso": metadata.iso,
+            "exposure_metadata_source": "device_at_callback_not_per_frame_attachment",
+            "exposure_target_offset": metadata.exposureTargetOffset,
+            "max_exposure_s": metadata.maximumExposureDuration.isFinite ? metadata.maximumExposureDuration : -1,
+            "active_system_mode": metadata.activeSystemStabilization,
+            "rotation": metadata.videoRotationAngle
+        ])
         updateOverviewThumbnailIfNeeded(pixelBuffer: pixelBuffer, motionTime: frameTime)
     }
 
@@ -519,6 +538,10 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     private var displayedIntervalCount: Int64 = 0
     private var lastDisplayedSourceTimestamp: TimeInterval?
     private var displayedPhotoFrame: DisplayedPhotoFrame?
+    private let inFlightFrames = DispatchSemaphore(value: 2)
+    private var presentationMetrics = PresentationMetrics()
+    private var presentationGeneration = 0
+    private var presentationTargetFPS = 60
 
     init(device: MTLDevice) {
         guard let commandQueue = device.makeCommandQueue() else {
@@ -639,6 +662,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         displayedIntervalCount = 0
         lastDisplayedSourceTimestamp = nil
         displayedPhotoFrame = nil
+        presentationGeneration += 1
+        presentationMetrics = PresentationMetrics()
         stateLock.unlock()
     }
 
@@ -702,6 +727,9 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     }
 
     func setTargetFrameRate(_ frameRate: Int) {
+        stateLock.lock()
+        presentationTargetFPS = frameRate
+        stateLock.unlock()
         recorder.setTargetFrameRate(frameRate)
     }
 
@@ -745,11 +773,24 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
+        stateLock.lock()
+        let hasPendingFrames = frameQueue.count > previewDelayFrames
+        stateLock.unlock()
+        guard hasPendingFrames, inFlightFrames.wait(timeout: .now()) == .success else { return }
+        var committed = false
+        defer { if !committed { inFlightFrames.signal() } }
+        // Do not remove a ready frame until there is a drawable to render it into.
+        let drawableSize = view.drawableSize
+        guard drawableSize.width > 1, drawableSize.height > 1,
+              let drawable = view.currentDrawable,
+              let commandBuffer = commandQueue.makeCommandBuffer() else { return }
         let recording = recorder.isRecording
         stateLock.lock()
         let queuedFrame = nextFrameForDisplay(preferOldestReady: false)
         let transform = queuedFrame.map { renderTransformForFrame(at: $0.motionTime) } ?? .identity
         let cropScale = cropWindowScale
+        let generation = presentationGeneration
+        if queuedFrame != nil { presentationMetrics.submit() }
         let telemetry: [String: Any]?
         if queuedFrame != nil, displayedFrameCount > 0, displayedFrameCount.isMultiple(of: 120) {
             let measuredFPS = displayedIntervalTotal > 0
@@ -758,10 +799,15 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
             telemetry = [
                 "enqueued": enqueuedFrameCount,
                 "ready": readyFrameCount,
-                "displayed": displayedFrameCount,
+                "selected": displayedFrameCount,
+                "submitted": presentationMetrics.submitted,
+                "displayed": presentationMetrics.presented,
+                "gpu_failed": presentationMetrics.failed,
+                "presented_fps": presentationMetrics.fps,
+                "late_presentations": presentationMetrics.lateIntervals,
                 "queue_drops": queueDropCount,
                 "skipped_ready": skippedReadyFrameCount,
-                "gaps_over_25ms": longDisplayGapCount,
+                "source_gaps_over_25ms": longDisplayGapCount,
                 "measured_source_fps": measuredFPS,
                 "recording": recording
             ]
@@ -772,16 +818,9 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         if let telemetry {
             StabilizationTraceRecorder.shared.recordControl("renderer_stats", values: telemetry)
         }
-        guard let queuedFrame,
-              let drawable = view.currentDrawable,
-              let commandBuffer = commandQueue.makeCommandBuffer()
-        else {
-            return
-        }
+        guard let queuedFrame else { return }
 
         let image = CIImage(cvPixelBuffer: queuedFrame.pixelBuffer)
-        let drawableSize = view.drawableSize
-        guard drawableSize.width > 1, drawableSize.height > 1 else { return }
         let renderBounds = CGRect(origin: .zero, size: drawableSize)
         let previewImage = image.transformed(
             by: imageToOutputTransform(
@@ -808,7 +847,40 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
             bounds: renderBounds,
             colorSpace: colorSpace
         )
+        let submittedTime = CACurrentMediaTime()
+        let frameTime = queuedFrame.motionTime
+        let sourceTime = queuedFrame.sourceTimestamp
+        drawable.addPresentedHandler { [weak self] drawable in
+            guard let self else { return }
+            self.stateLock.lock()
+            let current = generation == self.presentationGeneration
+            if current {
+                self.presentationMetrics.present(at: drawable.presentedTime, targetFPS: self.presentationTargetFPS)
+            }
+            self.stateLock.unlock()
+            guard current else { return }
+            StabilizationTraceRecorder.shared.recordControl("frame_presented", values: [
+                "frame_t": frameTime, "source_pts": sourceTime, "submitted_t": submittedTime,
+                "presented_t": drawable.presentedTime,
+                "presented": drawable.presentedTime > 0,
+                "frame_age_ms": drawable.presentedTime > 0 ? (drawable.presentedTime - frameTime) * 1000 : -1
+            ])
+        }
+        commandBuffer.addCompletedHandler { [weak self, inFlightFrames] buffer in
+            inFlightFrames.signal()
+            guard let self else { return }
+            self.stateLock.lock()
+            let current = generation == self.presentationGeneration
+            if current, buffer.status == .error { self.presentationMetrics.fail() }
+            self.stateLock.unlock()
+            guard current else { return }
+            StabilizationTraceRecorder.shared.recordControl("frame_gpu", values: [
+                "frame_t": frameTime, "gpu_ms": max(0, buffer.gpuEndTime - buffer.gpuStartTime) * 1000,
+                "completed_t": CACurrentMediaTime(), "success": buffer.status == .completed
+            ])
+        }
         commandBuffer.present(drawable)
+        committed = true
         commandBuffer.commit()
     }
 

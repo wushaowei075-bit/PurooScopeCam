@@ -66,6 +66,11 @@ workflows:
         script: |
           set -euo pipefail
           bash Tests/MotionFusionTests/run.sh
+      - name: Test exposure, presentation metrics and shadow FFT
+        script: |
+          set -euo pipefail
+          swiftc -O PurooScopeCam/Models/StabilizationDiagnostics.swift PurooScopeCam/Services/PhaseCorrelationEstimator.swift Tests/StabilizationDiagnosticsTests/main.swift -o build/stabilization-diagnostics-tests
+          build/stabilization-diagnostics-tests
       - name: Build unsigned iPhoneOS app
         script: |
           set -euo pipefail
