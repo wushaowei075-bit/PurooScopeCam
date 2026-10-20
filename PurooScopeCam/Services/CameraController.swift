@@ -78,10 +78,17 @@ protocol StabilizedRecordingFrameSink: AnyObject {
 
 protocol StabilizedPhotoFrameSink: AnyObject {
     func photoContext() -> StabilizedPhotoContext?
+    func waitForOptimalPhotoMoment(maxWait: TimeInterval, completion: @escaping () -> Void)
     func processPhoto(_ data: Data, context: StabilizedPhotoContext, completion: @escaping (Result<Data, Error>) -> Void)
     func captureStabilizedPhoto(
         completion: @escaping (Result<Data, Error>) -> Void
     )
+}
+
+extension StabilizedPhotoFrameSink {
+    func waitForOptimalPhotoMoment(maxWait: TimeInterval, completion: @escaping () -> Void) {
+        completion()
+    }
 }
 
 struct StabilizedPhotoContext {
@@ -109,13 +116,13 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var telescopeMagnification: Double = StabilizationTuning.defaultOpticalMagnification
     @Published var zoomFactor: CGFloat = 1
     @Published var exposureBias: Float = 0
-    @Published var captureQualityPreference: CaptureQualityOption = .automatic {
+    @Published var captureQualityPreference: CaptureQualityOption = .default4K60 {
         didSet {
             applySelectedCaptureQuality()
         }
     }
-    @Published private(set) var captureQualityOptions: [CaptureQualityOption] = [.automatic]
-    @Published private(set) var activeCaptureQuality: CaptureQualityOption = .automatic
+    @Published private(set) var captureQualityOptions: [CaptureQualityOption] = [.automatic, .default4K60]
+    @Published private(set) var activeCaptureQuality: CaptureQualityOption = .default4K60
     @Published private(set) var focusLocked = false
     @Published private(set) var exposureLocked = false
     @Published private(set) var pendingMediaCount = 0
@@ -153,7 +160,7 @@ final class CameraController: NSObject, ObservableObject {
     private var photoContexts: [Int64: StabilizedPhotoContext] = [:]
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var savingURLs: Set<URL> = []
-    private var requestedQualityOnQueue: CaptureQualityOption = .automatic
+    private var requestedQualityOnQueue: CaptureQualityOption = .default4K60
     private var stabilizationExposureEnabled = true // sessionQueue only
     private var exposurePolicy = StabilizationExposurePolicy()
     private var lastExposurePolicyRequest: TimeInterval = 0 // videoOutputQueue only
@@ -479,8 +486,16 @@ final class CameraController: NSObject, ObservableObject {
 
     func capturePhoto() {
         sessionQueue.async { [weak self] in
-            guard let self, self.burstRemaining == 0 else { return }
-            self.capturePhotoOnSessionQueue()
+            guard let self, self.burstRemaining == 0, !self.photoBusy else { return }
+            guard let sink = self.previewPhotoSink, self.isStabilizationEnabled else {
+                self.capturePhotoOnSessionQueue()
+                return
+            }
+            sink.waitForOptimalPhotoMoment(maxWait: 0.055) { [weak self] in
+                self?.sessionQueue.async {
+                    self?.capturePhotoOnSessionQueue()
+                }
+            }
         }
     }
 
@@ -707,6 +722,8 @@ final class CameraController: NSObject, ObservableObject {
     private func selectedCaptureQuality(from options: [CaptureQualityOption]) -> CaptureQualityOption {
         let explicitOptions = options.filter { !$0.isAutomatic }
         guard let automaticSelection = explicitOptions.first(where: {
+            $0.width == 3840 && $0.height == 2160 && $0.frameRate == 60
+        }) ?? explicitOptions.first(where: {
             $0.width == 1920 && $0.height == 1080 && $0.frameRate == 60
         }) ?? explicitOptions.first else {
             return .automatic

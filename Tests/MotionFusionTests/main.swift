@@ -403,6 +403,64 @@ do {
     check(abs(lastLagResult!.opticalMagnification - trueGain) < 0.25, "Converge rapidly to zoomed optical gain")
 }
 
+// Gyro-guided patch search hint, zero-phase lookahead filtering, and rolling-shutter warp compensation.
+do {
+    let advFusion = ComplementaryMotionFusion()
+    let advTrajectory = VirtualCameraTrajectoryController()
+    check(advFusion.predictedMotionHint(from: [candidate(0.0002, -0.0001)]) == nil,
+        "Unvalidated gyro must not emit guided search hints")
+    var lastFused: FusedMotionDelta?
+    var lastCrop: VirtualCameraCropResult?
+    for frame in 0..<180 {
+        let t = Double(frame) / 60
+        let nextT = Double(frame + 1) / 60
+        let vx = CGFloat(0.0009 * sin(2 * .pi * 5 * t))
+        let vy = CGFloat(0.0007 * cos(2 * .pi * 4 * t))
+        let nextVx = CGFloat(0.0009 * sin(2 * .pi * 5 * nextT))
+        let nextVy = CGFloat(0.0007 * cos(2 * .pi * 4 * nextT))
+        let cand = GyroMotionCandidate(
+            automaticOffset: 0,
+            deltaX: vx / 20,
+            deltaY: vy / 20,
+            deltaRoll: 0,
+            lookaheadDeltaX: nextVx / 20,
+            lookaheadDeltaY: nextVy / 20,
+            hasLookahead: true,
+            rollingShearX: 0.0003,
+            rollingStretchY: -0.0002
+        )
+        let fused = advFusion.update(
+            timestamp: t,
+            visual: observation(t, vx, vy),
+            gyroCandidates: [cand],
+            tuning: tuning
+        )
+        lastFused = fused
+        lastCrop = advTrajectory.update(
+            timestamp: t,
+            lowFrequencyDeltaX: fused.lowFrequencyDeltaX,
+            lowFrequencyDeltaY: fused.lowFrequencyDeltaY,
+            highFrequencyDeltaX: fused.highFrequencyDeltaX,
+            highFrequencyDeltaY: fused.highFrequencyDeltaY,
+            deltaRoll: fused.deltaRoll,
+            confidence: fused.confidence,
+            tuning: tuning,
+            rollingShearX: fused.rollingShearX,
+            rollingStretchY: fused.rollingStretchY
+        )
+    }
+    let hint = advFusion.predictedMotionHint(from: [candidate(0.0004, -0.0003)])
+    check(hint != nil, "Validated gyro must emit guided patch search hints")
+    if let hint {
+        check(abs(hint.dx - 0.0004 * 20) < 0.0006 && abs(hint.dy - (-0.0003 * 20)) < 0.0006,
+            "Guided patch search hint must scale by calibrated optical magnification")
+    }
+    check((lastFused?.rollingShearX ?? 0) > 0.003 && (lastFused?.rollingStretchY ?? 0) < -0.002,
+        "Fused motion delta must scale rolling-shutter shear and stretch by optical magnification and trust")
+    check((lastCrop?.correctionShearX ?? 0) < -0.002 && (lastCrop?.correctionStretchY ?? 0) > 0.001,
+        "Trajectory controller must oppose rolling-shutter shear and stretch")
+}
+
 print("Missing-gyro reconstruction error: \(largestMissingError)")
 print("Motion fusion/controller checks: \(checks), failures: \(failures)")
 if failures > 0 && !characterize { exit(1) }

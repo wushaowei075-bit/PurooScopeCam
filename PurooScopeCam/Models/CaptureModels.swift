@@ -11,6 +11,12 @@ struct CaptureQualityOption: Identifiable, Hashable {
         isAutomatic: true
     )
 
+    static let default4K60 = CaptureQualityOption(
+        width: 3840,
+        height: 2160,
+        frameRate: 60
+    )
+
     let id: String
     let width: Int32
     let height: Int32

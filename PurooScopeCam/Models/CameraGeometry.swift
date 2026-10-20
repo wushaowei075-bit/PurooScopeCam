@@ -6,6 +6,8 @@ struct PreviewRenderTransform: Equatable {
     var rotationRadians: CGFloat
     var translationX: CGFloat
     var translationY: CGFloat
+    var rollingShearX: CGFloat = 0
+    var rollingStretchY: CGFloat = 0
 
     static let identity = PreviewRenderTransform(
         scale: 1, rotationRadians: 0, translationX: 0, translationY: 0
@@ -30,10 +32,12 @@ enum CameraGeometry {
     ) -> CGAffineTransform {
         let scale = max(output.width / max(source.width, 1), output.height / max(source.height, 1))
             * max(correction.scale, cropScale)
+        let shear = min(max(correction.rollingShearX, -0.025), 0.025)
+        let stretch = min(max(correction.rollingStretchY, -0.025), 0.025)
         let a = scale * cos(correction.rotationRadians)
         let b = scale * sin(correction.rotationRadians)
-        let c = -b
-        let d = a
+        let c = -b + scale * shear
+        let d = a * (1 + stretch)
         let x = output.width * (0.5 + correction.translationX / max(viewport.width, 1))
         let y = output.height * (0.5 - correction.translationY / max(viewport.height, 1))
         return CGAffineTransform(

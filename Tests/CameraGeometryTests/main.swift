@@ -46,6 +46,18 @@ for source in [CGSize(width: 1080, height: 1920), CGSize(width: 1920, height: 10
             let recorded = p.applying(outputMatrix)
             check(near(displayed.x / viewport.width, recorded.x / output.width)
                 && near(displayed.y / viewport.height, recorded.y / output.height), "Preview and recording crop must agree")
+
+            let rsCorrection = PreviewRenderTransform(
+                scale: crop, rotationRadians: angle, translationX: 14, translationY: -19,
+                rollingShearX: 0.008, rollingStretchY: -0.006
+            )
+            let rsMatrix = CameraGeometry.transform(source: CGRect(origin: .zero, size: source), output: viewport,
+                viewport: viewport, correction: rsCorrection, cropScale: crop)
+            let rsPixel = CGPoint(x: 0.45 * source.width, y: 0.55 * source.height).applying(rsMatrix)
+            let rsTouch = CGPoint(x: rsPixel.x, y: viewport.height - rsPixel.y)
+            let rsRestored = CameraGeometry.sourcePoint(from: rsTouch, source: source, viewport: viewport,
+                correction: rsCorrection, cropScale: crop)
+            check(near(rsRestored.x, 0.45) && near(rsRestored.y, 0.45), "Rolling shutter warp focus inversion must remain exact")
         }
     }
 }

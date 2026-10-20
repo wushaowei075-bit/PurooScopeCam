@@ -178,6 +178,50 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
     func photoContext() -> StabilizedPhotoContext? { renderer.photoContext() }
 
+    func waitForOptimalPhotoMoment(maxWait: TimeInterval, completion: @escaping () -> Void) {
+        guard let monitor = motionMonitor,
+              monitor.sample.band != .unavailable,
+              monitor.sample.angularVelocity > 0.16,
+              maxWait > 0.005 else {
+            completion()
+            return
+        }
+        let gateLock = NSLock()
+        var completed = false
+        var observerID: UUID?
+        let initialVelocity = monitor.sample.angularVelocity
+        var minimumSeen = initialVelocity
+
+        let finish: () -> Void = { [weak monitor] in
+            gateLock.lock()
+            guard !completed else {
+                gateLock.unlock()
+                return
+            }
+            completed = true
+            let id = observerID
+            observerID = nil
+            gateLock.unlock()
+            if let id {
+                monitor?.removeSampleObserver(id)
+            }
+            completion()
+        }
+
+        observerID = monitor.addSampleObserver { sample in
+            let velocity = sample.angularVelocity
+            let hitValley = velocity <= 0.16 ||
+                (velocity > minimumSeen * 1.06 && minimumSeen < initialVelocity * 0.85)
+            minimumSeen = min(minimumSeen, velocity)
+            if hitValley {
+                finish()
+            }
+        }
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + maxWait) {
+            finish()
+        }
+    }
+
     func processPhoto(_ data: Data, context: StabilizedPhotoContext, completion: @escaping (Result<Data, Error>) -> Void) {
         renderer.processPhoto(data, context: context, completion: completion)
     }
@@ -514,6 +558,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         var transform: PreviewRenderTransform
         var cropScale: CGFloat
         var logicalViewport: CGSize
+        var timestamp: TimeInterval = 0
+        var qualityScore: Double = 1
     }
 
     private let commandQueue: MTLCommandQueue
@@ -538,6 +584,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     private var displayedIntervalCount: Int64 = 0
     private var lastDisplayedSourceTimestamp: TimeInterval?
     private var displayedPhotoFrame: DisplayedPhotoFrame?
+    private var recentPhotoFrames: [DisplayedPhotoFrame] = []
     private let inFlightFrames = DispatchSemaphore(value: 2)
     private var presentationMetrics = PresentationMetrics()
     private var presentationGeneration = 0
@@ -662,6 +709,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         displayedIntervalCount = 0
         lastDisplayedSourceTimestamp = nil
         displayedPhotoFrame = nil
+        recentPhotoFrames.removeAll(keepingCapacity: true)
         presentationGeneration += 1
         presentationMetrics = PresentationMetrics()
         stateLock.unlock()
@@ -684,7 +732,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     func photoContext() -> StabilizedPhotoContext? {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard let frame = displayedPhotoFrame else { return nil }
+        guard let frame = bestPhotoFrameLocked() else { return nil }
         return StabilizedPhotoContext(
             sourceSize: CGSize(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer)),
             viewport: frame.logicalViewport, transform: frame.transform, cropScale: frame.cropScale
@@ -739,7 +787,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         photoQueue.async { [weak self] in
             guard let self else { return }
             self.stateLock.lock()
-            let photoFrame = self.displayedPhotoFrame
+            let photoFrame = self.bestPhotoFrameLocked()
             self.stateLock.unlock()
             guard let photoFrame else {
                 completion(.failure(StabilizedPhotoCaptureError.previewNotReady))
@@ -831,13 +879,28 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 cropWindowScale: cropScale
             )
         )
+        let frameSharpness = quickCenterSharpness(pixelBuffer: queuedFrame.pixelBuffer)
         stateLock.lock()
-        displayedPhotoFrame = DisplayedPhotoFrame(
+        let previousTranslation = displayedPhotoFrame?.transform
+        let motionStep = previousTranslation.map {
+            hypot(transform.translationX - $0.translationX, transform.translationY - $0.translationY)
+        } ?? 0
+        let stabilityWeight = 1.0 / (1.0 + Double(motionStep) * 0.15)
+        let candidatePhoto = DisplayedPhotoFrame(
             pixelBuffer: queuedFrame.pixelBuffer,
             transform: transform,
             cropScale: cropScale,
-            logicalViewport: view.bounds.size
+            logicalViewport: view.bounds.size,
+            timestamp: queuedFrame.motionTime,
+            qualityScore: frameSharpness * 0.65 + stabilityWeight * 0.35
         )
+        displayedPhotoFrame = candidatePhoto
+        recentPhotoFrames.append(candidatePhoto)
+        let freshnessCutoff = queuedFrame.motionTime - 0.10
+        recentPhotoFrames.removeAll { $0.timestamp < freshnessCutoff }
+        if recentPhotoFrames.count > 4 {
+            recentPhotoFrames.removeFirst(recentPhotoFrames.count - 4)
+        }
         stateLock.unlock()
 
         ciContext.render(
@@ -943,7 +1006,11 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 translationX: previous.transform.translationX +
                     (next.transform.translationX - previous.transform.translationX) * amount,
                 translationY: previous.transform.translationY +
-                    (next.transform.translationY - previous.transform.translationY) * amount
+                    (next.transform.translationY - previous.transform.translationY) * amount,
+                rollingShearX: previous.transform.rollingShearX +
+                    (next.transform.rollingShearX - previous.transform.rollingShearX) * amount,
+                rollingStretchY: previous.transform.rollingStretchY +
+                    (next.transform.rollingStretchY - previous.transform.rollingStretchY) * amount
             )
         } else {
             selected = previous.transform
@@ -952,6 +1019,48 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
             renderTransformHistory.removeFirst(previousIndex - 3)
         }
         return selected
+    }
+
+    private func bestPhotoFrameLocked() -> DisplayedPhotoFrame? {
+        guard let latest = displayedPhotoFrame else { return nil }
+        let cutoff = latest.timestamp - 0.10
+        let candidates = recentPhotoFrames.filter { $0.timestamp >= cutoff }
+        return candidates.max(by: { $0.qualityScore < $1.qualityScore }) ?? latest
+    }
+
+    private func quickCenterSharpness(pixelBuffer: CVPixelBuffer) -> Double {
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess else {
+            return 0.5
+        }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0)?.assumingMemoryBound(to: UInt8.self) else {
+            return 0.5
+        }
+        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+        let strideBytes = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        guard width >= 64, height >= 64 else { return 0.5 }
+        let startX = width * 3 / 8
+        let endX = width * 5 / 8
+        let startY = height * 3 / 8
+        let endY = height * 5 / 8
+        let stepX = max((endX - startX) / 16, 2)
+        let stepY = max((endY - startY) / 16, 2)
+        var gradientSum = 0.0
+        var sampleCount = 0.0
+        for y in stride(from: startY, to: endY - 1, by: stepY) {
+            let row = y * strideBytes
+            let nextRow = (y + 1) * strideBytes
+            for x in stride(from: startX, to: endX - 1, by: stepX) {
+                let center = Double(base[row + x])
+                let dx = abs(center - Double(base[row + x + 1]))
+                let dy = abs(center - Double(base[nextRow + x]))
+                gradientSum += dx + dy
+                sampleCount += 1
+            }
+        }
+        guard sampleCount > 0 else { return 0.5 }
+        return min(max(gradientSum / (sampleCount * 32.0), 0.1), 1.0)
     }
 
     private func imageToOutputTransform(
