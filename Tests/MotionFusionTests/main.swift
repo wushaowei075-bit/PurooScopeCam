@@ -329,6 +329,80 @@ for fps in [24, 30, 60] {
     check(disabled.preUsage == 0, "Reset clears budget diagnostics")
 }
 
+// Intermittent visual dropout (42% missing frames, matching scope text edges)
+// must preserve low/high filter continuity and cancellation when gyro is calibrated.
+do {
+    let dropoutFusion = ComplementaryMotionFusion()
+    let dropoutTrajectory = VirtualCameraTrajectoryController()
+    var inputEnergy: CGFloat = 0
+    var outputEnergy: CGFloat = 0
+    var previousX: CGFloat = 0
+    var previousCrop: CGFloat = 0
+    for frame in 0..<600 {
+        let t = Double(frame) / 60
+        let x = CGFloat(0.0012 * sin(2 * .pi * 3.5 * t) + 0.0005 * sin(2 * .pi * 9 * t))
+        let dx = x - previousX
+        previousX = x
+        let visualAvailable = frame < 120 || (frame % 5 != 1 && frame % 5 != 3)
+        let result = dropoutFusion.update(
+            timestamp: t,
+            visual: visualAvailable ? observation(t, dx, 0) : nil,
+            gyroCandidates: [candidate(dx / 18.5, 0)],
+            tuning: tuning
+        )
+        let crop = dropoutTrajectory.update(
+            timestamp: t,
+            lowFrequencyDeltaX: result.lowFrequencyDeltaX,
+            lowFrequencyDeltaY: result.lowFrequencyDeltaY,
+            highFrequencyDeltaX: result.highFrequencyDeltaX,
+            highFrequencyDeltaY: result.highFrequencyDeltaY,
+            deltaRoll: result.deltaRoll,
+            confidence: result.confidence,
+            tuning: tuning
+        )
+        let outputDelta = dx * tuning.previewCropScale + crop.correctionX - previousCrop
+        previousCrop = crop.correctionX
+        if frame >= 180 {
+            inputEnergy += pow(dx * tuning.previewCropScale, 2)
+            outputEnergy += outputDelta * outputDelta
+        }
+    }
+    let dropoutResidual = sqrt(outputEnergy / inputEnergy)
+    print("Intermittent 40% visual dropout residual ratio=\(dropoutResidual)")
+    check(dropoutResidual < 0.22, "Calibrated gyro must maintain continuity across intermittent visual dropouts")
+}
+
+// Multi-candidate automatic IMU time-offset selection (+4 ms optimal lag) and digital zoom scaling.
+do {
+    let lagFusion = ComplementaryMotionFusion()
+    let zoomedTuning = StabilizationTuning(isEnabled: true, displayZoomFactor: 2.5, opticalMagnification: 15)
+    let trueLag = 0.004
+    let trueGain: CGFloat = 36 // Exceeds 30x base limit, legal under 2.5x display zoom (1.67x digital zoom)
+    let offsets: [TimeInterval] = [-0.006, -0.003, 0, 0.002, 0.004, 0.005, 0.006, 0.008]
+    var lastLagResult: FusedMotionDelta?
+    for frame in 0..<240 {
+        let t = Double(frame) / 60
+        let vx = CGFloat(0.0008 * sin(2 * .pi * 8 * t))
+        let vy = CGFloat(0.0006 * cos(2 * .pi * 6 * t))
+        let candidates = offsets.map { offset -> GyroMotionCandidate in
+            let shiftedT = t + offset - trueLag
+            let gx = CGFloat(0.0008 * sin(2 * .pi * 8 * shiftedT)) / trueGain
+            let gy = CGFloat(0.0006 * cos(2 * .pi * 6 * shiftedT)) / trueGain
+            return GyroMotionCandidate(automaticOffset: offset, deltaX: gx, deltaY: gy, deltaRoll: 0)
+        }
+        lastLagResult = lagFusion.update(
+            timestamp: t,
+            visual: observation(t, vx, vy),
+            gyroCandidates: candidates,
+            tuning: zoomedTuning
+        )
+    }
+    check(abs(lastLagResult!.automaticOffset - trueLag) < 0.0001, "Select the candidate offset with lowest phase error")
+    check(lastLagResult!.isGyroCalibrationValid && lastLagResult!.gyroTrust > 0.80,
+        "Admit zoomed magnification above 30x when displayZoomFactor is active")
+    check(abs(lastLagResult!.opticalMagnification - trueGain) < 0.25, "Converge rapidly to zoomed optical gain")
+}
+
 print("Missing-gyro reconstruction error: \(largestMissingError)")
 print("Motion fusion/controller checks: \(checks), failures: \(failures)")
 if failures > 0 && !characterize { exit(1) }

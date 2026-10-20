@@ -14,14 +14,17 @@ final class PhaseCorrelationEstimator {
     private let size = 256
     private let logSize: vDSP_Length = 8
     private let setup = vDSP_create_fftsetup(8, FFTRadix(kFFTRadix2))
+    private var cachedWindowGridSize = 0
+    private var cachedWindow: [Float] = []
 
     deinit { if let setup { vDSP_destroy_fftsetup(setup) } }
 
     func estimate(reference: [Float], current: [Float], gridSize: Int) -> PhaseCorrelationEstimate? {
         guard setup != nil, gridSize >= size, reference.count == gridSize * gridSize,
               current.count == reference.count else { return nil }
-        var ar = windowed(reference, gridSize: gridSize)
-        var br = windowed(current, gridSize: gridSize)
+        let weights = windowWeights(for: gridSize)
+        var ar = windowed(reference, gridSize: gridSize, weights: weights)
+        var br = windowed(current, gridSize: gridSize, weights: weights)
         guard ar.reduce(Float(0), { $0 + $1 * $1 }) > 1,
               br.reduce(Float(0), { $0 + $1 * $1 }) > 1 else { return nil }
         var ai = [Float](repeating: 0, count: ar.count)
@@ -55,7 +58,7 @@ final class PhaseCorrelationEstimator {
             guard abs(denominator) > 0.000001 else { return 0 }
             return min(max(0.5 * (minus - plus) / denominator, -0.5), 0.5)
         }
-        let peak = value(px, py)
+        let peak = Double(ar[peakIndex])
         let dx = Double(px > size / 2 ? px - size : px) + subpixel(value(px - 1, py), peak, value(px + 1, py))
         let dy = Double(py > size / 2 ? py - size : py) + subpixel(value(px, py - 1), peak, value(px, py + 1))
         var sum = 0.0
@@ -63,11 +66,12 @@ final class PhaseCorrelationEstimator {
         var count = 0.0
         var second = 0.0
         for y in 0..<size {
+            let distanceY = min(abs(y - py), size - abs(y - py))
+            let rowOffset = y * size
             for x in 0..<size {
                 let distanceX = min(abs(x - px), size - abs(x - px))
-                let distanceY = min(abs(y - py), size - abs(y - py))
                 if distanceX <= 3 && distanceY <= 3 { continue }
-                let sample = value(x, y)
+                let sample = Double(ar[rowOffset + x])
                 sum += sample
                 squareSum += sample * sample
                 count += 1
@@ -82,16 +86,33 @@ final class PhaseCorrelationEstimator {
             accepted: psr >= 8 && ratio >= 1.15 && abs(dx) <= 8 && abs(dy) <= 8)
     }
 
-    private func windowed(_ input: [Float], gridSize: Int) -> [Float] {
-        let offset = (gridSize - size) / 2
-        let mean = input.reduce(0, +) / Float(input.count)
+    private func windowWeights(for gridSize: Int) -> [Float] {
+        if cachedWindowGridSize == gridSize, cachedWindow.count == size * size {
+            return cachedWindow
+        }
         let radius = Double(gridSize) * 0.43
-        var output = [Float](repeating: 0, count: size * size)
+        var weights = [Float](repeating: 0, count: size * size)
         for y in 0..<size {
             for x in 0..<size {
                 let distance = hypot(Double(x) - 127.5, Double(y) - 127.5) / radius
                 let weight = distance < 1 ? 0.5 * (1 + cos(.pi * distance)) : 0
-                output[y * size + x] = (input[(y + offset) * gridSize + x + offset] - mean) * Float(weight)
+                weights[y * size + x] = Float(weight)
+            }
+        }
+        cachedWindowGridSize = gridSize
+        cachedWindow = weights
+        return weights
+    }
+
+    private func windowed(_ input: [Float], gridSize: Int, weights: [Float]) -> [Float] {
+        let offset = (gridSize - size) / 2
+        let mean = input.reduce(0, +) / Float(input.count)
+        var output = [Float](repeating: 0, count: size * size)
+        for y in 0..<size {
+            let inputRow = (y + offset) * gridSize + offset
+            let outputRow = y * size
+            for x in 0..<size {
+                output[outputRow + x] = (input[inputRow + x] - mean) * weights[outputRow + x]
             }
         }
         return output

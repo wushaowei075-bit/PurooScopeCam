@@ -774,7 +774,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         stateLock.lock()
-        let hasPendingFrames = frameQueue.count > previewDelayFrames
+        let hasPendingFrames = frameQueue.contains(where: \.isReady)
         stateLock.unlock()
         guard hasPendingFrames, inFlightFrames.wait(timeout: .now()) == .success else { return }
         var committed = false
@@ -885,23 +885,14 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     }
 
     private func nextFrameForDisplay(preferOldestReady: Bool) -> QueuedPreviewFrame? {
-        guard frameQueue.count > previewDelayFrames else { return nil }
-        let maximumIndex = frameQueue.count - 1 - previewDelayFrames
-        var selectedIndex: Int?
-        if preferOldestReady {
-            for index in 0...maximumIndex where frameQueue[index].isReady {
-                selectedIndex = index
-                break
-            }
-        } else {
-            for index in stride(from: maximumIndex, through: 0, by: -1) {
-                if frameQueue[index].isReady {
-                    selectedIndex = index
-                    break
-                }
-            }
-        }
-        guard let selectedIndex else { return nil }
+        // 已标记 isReady 的帧已完成防抖变换配对，无需等待下一帧相机回调入队；
+        // 当就绪帧数 <= 2 时按 FIFO 顺序消费，消除 60 Hz 采集与 60 Hz VSync 拍频
+        // 引起的周期性空转与跳帧；仅在积压超过 2 帧时跳至最新就绪帧以控制延迟。
+        let readyIndices = frameQueue.indices.filter { frameQueue[$0].isReady }
+        guard !readyIndices.isEmpty else { return nil }
+        let selectedIndex = (preferOldestReady || readyIndices.count <= 2)
+            ? readyIndices.first!
+            : readyIndices.last!
         let frame = frameQueue[selectedIndex]
         if selectedIndex > 0 {
             let skipped = frameQueue[..<selectedIndex].reduce(into: 0) { count, queuedFrame in

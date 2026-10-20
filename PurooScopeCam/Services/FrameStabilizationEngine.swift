@@ -576,6 +576,7 @@ private final class SubpixelFrameMotionTracker {
     private let searchRadius = 8
     private let patchRadius = 3
     private let anchorStride = 28
+    private lazy var roiMask: [Bool] = makeROIMask()
     private var previousFrame: AnalysisFrame?
     private var previousTimestamp: TimeInterval?
     private let shadow = VisualEstimatorShadow()
@@ -630,7 +631,10 @@ private final class SubpixelFrameMotionTracker {
         let inliers = vectors.filter { vector in
             hypot(vector.dx - medianX, vector.dy - medianY) <= 2.15
         }
-        guard inliers.count >= max(6, Int(ceil(Double(vectors.count) * 0.55))) else {
+        // 当画面同时包含角点与一维笔画边缘时，孔径效应会使部分边缘块偏移；
+        // 只要至少有 6~12 个块（或 45% 候选块）高度一致，即可由后续残差检查保障精度。
+        let minimumInliers = max(6, min(12, Int(ceil(Double(vectors.count) * 0.45))))
+        guard inliers.count >= minimumInliers else {
             return nil
         }
 
@@ -707,17 +711,23 @@ private final class SubpixelFrameMotionTracker {
                 }
                 scores[(dy + searchRadius) * diameter + dx + searchRadius] = score
                 if score < bestScore {
-                    secondScore = bestScore
                     bestScore = score
                     bestDX = dx
                     bestDY = dy
-                } else if score < secondScore {
-                    secondScore = score
                 }
             }
         }
 
         guard bestScore.isFinite, bestScore < 0.52 else { return nil }
+        for dy in -searchRadius...searchRadius {
+            for dx in -searchRadius...searchRadius {
+                if abs(dx - bestDX) <= 1 && abs(dy - bestDY) <= 1 { continue }
+                let score = scores[(dy + searchRadius) * diameter + dx + searchRadius]
+                if score < secondScore {
+                    secondScore = score
+                }
+            }
+        }
         var subpixelX: CGFloat = 0
         var subpixelY: CGFloat = 0
         if abs(bestDX) < searchRadius {
@@ -867,7 +877,7 @@ private final class SubpixelFrameMotionTracker {
         }
         return AnalysisFrame(
             luma: luma,
-            roiMask: makeROIMask(),
+            roiMask: roiMask,
             sourceWidth: width,
             sourceHeight: height,
             sourceStep: geometry.step
@@ -898,7 +908,7 @@ private final class SubpixelFrameMotionTracker {
         }
         return AnalysisFrame(
             luma: luma,
-            roiMask: makeROIMask(),
+            roiMask: roiMask,
             sourceWidth: width,
             sourceHeight: height,
             sourceStep: geometry.step
@@ -1154,7 +1164,9 @@ private struct UnitQuaternion {
 }
 
 private final class QuaternionMotionEstimator {
-    private let automaticOffsets: [TimeInterval] = [0]
+    private let automaticOffsets: [TimeInterval] = [
+        -0.006, -0.003, 0, 0.002, 0.004, 0.005, 0.006, 0.008
+    ]
     private var previousFrameTime: TimeInterval?
 
     func reset() {
@@ -1382,7 +1394,7 @@ private final class ComplementaryMotionFusion {
     }
 
     private var correlations: [Int: LagCorrelation] = [:]
-    private let selectedOffsetKey = 0
+    private var selectedOffsetKey = 0
     private var estimatedMagnification = CGFloat(StabilizationTuning.defaultOpticalMagnification)
     private var referenceMagnification = CGFloat(StabilizationTuning.defaultOpticalMagnification)
     private var calibrationTrust = ComplementaryMotionFusion.referenceTrust
@@ -1404,6 +1416,7 @@ private final class ComplementaryMotionFusion {
         lastTimestamp = nil
         if !keepCalibration {
             correlations.removeAll(keepingCapacity: true)
+            selectedOffsetKey = 0
             estimatedMagnification = referenceMagnification
             calibrationTrust = Self.referenceTrust
             lastCalibrationSampleCount = 0
@@ -1424,6 +1437,7 @@ private final class ComplementaryMotionFusion {
         referenceMagnification = clamped
         estimatedMagnification = clamped
         correlations.removeAll(keepingCapacity: true)
+        selectedOffsetKey = 0
         calibrationTrust = Self.referenceTrust
         lastCalibrationSampleCount = 0
         lastCalibrationObservation = nil
@@ -1450,6 +1464,7 @@ private final class ComplementaryMotionFusion {
         // Expire stale evidence before accepting new samples after an interruption.
         if let lastCalibrationObservation, timestamp - lastCalibrationObservation > 2 {
             correlations.removeAll(keepingCapacity: true)
+            selectedOffsetKey = 0
             lastCalibrationSampleCount = 0
             calibrationTrust = 0
             measurementIsValidated = false
@@ -1459,9 +1474,14 @@ private final class ComplementaryMotionFusion {
 
         if let visual {
             updateLagCorrelations(visual: visual, candidates: gyroCandidates)
+            selectBestOffsetIfNeeded()
         }
+        let digitalZoom = max(tuning.displayZoomFactor / max(tuning.previewCropScale, 1), 1)
+        let maxAllowedMagnification = Self.maximumMagnification * digitalZoom
         let selected = selectedCandidate(from: gyroCandidates)
-        let calibration = updateMagnificationFromSelectedCorrelation()
+        let calibration = updateMagnificationFromSelectedCorrelation(
+            maxAllowedMagnification: maxAllowedMagnification
+        )
         let gyroTrust: CGFloat = selected == nil || !calibration.isValid ? 0 : calibration.trust
 
         let visualVelocityX = visual.map { $0.deltaX / dt }
@@ -1483,6 +1503,11 @@ private final class ComplementaryMotionFusion {
         if let visualVelocityX, let visualVelocityY {
             visualLowVelocityX += (visualVelocityX - visualLowVelocityX) * alpha
             visualLowVelocityY += (visualVelocityY - visualLowVelocityY) * alpha
+        } else if gyroTrust > 0.20 {
+            // 视觉短暂缺失时，用已验证的陀螺速度连续维护视觉低通状态，
+            // 避免 visualLowVelocity 按 (1 - alpha) 坍塌并在视觉恢复时产生伪高频跳变。
+            visualLowVelocityX += (gyroVelocityX - visualLowVelocityX) * alpha
+            visualLowVelocityY += (gyroVelocityY - visualLowVelocityY) * alpha
         } else {
             visualLowVelocityX *= 1 - alpha
             visualLowVelocityY *= 1 - alpha
@@ -1511,17 +1536,13 @@ private final class ComplementaryMotionFusion {
             highVelocityX = visualHighX * (1 - gyroTrust) + gyroHighX * gyroTrust
             highVelocityY = visualHighY * (1 - gyroTrust) + gyroHighY * gyroTrust
         } else if gyroTrust > 0.20 {
-            // 视觉失效期间低频改由陀螺提供，不能归零。
-            //
-            // 手持抖动的主能量在 1-3 Hz，全部落在低频通道里。实测视觉在望远镜
-            // 画面上只有约 54% 的帧可用（最长一段连续失效 3300 帧），低频一旦
-            // 归零，这个频带在近一半的时间里完全得不到补偿，裁切余量也就只用掉
-            // 了 2-3%。visualLowVelocity 此时仍在按 alpha 衰减，与陀螺分量叠加
-            // 可以让视觉恢复/失效的切换保持平滑。
-            lowVelocityX = visualLowVelocityX * (1 - gyroTrust) + gyroLowVelocityX * gyroTrust
-            lowVelocityY = visualLowVelocityY * (1 - gyroTrust) + gyroLowVelocityY * gyroTrust
-            highVelocityX = gyroHighX * gyroTrust
-            highVelocityY = gyroHighY * gyroTrust
+            // 视觉失效期间由已验证的陀螺全量驱动低频与高频通道，不再把缺失的
+            // 视觉当作 0 样本按 (1 - gyroTrust) 混入而人为折减约 20% 幅度。
+            let fallbackWeight: CGFloat = calibration.isValid ? 1.0 : gyroTrust
+            lowVelocityX = gyroLowVelocityX * fallbackWeight
+            lowVelocityY = gyroLowVelocityY * fallbackWeight
+            highVelocityX = gyroHighX * fallbackWeight
+            highVelocityY = gyroHighY * fallbackWeight
         } else {
             lowVelocityX = 0
             lowVelocityY = 0
@@ -1590,6 +1611,39 @@ private final class ComplementaryMotionFusion {
         }
     }
 
+    private func selectBestOffsetIfNeeded() {
+        guard correlations.count > 1 else {
+            if let onlyKey = correlations.keys.first, correlations[selectedOffsetKey] == nil {
+                selectedOffsetKey = onlyKey
+            }
+            return
+        }
+        var bestKey: Int?
+        var bestError = CGFloat.greatestFiniteMagnitude
+        for (key, correlation) in correlations {
+            guard correlation.sampleCount >= 64,
+                  correlation.isObservable,
+                  correlation.observableAxisCorrelation >= 0.78,
+                  correlation.normalizedError <= 0.55 else {
+                continue
+            }
+            if correlation.normalizedError < bestError ||
+                (abs(correlation.normalizedError - bestError) < 0.0001 && abs(key) < abs(bestKey ?? Int.max)) {
+                bestError = correlation.normalizedError
+                bestKey = key
+            }
+        }
+        guard let bestKey, bestKey != selectedOffsetKey else { return }
+        let current = correlations[selectedOffsetKey]
+        let currentIsUsable = current.map {
+            $0.sampleCount >= 64 && $0.isObservable && $0.observableAxisCorrelation >= 0.78
+        } ?? false
+        if !currentIsUsable || bestError + 0.005 < (current?.normalizedError ?? 1) {
+            selectedOffsetKey = bestKey
+            lastCalibrationSampleCount = 0
+        }
+    }
+
     private func selectedCandidate(from candidates: [GyroMotionCandidate]) -> GyroMotionCandidate? {
         candidates.min {
             abs(Int(($0.automaticOffset * 1000).rounded()) - selectedOffsetKey) <
@@ -1597,7 +1651,9 @@ private final class ComplementaryMotionFusion {
         }
     }
 
-    private func updateMagnificationFromSelectedCorrelation() -> (
+    private func updateMagnificationFromSelectedCorrelation(
+        maxAllowedMagnification: CGFloat
+    ) -> (
         trust: CGFloat,
         correlationX: CGFloat,
         correlationY: CGFloat,
@@ -1638,23 +1694,28 @@ private final class ComplementaryMotionFusion {
         let gainTolerance: CGFloat = 0.000000001
         let magnificationIsFinite = targetMagnification.isFinite &&
             targetMagnification >= Self.minimumMagnification * 0.5 - gainTolerance &&
-            targetMagnification <= Self.maximumMagnification + gainTolerance
+            targetMagnification <= maxAllowedMagnification + gainTolerance
         let measurementIsReliable = magnificationIsFinite &&
             axisCorrelation >= 0.78 &&
             correlation.normalizedError <= 0.55
+        let wasValidated = measurementIsValidated
         measurementIsValidated = measurementIsReliable
         calibrationState = measurementIsReliable ? "validated" : "rejected"
 
         if measurementIsReliable {
+            let relativeMismatch = abs(targetMagnification - estimatedMagnification) / max(abs(targetMagnification), 0.5)
+            let highConfidence = axisCorrelation >= 0.88 && correlation.normalizedError <= 0.35
+            let gainRate: CGFloat = (!wasValidated || (relativeMismatch > 0.15 && highConfidence)) ? 0.18 : 0.035
+            let maxStep: CGFloat = (!wasValidated || (relativeMismatch > 0.15 && highConfidence)) ? 0.60 : 0.08
             estimatedMagnification += clamp(
-                (targetMagnification - estimatedMagnification) * 0.025,
-                min: -0.05,
-                max: 0.05
+                (targetMagnification - estimatedMagnification) * gainRate,
+                min: -maxStep,
+                max: maxStep
             )
             estimatedMagnification = clamp(
                 estimatedMagnification,
                 min: Self.minimumMagnification,
-                max: Self.maximumMagnification
+                max: maxAllowedMagnification
             )
             measurementIsValidated = abs(estimatedMagnification - targetMagnification) / max(abs(targetMagnification), 0.5) <= 0.15
             calibrationState = measurementIsValidated ? "validated" : "gain_converging"
@@ -1789,7 +1850,8 @@ private final class VirtualCameraTrajectoryController {
             )
         }
         let dt = CGFloat(min(max(elapsed, 1.0 / 120.0), 1.0 / 20.0))
-        let lowFrequencyWeight = clamp(0.65 + confidence * 0.35, min: 0.65, max: 1)
+        // 置信度达到常规阈值（0.55）后保持全量低频积分，避免与 lowFrequencyStabilizationAmount 形成双重折扣。
+        let lowFrequencyWeight = clamp(0.65 + (confidence / 0.55) * 0.35, min: 0.65, max: 1)
         let measuredLowDeltaX = lowFrequencyDeltaX * lowFrequencyWeight
         let measuredLowDeltaY = lowFrequencyDeltaY * lowFrequencyWeight
         lowPathX += measuredLowDeltaX

@@ -212,12 +212,13 @@ struct StabilizationTuning: Equatable {
 
     /// 低频承担 0.5-7 Hz 的轨迹补偿。
     ///
-    /// 在修正裁切几何后，全量输出会在静止画面形成约 30% 的反向
-    /// 过补偿。6f33b17 成片逐帧拟合的横纵轴最优增益分别为 0.70/0.73，
-    /// 取 0.72；7 Hz 以上的细抖仍由高频通道保持全量补偿。
+    /// 在 1.50x 裁切几何（CameraGeometry.transform）下，完全抵消源画面位移的
+    /// 理论增益为 1.0；此前 0.72 源自 1.80x 裁切实验期的过保守折减，导致实测
+    /// 2-5 Hz 有效补偿率仅约 55%。恢复至 0.95 以充分抵消手抖主频带并留出微小
+    /// 亚像素噪声裕度。
     var lowFrequencyStabilizationAmount: CGFloat {
         guard usesDigitalStabilization else { return 0 }
-        return 0.72
+        return 0.95
     }
 
     /// 判定为平移后虚拟相机跟随真实路径的带宽。
