@@ -478,10 +478,10 @@ final class FrameStabilizationEngine {
             highFrequencyDeltaX: fused.highFrequencyDeltaX,
             highFrequencyDeltaY: fused.highFrequencyDeltaY,
             deltaRoll: fused.deltaRoll,
-            rollingShearX: fused.rollingShearX,
-            rollingStretchY: fused.rollingStretchY,
             confidence: fused.confidence,
-            tuning: input.tuning
+            tuning: input.tuning,
+            rollingShearX: fused.rollingShearX,
+            rollingStretchY: fused.rollingStretchY
         )
         let analysisMilliseconds = (CACurrentMediaTime() - analysisStart) * 1000
 
