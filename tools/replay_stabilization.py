@@ -1,4 +1,4 @@
-"""Read a local v8 trace and replay its bounded FFT/NCC comparison pairs.
+"""Read a local v8/v9 trace and replay its bounded FFT/NCC comparison pairs.
 
 Requires NumPy. Does not upload anything or claim accuracy from agreement.
 The FFT implementation is an independent offline check, not the app binary.
@@ -66,6 +66,8 @@ def analyze(path):
     gpu_ms = []
     disagreements = []
     replayed = []
+    budget = {f"{band}_{axis}": [] for band in ("low", "high") for axis in ("x", "y")}
+    pre_usage = []
     malformed = 0
     session = {}
     with Path(path).open(encoding="utf-8-sig") as stream:
@@ -84,6 +86,13 @@ def analyze(path):
                 states[record.get("calibration_state", "legacy_unknown")] += 1
                 active_gyro += bool(record.get("gyro_trust", 0) > 0)
                 analysis_ms.append(record.get("analysis_ms", 0))
+                for key, values in budget.items():
+                    requested = record.get(f"crop_requested_{key}")
+                    applied = record.get(f"crop_applied_{key}")
+                    if requested is not None and applied is not None:
+                        values.append(abs(float(requested) - float(applied)))
+                if "crop_pre_usage" in record:
+                    pre_usage.append(record["crop_pre_usage"])
             elif name == "capture_timing":
                 modes[str(record.get("active_system_mode"))] += 1
                 exposures.append(record.get("exposure_s", 0) * 1000)
@@ -119,6 +128,9 @@ def analyze(path):
             "presentation_intervals_ms": distribution(np.diff(times) * 1000),
             "presentation_age_ms": distribution(ages), "exposure_ms": distribution(exposures),
             "analysis_ms": distribution(analysis_ms), "gpu_ms": distribution(gpu_ms),
+            "crop_allocation_difference_output_fraction": {
+                key: distribution(values) for key, values in budget.items()},
+            "crop_pre_usage": distribution(pre_usage),
             "ncc_phase_disagreement_source_px": distribution(disagreements),
             "replayed_pairs": replayed, "malformed_lines": malformed,
             "limitation": "Estimator agreement is not ground-truth accuracy; replay pairs do not form a full trajectory."}

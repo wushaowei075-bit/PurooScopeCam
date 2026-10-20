@@ -225,6 +225,110 @@ for i in 0..<300 {
     }
 }
 
+// The old combined soft limiter attenuated even small tremor around a biased
+// crop. Check the production allocator and the full controller separately.
+for low in stride(from: -1.5, through: 1.5, by: 0.1) {
+    for high in stride(from: -1.5, through: 1.5, by: 0.1) {
+        let limit = tuning.maximumCropOffsetFraction
+        let l = CGFloat(low) * limit
+        let h = CGFloat(high) * limit
+        let result = CropTranslationAllocation.resolve(low: l, high: h, limit: limit)
+        check(abs(result.total) <= limit + 1e-12, "Allocation stays in the physical crop")
+        check(abs(result.high - min(max(h, -limit), limit)) < 1e-12,
+            "Slow displacement cannot scale the high-band request")
+        if abs(l) + abs(h) <= limit {
+            check(abs(result.total - (l + h)) < 1e-12, "Interior crop allocation is linear")
+        }
+    }
+}
+for invalid in [CGFloat.nan, .infinity, -.infinity] {
+    let result = CropTranslationAllocation.resolve(low: invalid, high: 0, limit: 0.23)
+    check(result.total == 0, "Invalid allocation input must not reach the renderer")
+}
+
+private func biasedTrajectory(fps: Int, axis: String, sign: CGFloat,
+                              fraction: CGFloat) -> VirtualCameraTrajectoryController {
+    let controller = VirtualCameraTrajectoryController()
+    let physicalOffset = fraction * tuning.maximumCropOffsetFraction * sign
+    let sourcePath = -physicalOffset / (tuning.lowFrequencyStabilizationAmount * tuning.previewCropScale)
+    for frame in 0..<30 {
+        let delta = frame < 6 ? sourcePath / 6 : 0
+        _ = controller.update(timestamp: Double(frame)/Double(fps),
+            lowFrequencyDeltaX: axis == "x" ? delta : 0,
+            lowFrequencyDeltaY: axis == "y" ? delta : 0,
+            highFrequencyDeltaX: 0, highFrequencyDeltaY: 0,
+            deltaRoll: 0, confidence: 1, tuning: tuning)
+    }
+    return controller
+}
+
+var worstBiasedHighError: CGFloat = 0
+for fps in [24, 30, 60] {
+    for axis in ["x", "y"] {
+        for sign in [CGFloat(-1), 1] {
+            let controller = biasedTrajectory(fps: fps, axis: axis, sign: sign, fraction: 0.80)
+            let baseline = sign * tuning.maximumCropOffsetFraction * 0.80
+            var previousOffset: CGFloat = 0
+            for frame in 30..<(30+fps*3) {
+                let t = Double(frame-30)/Double(fps)
+                let high = CGFloat(sin(2 * .pi * 9 * t)) * tuning.maximumCropOffsetFraction * 0.06
+                let targetOffset = -high / tuning.previewCropScale
+                let delta = targetOffset - previousOffset * CGFloat(exp(-1 / Double(fps) / tuning.highFrequencyMemory))
+                previousOffset = targetOffset
+                let result = controller.update(timestamp: Double(frame)/Double(fps),
+                    lowFrequencyDeltaX: 0, lowFrequencyDeltaY: 0,
+                    highFrequencyDeltaX: axis == "x" ? delta : 0,
+                    highFrequencyDeltaY: axis == "y" ? delta : 0,
+                    deltaRoll: 0, confidence: 1, tuning: tuning)
+                let value = axis == "x" ? result.correctionX : result.correctionY
+                let other = axis == "x" ? result.correctionY : result.correctionX
+                worstBiasedHighError = max(worstBiasedHighError, abs(value - baseline - high))
+                check(abs(value - baseline - high) < 1e-10, "Biased crop keeps full small-signal high response")
+                check(abs(other) < 1e-12, "Boundary handling cannot pull a quiet axis")
+                check(abs(result.preUsage - 0.80) < 1e-10, "Pressure uses output units including crop scale")
+                check(result.boundaryPressure > 0, "Physical 80% displacement must report boundary pressure")
+                check(!result.isIntentionalPan, "A biased stationary tremor is not a pan")
+            }
+        }
+    }
+}
+print("Biased 9Hz high-band allocation error: \(worstBiasedHighError)")
+
+// A true pan may consume the budget, but must not build hidden slow-path debt
+// or keep re-centering when motion stops. Rotation keeps its existing policy.
+for fps in [24, 30, 60] {
+    let controller = VirtualCameraTrajectoryController()
+    var stopped: CGFloat?
+    var previous: CGFloat = 0
+    for frame in 0..<(fps*6) {
+        let moving = frame < fps*3
+        let result = controller.update(timestamp: Double(frame)/Double(fps),
+            lowFrequencyDeltaX: moving ? 0.55 / CGFloat(fps) : 0,
+            lowFrequencyDeltaY: 0, highFrequencyDeltaX: 0, highFrequencyDeltaY: 0,
+            deltaRoll: moving ? 0.0001 : 0, confidence: 1, tuning: tuning)
+        check(abs(result.correctionX) <= tuning.maximumCropOffsetFraction + 1e-12,
+            "Long pan stays in bounds")
+        check(abs(result.correctionRoll) <= tuning.maximumRollRadians(cropUsage: result.cropUsage) + 1e-12,
+            "Roll respects the remaining translation budget")
+        if !moving {
+            if stopped == nil { stopped = previous }
+            check(abs(result.correctionX - stopped!) < 1e-10, "Stopped hand must not trigger boundary return drift")
+        }
+        previous = result.correctionX
+    }
+    let reversed = controller.update(timestamp: 6, lowFrequencyDeltaX: -0.001,
+        lowFrequencyDeltaY: 0, highFrequencyDeltaX: 0, highFrequencyDeltaY: 0,
+        deltaRoll: 0, confidence: 1, tuning: tuning)
+    check(reversed.correctionX > previous, "A reversal responds without waiting for slow-path windup")
+    let disabled = controller.update(timestamp: 6+1/Double(fps),
+        lowFrequencyDeltaX: 0.001, lowFrequencyDeltaY: 0.001,
+        highFrequencyDeltaX: 0.001, highFrequencyDeltaY: 0.001,
+        deltaRoll: 0.001, confidence: 1, tuning: StabilizationTuning(isEnabled: false))
+    check(disabled.correctionX == 0 && disabled.correctionY == 0 && disabled.correctionRoll == 0,
+        "Stabilization off remains identity")
+    check(disabled.preUsage == 0, "Reset clears budget diagnostics")
+}
+
 print("Missing-gyro reconstruction error: \(largestMissingError)")
 print("Motion fusion/controller checks: \(checks), failures: \(failures)")
 if failures > 0 && !characterize { exit(1) }

@@ -143,7 +143,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         stabilizationEngine.reset()
         if monitor != nil {
             StabilizationTraceRecorder.shared.startSession(metadata: [
-                "pipeline": "noninertial-virtual-camera-v8-validated-fusion",
+                "pipeline": "noninertial-virtual-camera-v9-output-crop-budget",
                 "shadow_estimator": "regularized_phase_correlation_256",
                 "maximum_replay_pairs": 12,
                 "motion_rate_hz": 240,

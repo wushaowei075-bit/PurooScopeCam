@@ -51,6 +51,15 @@ struct StabilizationDebugSnapshot {
     var calibrationState: String
     var calibrationAgeSeconds: Double
     var calibrationSamples: Int
+    var cropRequestedLowX: CGFloat
+    var cropRequestedLowY: CGFloat
+    var cropRequestedHighX: CGFloat
+    var cropRequestedHighY: CGFloat
+    var cropAppliedLowX: CGFloat
+    var cropAppliedLowY: CGFloat
+    var cropAppliedHighX: CGFloat
+    var cropAppliedHighY: CGFloat
+    var cropPreUsage: CGFloat
 
     func overlayText(systemModeName: String) -> String {
         """
@@ -117,7 +126,7 @@ final class StabilizationTraceRecorder {
                 var header = metadata
                 header["type"] = "session"
                 header["created_at"] = ISO8601DateFormatter().string(from: Date())
-                header["format_version"] = 8
+                header["format_version"] = 9
                 header["app_build"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
                 header["app_version"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
                 self.appendJSONObject(header)
@@ -208,6 +217,15 @@ final class StabilizationTraceRecorder {
                 "crop_usage": debug.cropUsage,
                 "crop_roll_deg": debug.correctionRollDegrees,
                 "boundary_pressure": debug.boundaryPressure,
+                "crop_requested_low_x": debug.cropRequestedLowX,
+                "crop_requested_low_y": debug.cropRequestedLowY,
+                "crop_requested_high_x": debug.cropRequestedHighX,
+                "crop_requested_high_y": debug.cropRequestedHighY,
+                "crop_applied_low_x": debug.cropAppliedLowX,
+                "crop_applied_low_y": debug.cropAppliedLowY,
+                "crop_applied_high_x": debug.cropAppliedHighX,
+                "crop_applied_high_y": debug.cropAppliedHighY,
+                "crop_pre_usage": debug.cropPreUsage,
                 "pan": debug.isIntentionalPan,
                 "gyro_trust": debug.gyroTrust,
                 "gyro_available": debug.gyroAvailable,
@@ -488,7 +506,16 @@ final class FrameStabilizationEngine {
             frameHeight: CVPixelBufferGetHeight(input.pixelBuffer),
             calibrationState: fused.calibrationState,
             calibrationAgeSeconds: fused.calibrationAgeSeconds,
-            calibrationSamples: fused.calibrationSamples
+            calibrationSamples: fused.calibrationSamples,
+            cropRequestedLowX: crop.requestedLowX,
+            cropRequestedLowY: crop.requestedLowY,
+            cropRequestedHighX: crop.requestedHighX,
+            cropRequestedHighY: crop.requestedHighY,
+            cropAppliedLowX: crop.appliedLowX,
+            cropAppliedLowY: crop.appliedLowY,
+            cropAppliedHighX: crop.appliedHighX,
+            cropAppliedHighY: crop.appliedHighY,
+            cropPreUsage: crop.preUsage
         )
         let result = StabilizationFrameResult(
             timestamp: input.timestamp,
@@ -1666,6 +1693,30 @@ private struct VirtualCameraCropResult {
     var isIntentionalPan: Bool
     var cropUsage: CGFloat
     var boundaryPressure: CGFloat
+    var requestedLowX: CGFloat = 0
+    var requestedLowY: CGFloat = 0
+    var requestedHighX: CGFloat = 0
+    var requestedHighY: CGFloat = 0
+    var appliedLowX: CGFloat = 0
+    var appliedLowY: CGFloat = 0
+    var appliedHighX: CGFloat = 0
+    var appliedHighY: CGFloat = 0
+    var preUsage: CGFloat = 0
+}
+
+private struct CropTranslationAllocation {
+    let low: CGFloat
+    let high: CGFloat
+    var total: CGFloat { low + high }
+
+    static func resolve(low: CGFloat, high: CGFloat, limit: CGFloat) -> Self {
+        guard low.isFinite, high.isFinite, limit.isFinite, limit > 0 else {
+            return Self(low: 0, high: 0)
+        }
+        let boundedHigh = min(max(high, -limit), limit)
+        let lowRoom = max(0, limit - abs(boundedHigh))
+        return Self(low: min(max(low, -lowRoom), lowRoom), high: boundedHigh)
+    }
 }
 
 private final class VirtualCameraTrajectoryController {
@@ -1764,8 +1815,11 @@ private final class VirtualCameraTrajectoryController {
         let hardLimit = max(tuning.maximumCropOffsetFraction, 0.001)
         let lowAmount = tuning.lowFrequencyStabilizationAmount
         let highAmount = tuning.highFrequencyCompensationAmount
-        let lowCorrectionX = (desiredX - lowPathX) * lowAmount
-        let lowCorrectionY = (desiredY - lowPathY) * lowAmount
+        // Boundary pressure and the allocator both use output-viewport units.
+        let renderScale = max(tuning.previewCropScale, 1)
+        let lowRenderGain = lowAmount * renderScale
+        let lowCorrectionX = (desiredX - lowPathX) * lowRenderGain
+        let lowCorrectionY = (desiredY - lowPathY) * lowRenderGain
         let preUsage = max(abs(lowCorrectionX), abs(lowCorrectionY)) / hardLimit
 
         if preUsage >= 0.72 {
@@ -1785,24 +1839,41 @@ private final class VirtualCameraTrajectoryController {
         ) * sustainedBoundary
         let isActivelyPanning = panState &&
             hypot(instantaneousVelocityX, instantaneousVelocityY) >= tuning.panActivationSpeed * 0.30
-        let followFrequency = isActivelyPanning
-            ? tuning.panFollowFrequency
-            : tuning.boundaryFollowFrequency * Double(boundaryPressure)
-        followDesiredPath(
-            deltaTime: dt,
-            followFrequency: followFrequency
-        )
+        if isActivelyPanning {
+            followDesiredPath(deltaTime: dt, followFrequency: tuning.panFollowFrequency)
+        } else {
+            // Release only incoming outward motion, not a stored pose after the
+            // hand stops. A pressured axis must not pull the other axis along.
+            for axis in 0..<2 {
+                let correction = axis == 0 ? lowCorrectionX : lowCorrectionY
+                let delta = axis == 0 ? measuredLowDeltaX : measuredLowDeltaY
+                guard correction * delta < 0 else { continue }
+                let pressure = smoothstep(lower: 0.72, upper: 0.96,
+                    value: abs(correction) / hardLimit) * sustainedBoundary
+                let amount = CGFloat(1 - exp(-2 * Double.pi
+                    * tuning.boundaryFollowFrequency * Double(pressure) * Double(dt)))
+                if axis == 0 { desiredX += delta * amount }
+                else { desiredY += delta * amount }
+            }
+        }
 
-        // 路径以画面位移为单位，而 correction 最终作为输出画面中心的归一化
-        // 偏移送进渲染。裁切窗口在源图上只有 1/cropScale 宽，窗口中心移动
-        // 一个单位只能抵消 1/cropScale 个单位的画面位移，因此这里必须放大
-        // cropScale 倍。缺了这一项时补偿只有需要量的 1/1.5，实测输出残余
-        // 达到输入的 52%，而控制器内部看起来抵消得很干净。
-        let renderScale = max(tuning.previewCropScale, 1)
-        var correctionX = ((desiredX - lowPathX) * lowAmount - highOffsetX * highAmount) * renderScale
-        var correctionY = ((desiredY - lowPathY) * lowAmount - highOffsetY * highAmount) * renderScale
-        correctionX = softLimit(correctionX, limit: hardLimit)
-        correctionY = softLimit(correctionY, limit: hardLimit)
+        let requestedLowX = (desiredX - lowPathX) * lowRenderGain
+        let requestedLowY = (desiredY - lowPathY) * lowRenderGain
+        let requestedHighX = -highOffsetX * highAmount * renderScale
+        let requestedHighY = -highOffsetY * highAmount * renderScale
+        // Keep the high band linear while there is geometric room. Constrain
+        // the slow offset first instead of compressing their combined signal.
+        let allocatedX = CropTranslationAllocation.resolve(
+            low: requestedLowX, high: requestedHighX, limit: hardLimit)
+        let allocatedY = CropTranslationAllocation.resolve(
+            low: requestedLowY, high: requestedHighY, limit: hardLimit)
+        if lowRenderGain > 0 {
+            // Anti-windup: a clamped slow path must not delay a later reversal.
+            desiredX += (allocatedX.low - requestedLowX) / lowRenderGain
+            desiredY += (allocatedY.low - requestedLowY) / lowRenderGain
+        }
+        let correctionX = allocatedX.total
+        let correctionY = allocatedY.total
 
         let usage = clamp(max(abs(correctionX), abs(correctionY)) / hardLimit, min: 0, max: 1)
 
@@ -1823,7 +1894,16 @@ private final class VirtualCameraTrajectoryController {
             correctionRoll: correctionRoll,
             isIntentionalPan: panState,
             cropUsage: clamp(usage, min: 0, max: 1),
-            boundaryPressure: boundaryPressure
+            boundaryPressure: boundaryPressure,
+            requestedLowX: requestedLowX,
+            requestedLowY: requestedLowY,
+            requestedHighX: requestedHighX,
+            requestedHighY: requestedHighY,
+            appliedLowX: allocatedX.low,
+            appliedLowY: allocatedY.low,
+            appliedHighX: allocatedX.high,
+            appliedHighY: allocatedY.high,
+            preUsage: preUsage
         )
     }
 

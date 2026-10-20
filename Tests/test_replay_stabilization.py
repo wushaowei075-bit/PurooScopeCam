@@ -45,6 +45,24 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(report["gyro_active_fraction"], 1)
         self.assertEqual(len(report["replayed_pairs"]), 1)
         self.assertLess(report["replayed_pairs"][0]["device_replay_difference_px"], 0.001)
+        self.assertEqual(report["crop_pre_usage"]["count"], 0)
+        self.assertEqual(report["crop_allocation_difference_output_fraction"]["high_y"]["count"], 0)
+
+    def test_v9_crop_budget(self):
+        records = [
+            {"type": "session", "app_build": "27", "format_version": 9},
+            {"type": "frame", "crop_requested_low_y": 0.22, "crop_applied_low_y": 0.20,
+             "crop_requested_high_y": 0.03, "crop_applied_high_y": 0.03, "crop_pre_usage": 0.96},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trace.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in records), encoding="utf-8")
+            report = replay.analyze(path)
+        differences = report["crop_allocation_difference_output_fraction"]
+        self.assertAlmostEqual(differences["low_y"]["max"], 0.02)
+        self.assertEqual(differences["high_y"]["max"], 0)
+        self.assertEqual(differences["high_x"]["count"], 0)
+        self.assertAlmostEqual(report["crop_pre_usage"]["max"], 0.96)
 
 
 if __name__ == "__main__":
