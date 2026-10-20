@@ -118,6 +118,8 @@ final class StabilizationTraceRecorder {
                 header["type"] = "session"
                 header["created_at"] = ISO8601DateFormatter().string(from: Date())
                 header["format_version"] = 8
+                header["app_build"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+                header["app_version"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
                 self.appendJSONObject(header)
                 self.flushIfNeeded(force: true)
             } catch {

@@ -30,6 +30,8 @@ was recovered or copied from the encrypted competitor executable.
    maximum. Two dark readings restore the device's default. AE, ISO, bias and
    focus remain automatic/user-controlled. Format limits and AE lock are respected.
    This may raise noise, and cannot remove blur in light too weak for short exposure.
+   The actual cap is rechecked so tapping to focus cannot silently reset it while
+   the controller's cached policy still says it is applied.
 4. **Shadow comparison.** A 256x256 regularized FFT phase-correlation candidate
    processes the same sampled luminance grids as NCC every sixth eligible frame.
    It runs on a utility queue with one job allowed across compute and trace write;
@@ -57,6 +59,21 @@ was recovered or copied from the encrypted competitor executable.
   textureless input, malformed grids and out-of-budget motion. These synthetic tests
   do not prove an improvement on real telescope footage.
 - Existing geometry/layout/focus and video/audio recorder tests remain in CI.
+
+The first CI run (commit `4bc7325`) passed 3,324 fusion/controller checks, all
+geometry/layout checks, the new diagnostics tests, iPhoneOS Release compilation
+and the existing recorder tests. Final package verification is recorded separately.
+
+## Local replay
+
+`tools/replay_stabilization.py <trace.jsonl> --output <summary.json>` reads the local
+trace with NumPy, reports calibration/presentation/exposure/GPU statistics, and
+replays the saved pairs using an independent implementation of the same FFT
+measurement. It compares replay output to device output in source pixels and
+reports NCC/FFT disagreement without mislabeling it as accuracy. Three local
+tests cover known translations, blank images and trace parsing/presentation rate.
+The app never uploads this data. Raw luminance pairs should be treated as photos
+of the recorded scene when sharing a trace.
 
 ## Real-device acceptance still required
 

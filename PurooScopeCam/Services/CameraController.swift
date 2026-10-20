@@ -652,7 +652,9 @@ final class CameraController: NSObject, ObservableObject {
         let cap = StabilizationExposurePolicy.boundedDuration(proposed,
             minimum: CMTimeGetSeconds(device.activeFormat.minExposureDuration),
             maximum: CMTimeGetSeconds(device.activeFormat.maxExposureDuration))
-        guard cap != appliedExposureCap else { return }
+        let actualCap = CMTimeGetSeconds(device.activeMaxExposureDuration)
+        let needsReapplication = cap.map { !actualCap.isFinite || abs(actualCap - $0) > 0.00001 } ?? false
+        guard cap != appliedExposureCap || needsReapplication else { return }
         do {
             try device.lockForConfiguration()
             device.activeMaxExposureDuration = cap.map { CMTime(seconds: $0, preferredTimescale: 1_000_000) } ?? .invalid
