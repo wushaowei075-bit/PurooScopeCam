@@ -133,6 +133,8 @@ final class CameraController: NSObject, ObservableObject {
     @Published var isTelemetryWatermarkEnabled = false
     @Published private(set) var latestThumbnailImage: UIImage?
     @Published private(set) var burstProgressText: String?
+    @Published private(set) var stillCaptureFlashTrigger: Int = 0
+    @Published private(set) var liveExposureText: String = "1/120s · ISO 100"
 
     private let sessionQueue = DispatchQueue(label: "com.puroo.scope.camera.session")
     private let videoOutputQueue = DispatchQueue(label: "com.puroo.scope.camera.videoOutput", qos: .userInteractive)
@@ -540,19 +542,27 @@ final class CameraController: NSObject, ObservableObject {
 
     func captureStillWhileRecording() {
         CameraFeedbackSound.playShutter()
+        beginFinishingBackgroundTask()
+        publish { $0.stillCaptureFlashTrigger &+= 1 }
         sessionQueue.async { [weak self] in
-            guard let self, self.recordingActive, let sink = self.previewPhotoSink else { return }
-            sink.captureStabilizedPhoto { [weak self] result in
-                guard let self else { return }
-                switch result {
-                case .success(let data):
-                    let processed = self.applyTelemetryWatermarkIfNeeded(to: data)
-                    self.updateLatestThumbnail(fromPhotoData: processed)
-                    self.savePhotoData(processed)
-                    self.publishStatus(message: "录像抓拍已保存")
-                case .failure(let error):
-                    self.publishStatus(error: "抓拍失败：\(error.localizedDescription)")
+            guard let self else { return }
+            if let sink = self.previewPhotoSink {
+                sink.captureStabilizedPhoto { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success(let data):
+                        let processed = self.applyTelemetryWatermarkIfNeeded(to: data)
+                        self.updateLatestThumbnail(fromPhotoData: processed)
+                        self.savePhotoData(processed)
+                        self.publishStatus(message: "已抓拍 4K 防抖照片")
+                    case .failure(let error):
+                        self.publishStatus(error: "抓拍失败：\(error.localizedDescription)")
+                        self.endBackgroundTaskWhenSavesFinish()
+                    }
                 }
+            } else {
+                self.publishStatus(error: "取景画面未就绪，暂无法抓拍")
+                self.endBackgroundTaskWhenSavesFinish()
             }
         }
     }
@@ -1361,53 +1371,199 @@ final class CameraController: NSObject, ObservableObject {
               image.size.width > 64, image.size.height > 64 else {
             return data
         }
+        let imgW = image.size.width
+        let imgH = image.size.height
+        let footerH = round(max(68, min(imgH * 0.092, 220)))
+        let canvasSize = CGSize(width: imgW, height: imgH + footerH)
+
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+        let renderer = UIGraphicsImageRenderer(size: canvasSize, format: format)
         let stamped = renderer.image { ctx in
-            image.draw(in: CGRect(origin: .zero, size: image.size))
-            let barHeight = max(36, min(image.size.height * 0.052, 84))
-            let barRect = CGRect(x: 0, y: image.size.height - barHeight, width: image.size.width, height: barHeight)
-            UIColor.black.withAlphaComponent(0.76).setFill()
-            ctx.fill(barRect)
+            let cgCtx = ctx.cgContext
+            image.draw(in: CGRect(x: 0, y: 0, width: imgW, height: imgH))
 
-            let topLineRect = CGRect(x: 0, y: barRect.minY, width: image.size.width, height: max(1.5, barHeight * 0.03))
-            UIColor(red: 1.0, green: 0.90, blue: 0.24, alpha: 0.85).setFill()
-            ctx.fill(topLineRect)
+            let footerRect = CGRect(x: 0, y: imgH, width: imgW, height: footerH)
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let bgColors = [
+                UIColor(red: 0.045, green: 0.050, blue: 0.065, alpha: 1.0).cgColor,
+                UIColor(red: 0.075, green: 0.082, blue: 0.105, alpha: 1.0).cgColor
+            ] as CFArray
+            if let bgGrad = CGGradient(colorsSpace: colorSpace, colors: bgColors, locations: [0.0, 1.0]) {
+                cgCtx.saveGState()
+                cgCtx.addRect(footerRect)
+                cgCtx.clip()
+                cgCtx.drawLinearGradient(
+                    bgGrad,
+                    start: CGPoint(x: 0, y: imgH),
+                    end: CGPoint(x: 0, y: imgH + footerH),
+                    options: []
+                )
+                cgCtx.restoreGState()
+            } else {
+                UIColor(red: 0.055, green: 0.060, blue: 0.075, alpha: 1.0).setFill()
+                ctx.fill(footerRect)
+            }
 
-            let fontSize = max(12, barHeight * 0.36)
-            let brandAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.monospacedSystemFont(ofSize: fontSize, weight: .semibold),
-                .foregroundColor: UIColor(red: 1.0, green: 0.90, blue: 0.24, alpha: 1.0)
+            // Delicate champagne-gold top hairline
+            let lineH = max(1.2, footerH * 0.022)
+            let goldLineColors = [
+                UIColor(red: 0.96, green: 0.85, blue: 0.45, alpha: 0.15).cgColor,
+                UIColor(red: 0.96, green: 0.85, blue: 0.45, alpha: 0.88).cgColor,
+                UIColor(red: 0.96, green: 0.85, blue: 0.45, alpha: 0.15).cgColor
+            ] as CFArray
+            if let lineGrad = CGGradient(colorsSpace: colorSpace, colors: goldLineColors, locations: [0.0, 0.5, 1.0]) {
+                cgCtx.saveGState()
+                cgCtx.addRect(CGRect(x: 0, y: imgH, width: imgW, height: lineH))
+                cgCtx.clip()
+                cgCtx.drawLinearGradient(
+                    lineGrad,
+                    start: CGPoint(x: 0, y: imgH),
+                    end: CGPoint(x: imgW, y: imgH),
+                    options: []
+                )
+                cgCtx.restoreGState()
+            }
+
+            let padX = max(20, imgW * 0.032)
+            let midY = imgH + footerH * 0.50
+            let goldColor = UIColor(red: 0.96, green: 0.86, blue: 0.48, alpha: 1.0)
+            let silverColor = UIColor(red: 0.62, green: 0.66, blue: 0.73, alpha: 1.0)
+            let whiteColor = UIColor(white: 0.97, alpha: 1.0)
+
+            // Draw precision optical emblem on left
+            let emblemR = footerH * 0.23
+            let emblemCenter = CGPoint(x: padX + emblemR, y: midY)
+            cgCtx.saveGState()
+            cgCtx.setStrokeColor(goldColor.withAlphaComponent(0.90).cgColor)
+            cgCtx.setLineWidth(max(1.2, footerH * 0.022))
+            cgCtx.addArc(center: emblemCenter, radius: emblemR, startAngle: 0, endAngle: .pi * 2, clockwise: false)
+            cgCtx.strokePath()
+
+            cgCtx.setStrokeColor(goldColor.withAlphaComponent(0.45).cgColor)
+            cgCtx.setLineWidth(max(1.0, footerH * 0.015))
+            cgCtx.addArc(center: emblemCenter, radius: emblemR * 0.58, startAngle: 0, endAngle: .pi * 2, clockwise: false)
+            cgCtx.strokePath()
+
+            let tickInner = emblemR * 0.72
+            let tickOuter = emblemR * 1.12
+            for angle in [0.0, .pi * 0.5, .pi, .pi * 1.5] {
+                let c = CGFloat(cos(angle))
+                let s = CGFloat(sin(angle))
+                cgCtx.move(to: CGPoint(x: emblemCenter.x + c * tickInner, y: emblemCenter.y + s * tickInner))
+                cgCtx.addLine(to: CGPoint(x: emblemCenter.x + c * tickOuter, y: emblemCenter.y + s * tickOuter))
+            }
+            cgCtx.strokePath()
+
+            cgCtx.setFillColor(goldColor.cgColor)
+            let dotR = max(1.8, emblemR * 0.16)
+            cgCtx.fillEllipse(in: CGRect(x: emblemCenter.x - dotR, y: emblemCenter.y - dotR, width: dotR * 2, height: dotR * 2))
+            cgCtx.restoreGState()
+
+            // Brand typography
+            let brandX = emblemCenter.x + emblemR + max(10, footerH * 0.18)
+            let titleFontSize = max(12, footerH * 0.25)
+            let subFontSize = max(8.5, footerH * 0.145)
+            let brandTitleAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: titleFontSize, weight: .semibold),
+                .foregroundColor: goldColor,
+                .kern: max(1.2, titleFontSize * 0.12)
             ]
-            let infoAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.monospacedSystemFont(ofSize: fontSize * 0.88, weight: .regular),
-                .foregroundColor: UIColor.white.withAlphaComponent(0.92)
+            let brandSubAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: subFontSize, weight: .regular),
+                .foregroundColor: silverColor,
+                .kern: max(0.5, subFontSize * 0.06)
             ]
+            let brandTitle = "PUROO PULAI" as NSString
+            let brandSub = "OPTICAL TELEPHOTO · 普徕远摄光学" as NSString
+            let bTitleSize = brandTitle.size(withAttributes: brandTitleAttrs)
+            let bSubSize = brandSub.size(withAttributes: brandSubAttrs)
+            let leftBlockH = bTitleSize.height + bSubSize.height + footerH * 0.04
+            let leftTopY = midY - leftBlockH * 0.5
+            brandTitle.draw(at: CGPoint(x: brandX, y: leftTopY), withAttributes: brandTitleAttrs)
+            brandSub.draw(at: CGPoint(x: brandX, y: leftTopY + bTitleSize.height + footerH * 0.04), withAttributes: brandSubAttrs)
+
+            // Right telemetry matrix (3 columns)
             let scopeMag = Int(telescopeMagnification.rounded())
             let digiZoom = Double(zoomFactor)
             let totalMag = Int((telescopeMagnification * digiZoom).rounded())
             let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            formatter.dateFormat = "yyyy.MM.dd  HH:mm"
             let dateStr = formatter.string(from: Date())
-            let leftText = "PUROO 普徕 · 远摄防抖"
-            let rightText = String(format: "%d×镜 · %.1f×数码 (总%d×) | %@ | %@", scopeMag, digiZoom, totalMag, activeCaptureQuality.shortTitle, dateStr)
 
-            let paddingX = max(12, image.size.width * 0.022)
-            let leftSize = (leftText as NSString).size(withAttributes: brandAttrs)
-            (leftText as NSString).draw(
-                at: CGPoint(x: paddingX, y: barRect.midY - leftSize.height * 0.5),
-                withAttributes: brandAttrs
-            )
-            let rightSize = (rightText as NSString).size(withAttributes: infoAttrs)
-            if image.size.width - paddingX * 2 - leftSize.width > rightSize.width + 8 {
-                (rightText as NSString).draw(
-                    at: CGPoint(x: image.size.width - paddingX - rightSize.width, y: barRect.midY - rightSize.height * 0.5),
-                    withAttributes: infoAttrs
+            let valFontSize = max(11, footerH * 0.225)
+            let lblFontSize = max(8, footerH * 0.135)
+            let valAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedDigitSystemFont(ofSize: valFontSize, weight: .semibold),
+                .foregroundColor: whiteColor
+            ]
+            let lblAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: lblFontSize, weight: .medium),
+                .foregroundColor: silverColor,
+                .kern: 0.6
+            ]
+            let goldLblAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: lblFontSize, weight: .semibold),
+                .foregroundColor: goldColor.withAlphaComponent(0.88),
+                .kern: 0.8
+            ]
+
+            let columns: [(top: String, bottom: String, isGoldLabel: Bool)] = [
+                (
+                    String(format: "%d× EQUIV.", totalMag),
+                    String(format: "%d× SCOPE · %.1f× DIGI", scopeMag, digiZoom),
+                    true
+                ),
+                (
+                    "\(liveExposureText) · \(activeCaptureQuality.shortTitle)",
+                    isStabilizationEnabled ? "6-DOF GYRO EIS · \(stabilizationPreference.title)" : "DIRECT OPTICAL PATH",
+                    false
+                ),
+                (
+                    dateStr,
+                    "TELEPHOTO MASTER",
+                    true
                 )
+            ]
+
+            let colGap = max(14, footerH * 0.34)
+            var cursorRightX = imgW - padX
+            let leftLimitX = brandX + max(bTitleSize.width, bSubSize.width) + colGap
+
+            for (idx, col) in columns.reversed().enumerated() {
+                let topNS = col.top as NSString
+                let botNS = col.bottom as NSString
+                let usedLblAttrs = col.isGoldLabel ? goldLblAttrs : lblAttrs
+                let topSize = topNS.size(withAttributes: valAttrs)
+                let botSize = botNS.size(withAttributes: usedLblAttrs)
+                let colW = max(topSize.width, botSize.width)
+                let colLeftX = cursorRightX - colW
+                guard colLeftX > leftLimitX else { break }
+
+                let blockH = topSize.height + botSize.height + footerH * 0.04
+                let topY = midY - blockH * 0.5
+                topNS.draw(at: CGPoint(x: cursorRightX - topSize.width, y: topY), withAttributes: valAttrs)
+                botNS.draw(
+                    at: CGPoint(x: cursorRightX - botSize.width, y: topY + topSize.height + footerH * 0.04),
+                    withAttributes: usedLblAttrs
+                )
+
+                cursorRightX = colLeftX - colGap * 0.5
+                if idx < columns.count - 1, cursorRightX - colGap * 0.5 > leftLimitX {
+                    let sepH = footerH * 0.42
+                    let sepRect = CGRect(
+                        x: cursorRightX,
+                        y: midY - sepH * 0.5,
+                        width: max(1.0, footerH * 0.015),
+                        height: sepH
+                    )
+                    goldColor.withAlphaComponent(0.26).setFill()
+                    ctx.fill(sepRect)
+                    cursorRightX -= colGap * 0.5
+                }
             }
         }
-        return stamped.jpegData(compressionQuality: 0.92) ?? data
+        return stamped.jpegData(compressionQuality: 0.94) ?? data
     }
 
     private func pendingDirectory() throws -> URL {
@@ -1674,6 +1830,19 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapt
         let callbackTime = CACurrentMediaTime()
         if callbackTime - lastExposurePolicyRequest >= 1 {
             lastExposurePolicyRequest = callbackTime
+            if let dev = videoDeviceInput?.device {
+                let dur = CMTimeGetSeconds(dev.exposureDuration)
+                let isoVal = Int(dev.iso.rounded())
+                let shutterStr: String
+                if dur.isFinite, dur > 0 {
+                    let denom = max(1, Int((1.0 / dur).rounded()))
+                    shutterStr = "1/\(denom)s"
+                } else {
+                    shutterStr = "1/120s"
+                }
+                let summary = "\(shutterStr) · ISO \(max(isoVal, 25))"
+                publish { $0.liveExposureText = summary }
+            }
             sessionQueue.async { [weak self] in self?.updateStabilizationExposureOnSessionQueue() }
         }
         if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {

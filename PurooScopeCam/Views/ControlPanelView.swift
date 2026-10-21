@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 enum PurooBrandStyle {
     static let colors: [Color] = [
@@ -20,181 +21,163 @@ enum PurooBrandStyle {
 
 struct CameraAdjustmentBar: View {
     @EnvironmentObject private var camera: CameraController
-    @State private var isEditing = false
+    @State private var isDragging = false
+    @State private var dragStartZoom: CGFloat = 1.5
+    @State private var lastHapticPreset: CGFloat?
+
+    private var minZoom: CGFloat {
+        camera.isStabilizationEnabled ? 1.5 : 1.0
+    }
+
+    private var maxZoom: CGFloat {
+        StabilizationTuning.maximumDisplayZoom
+    }
 
     private var quickZoomPresets: [CGFloat] {
         camera.isStabilizationEnabled ? [1.5, 3.0, 6.0, 10.0] : [1.0, 3.0, 6.0, 10.0]
     }
 
-    var body: some View {
-        VStack(spacing: 6) {
-            if camera.isManualFocusEnabled {
-                manualFocusBar
-            }
-
-            HStack(spacing: 6) {
-                ForEach(quickZoomPresets, id: \.self) { preset in
-                    let isSelected = abs(camera.zoomFactor - preset) < 0.22
-                    Button {
-                        withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
-                            camera.setDisplayedZoomFactor(preset)
-                        }
-                    } label: {
-                        Text(preset == floor(preset) ? String(format: "%.0f×", preset) : String(format: "%.1f×", preset))
-                            .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular, design: .monospaced))
-                            .foregroundStyle(isSelected ? .black : .white.opacity(0.88))
-                            .padding(.horizontal, 8)
-                            .frame(height: 22)
-                            .background(
-                                isSelected ? PurooBrandStyle.yellow : Color.black.opacity(0.60),
-                                in: Capsule()
-                            )
-                            .overlay {
-                                Capsule()
-                                    .stroke(.white.opacity(isSelected ? 0 : 0.14), lineWidth: 0.7)
-                            }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            HStack(spacing: isEditing ? 10 : 7) {
-                Image(systemName: "plus.magnifyingglass")
-                    .font(.system(size: isEditing ? 15 : 12, weight: .regular))
-                    .frame(width: isEditing ? 24 : 18)
-
-                CompactZoomSlider(
-                    value: Binding(
-                        get: { Double(camera.zoomFactor) },
-                        set: { camera.setDisplayedZoomFactor(CGFloat($0)) }
-                    ),
-                    range: (camera.isStabilizationEnabled ? 1.5 : 1)...Double(StabilizationTuning.maximumDisplayZoom),
-                    isExpanded: isEditing,
-                    onEditingChanged: { editing in
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            isEditing = editing
-                        }
-                    }
-                )
-
-                Text(String(format: "%.1f×", camera.zoomFactor))
-                    .font(.system(size: isEditing ? 12 : 10, weight: .regular, design: .monospaced))
-                    .lineLimit(1)
-                    .frame(width: isEditing ? 50 : 42, alignment: .trailing)
-            }
-            .padding(.horizontal, isEditing ? 12 : 9)
-            .frame(maxWidth: isEditing ? 310 : 220)
-            .frame(height: isEditing ? 44 : 30)
-            .foregroundStyle(.white)
-            .background(.black.opacity(0.68), in: Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(.white.opacity(isEditing ? 0.20 : 0.08), lineWidth: 0.8)
-            }
-            .animation(.easeOut(duration: 0.18), value: isEditing)
-            .accessibilityLabel("调节变焦")
-        }
+    private var zoomFraction: CGFloat {
+        let span = max(maxZoom - minZoom, 0.001)
+        return min(max((camera.zoomFactor - minZoom) / span, 0), 1)
     }
 
-    private var manualFocusBar: some View {
-        HStack(spacing: 8) {
-            Text("MF")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .foregroundStyle(PurooBrandStyle.yellow)
-
-            CompactZoomSlider(
-                value: Binding(
-                    get: { Double(camera.manualLensPosition) },
-                    set: { camera.setManualFocus(enabled: true, lensPosition: Float($0)) }
-                ),
-                range: 0.0...1.0,
-                isExpanded: false,
-                onEditingChanged: { _ in }
-            )
-
-            Button {
-                camera.isFocusPeakingEnabled.toggle()
-            } label: {
-                Text(camera.isFocusPeakingEnabled ? "峰值开" : "峰值关")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(camera.isFocusPeakingEnabled ? Color.green : .white.opacity(0.75))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(.white.opacity(0.12), in: Capsule())
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 10)
-        .frame(maxWidth: 260)
-        .frame(height: 28)
-        .background(.black.opacity(0.72), in: Capsule())
-        .overlay {
-            Capsule()
-                .stroke(PurooBrandStyle.yellow.opacity(0.45), lineWidth: 0.8)
-        }
+    private var isAtPreset: Bool {
+        quickZoomPresets.contains { abs(camera.zoomFactor - $0) < 0.12 }
     }
-}
-
-private struct CompactZoomSlider: View {
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let isExpanded: Bool
-    let onEditingChanged: (Bool) -> Void
-    @State private var isDragging = false
-    @State private var dragStartValue = 1.0
 
     var body: some View {
         GeometryReader { proxy in
-            let width = max(proxy.size.width, 1)
-            let fraction = min(max((value - range.lowerBound) / rangeLength, 0), 1)
+            let barWidth = max(proxy.size.width, 1)
+            ZStack(alignment: .bottomLeading) {
+                // Subtle optical scale ticks integrated along bottom edge
+                HStack(spacing: 0) {
+                    ForEach(0..<25, id: \.self) { tick in
+                        let tickFrac = CGFloat(tick) / 24.0
+                        let passed = tickFrac <= zoomFraction + 0.01
+                        Rectangle()
+                            .fill(passed ? PurooBrandStyle.yellow.opacity(0.75) : Color.white.opacity(0.16))
+                            .frame(width: 1, height: tick % 6 == 0 ? 5.5 : 3.0)
+                        if tick < 24 {
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 3)
 
-            ZStack(alignment: .leading) {
+                // Continuous progress track fused along bottom
                 Capsule()
-                    .fill(.white.opacity(0.24))
-                    .frame(height: isExpanded ? 5 : 3)
-
-                Capsule()
-                    .fill(PurooBrandStyle.yellow)
-                    .frame(
-                        width: max(isExpanded ? 5 : 3, width * fraction),
-                        height: isExpanded ? 5 : 3
-                    )
-
-                Circle()
-                    .fill(.white)
-                    .frame(width: isExpanded ? 20 : 14, height: isExpanded ? 20 : 14)
-                    .shadow(color: .black.opacity(0.30), radius: 2, y: 1)
-                    .offset(
-                        x: min(
-                            max(width * fraction - (isExpanded ? 10 : 7), 0),
-                            max(width - (isExpanded ? 20 : 14), 0)
+                    .fill(
+                        LinearGradient(
+                            colors: [PurooBrandStyle.yellow.opacity(0.55), PurooBrandStyle.yellow],
+                            startPoint: .leading,
+                            endPoint: .trailing
                         )
                     )
+                    .frame(
+                        width: max(12, (barWidth - 24) * zoomFraction),
+                        height: isDragging ? 3.5 : 2.2
+                    )
+                    .padding(.leading, 12)
+                    .padding(.bottom, 1.5)
+
+                // Fused preset nodes + live readout in a single unified track
+                HStack(spacing: 5) {
+                    Image(systemName: "plus.magnifyingglass")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(isDragging ? PurooBrandStyle.yellow : .white.opacity(0.72))
+                        .padding(.leading, 4)
+
+                    ForEach(quickZoomPresets, id: \.self) { preset in
+                        let isSelected = abs(camera.zoomFactor - preset) < 0.12
+                        Button {
+                            triggerSelectionHaptic()
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.82)) {
+                                camera.setDisplayedZoomFactor(preset)
+                            }
+                        } label: {
+                            Text(preset == floor(preset) ? String(format: "%.0f×", preset) : String(format: "%.1f×", preset))
+                                .font(.system(size: 11, weight: isSelected ? .bold : .medium, design: .monospaced))
+                                .foregroundStyle(isSelected ? .black : .white.opacity(0.90))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 25)
+                                .background(
+                                    isSelected
+                                        ? PurooBrandStyle.yellow
+                                        : Color.white.opacity(0.08),
+                                    in: Capsule()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Divider()
+                        .frame(height: 14)
+                        .overlay(Color.white.opacity(0.20))
+                        .padding(.horizontal, 1)
+
+                    Text(String(format: "%.1f×", camera.zoomFactor))
+                        .font(.system(size: 11.5, weight: (!isAtPreset || isDragging) ? .bold : .semibold, design: .monospaced))
+                        .foregroundStyle((!isAtPreset || isDragging) ? .black : PurooBrandStyle.yellow)
+                        .frame(width: 46, height: 25)
+                        .background(
+                            (!isAtPreset || isDragging)
+                                ? PurooBrandStyle.yellow
+                                : Color.white.opacity(0.06),
+                            in: Capsule()
+                        )
+                }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
+            .contentShape(Capsule())
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 7)
                     .onChanged { gesture in
                         if !isDragging {
                             isDragging = true
-                            dragStartValue = value
-                            onEditingChanged(true)
+                            dragStartZoom = camera.zoomFactor
+                            lastHapticPreset = nil
                         }
-                        let delta = Double(gesture.translation.width / 220) * rangeLength
-                        value = min(max(dragStartValue + delta, range.lowerBound), range.upperBound)
+                        let span = maxZoom - minZoom
+                        let delta = (gesture.translation.width / max(barWidth - 30, 140)) * span
+                        let nextZoom = min(max(dragStartZoom + delta, minZoom), maxZoom)
+                        if let hitPreset = quickZoomPresets.first(where: { abs(nextZoom - $0) < 0.09 }) {
+                            if lastHapticPreset != hitPreset {
+                                lastHapticPreset = hitPreset
+                                triggerSelectionHaptic()
+                            }
+                        } else {
+                            lastHapticPreset = nil
+                        }
+                        camera.setDisplayedZoomFactor(nextZoom)
                     }
                     .onEnded { _ in
-                        isDragging = false
-                        onEditingChanged(false)
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            isDragging = false
+                        }
                     }
             )
         }
-        .frame(height: isExpanded ? 30 : 20)
+        .frame(maxWidth: isDragging ? 316 : 292)
+        .frame(height: isDragging ? 40 : 36)
+        .background(.black.opacity(0.72), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(
+                    isDragging ? PurooBrandStyle.yellow.opacity(0.65) : Color.white.opacity(0.16),
+                    lineWidth: isDragging ? 1.1 : 0.8
+                )
+        }
+        .animation(.easeOut(duration: 0.16), value: isDragging)
+        .accessibilityLabel("快捷档位与无级变焦条")
     }
 
-    private var rangeLength: Double {
-        max(range.upperBound - range.lowerBound, 0.0001)
+    private func triggerSelectionHaptic() {
+        let generator = UISelectionFeedbackGenerator()
+        generator.prepare()
+        generator.selectionChanged()
     }
 }
 
@@ -234,7 +217,18 @@ struct ControlPanelView: View {
     private var portraitLayout: some View {
         VStack(spacing: 4) {
             recordingStatus.frame(height: 12)
-            captureButton(size: 72)
+            ZStack {
+                captureButton(size: 72)
+
+                if camera.status.isRecording {
+                    recordingSnapButton(size: 48)
+                        .offset(x: 82)
+                        .transition(.scale(scale: 0.7).combined(with: .opacity))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .animation(modeTransitionAnimation, value: camera.status.isRecording)
+
             Spacer(minLength: 4)
             HStack(spacing: 0) {
                 libraryButton
@@ -389,6 +383,31 @@ struct ControlPanelView: View {
         .accessibilityLabel("打开相册")
     }
 
+    private func recordingSnapButton(size: CGFloat) -> some View {
+        Button {
+            camera.captureStillWhileRecording()
+        } label: {
+            ZStack {
+                Circle()
+                    .stroke(.white.opacity(0.88), lineWidth: 2.2)
+
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: size - 9, height: size - 9)
+
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.black.opacity(0.85))
+            }
+            .frame(width: size, height: size)
+            .contentShape(Circle())
+            .shadow(color: .black.opacity(0.35), radius: 4, y: 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(camera.status.isFinishingRecording)
+        .accessibilityLabel("录像中无损抓拍")
+    }
+
     private var burstButton: some View {
         Button {
             if camera.status.isRecording {
@@ -403,9 +422,13 @@ struct ControlPanelView: View {
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(PurooBrandStyle.yellow)
                 } else if camera.status.isRecording {
-                    Image(systemName: "camera.aperture")
-                        .font(.system(size: 20, weight: .regular))
-                        .foregroundStyle(.white)
+                    VStack(spacing: 1) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("抓拍")
+                            .font(.system(size: 9.5, weight: .bold))
+                    }
+                    .foregroundStyle(.black)
                 } else {
                     Image(systemName: "square.stack.3d.up")
                         .font(.system(size: 20, weight: .light))
@@ -414,12 +437,12 @@ struct ControlPanelView: View {
             }
             .frame(width: 46, height: 46)
             .background(
-                camera.status.isRecording ? Color.white.opacity(0.22) : Color.white.opacity(0.10),
+                camera.status.isRecording ? Color.white : Color.white.opacity(0.10),
                 in: Circle()
             )
             .overlay {
                 if camera.status.isRecording {
-                    Circle().stroke(.white.opacity(0.65), lineWidth: 1.2)
+                    Circle().stroke(PurooBrandStyle.yellow, lineWidth: 1.5)
                 }
             }
         }

@@ -809,6 +809,19 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 readyFrameCount += 1
                 readyFrame = frameQueue[index]
                 transform = renderTransformForFrame(at: timestamp)
+                if readyFrame!.viewport.width > 1, readyFrame!.viewport.height > 1 {
+                    let candidate = DisplayedPhotoFrame(
+                        pixelBuffer: readyFrame!.pixelBuffer,
+                        transform: transform,
+                        cropScale: scale,
+                        logicalViewport: readyFrame!.viewport,
+                        timestamp: timestamp,
+                        qualityScore: 0.78
+                    )
+                    if displayedPhotoFrame == nil || recorder.isRecording {
+                        displayedPhotoFrame = candidate
+                    }
+                }
             }
         }
         stateLock.unlock()
@@ -937,9 +950,11 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 return
             }
             let image = CIImage(cvPixelBuffer: photoFrame.pixelBuffer)
-            let outputSize = CGSize(
-                width: CVPixelBufferGetWidth(photoFrame.pixelBuffer),
-                height: CVPixelBufferGetHeight(photoFrame.pixelBuffer)
+            let outputSize = CameraGeometry.outputSize(
+                for: CGSize(
+                    width: CVPixelBufferGetWidth(photoFrame.pixelBuffer),
+                    height: CVPixelBufferGetHeight(photoFrame.pixelBuffer)
+                )
             )
             let stabilizedImage = image.transformed(
                 by: self.imageToOutputTransform(
@@ -951,6 +966,14 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 )
             )
             let outputBounds = CGRect(origin: .zero, size: outputSize)
+            if let jpegData = self.ciContext.jpegRepresentation(
+                of: stabilizedImage.cropped(to: outputBounds),
+                colorSpace: self.colorSpace,
+                options: [:]
+            ) {
+                completion(.success(jpegData))
+                return
+            }
             guard let cgImage = self.ciContext.createCGImage(stabilizedImage, from: outputBounds),
                   let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.96)
             else {

@@ -18,6 +18,7 @@ struct CameraScreen: View {
     @State private var cropUsage: CGFloat = 0
     @State private var isGyroCalibrated = false
     @State private var vignetteOffset: CGPoint = .zero
+    @State private var shutterFlashOpacity: Double = 0
 
     var body: some View {
         GeometryReader { proxy in
@@ -245,7 +246,6 @@ struct CameraScreen: View {
                 opticalMagnification: camera.telescopeMagnification,
                 displayZoomFactor: camera.zoomFactor,
                 systemStabilizationModeName: camera.status.activePreviewStabilizationMode.scopeDisplayName,
-                isFocusPeakingEnabled: camera.isFocusPeakingEnabled,
                 onTelemetryUpdate: { usage, calibrated, vigOffset in
                     self.cropUsage = usage
                     self.isGyroCalibrated = calibrated
@@ -266,6 +266,12 @@ struct CameraScreen: View {
                 SubjectLockReticleView()
                     .frame(width: 78, height: 78)
                     .position(lockedPoint)
+                    .allowsHitTesting(false)
+            }
+
+            if shutterFlashOpacity > 0.001 {
+                Color.white
+                    .opacity(shutterFlashOpacity)
                     .allowsHitTesting(false)
             }
 
@@ -317,7 +323,7 @@ struct CameraScreen: View {
                         camera.unlockFocusAndExposure()
                     } label: {
                         Label(
-                            camera.isManualFocusEnabled ? "MF 手动对焦中 · 点击恢复 AF" : "AE/AF 已锁定 · 点击解锁",
+                            "AE/AF 已锁定 · 点击解锁",
                             systemImage: "lock.fill"
                         )
                         .font(.system(size: 11, weight: .medium))
@@ -351,12 +357,25 @@ struct CameraScreen: View {
                     .disabled(camera.status.isSaving || camera.status.isCapturingBurst)
                 }
 
+                if camera.isTelemetryWatermarkEnabled {
+                    TelemetryWatermarkLiveBanner(
+                        scopeMagnification: Int(camera.telescopeMagnification.rounded()),
+                        digitalZoom: Double(camera.zoomFactor),
+                        totalMagnification: Int((camera.telescopeMagnification * Double(camera.zoomFactor)).rounded()),
+                        exposureSummary: camera.liveExposureText,
+                        qualityTitle: camera.activeCaptureQuality.shortTitle,
+                        stabilizationTitle: camera.isStabilizationEnabled ? camera.stabilizationPreference.title : "直通"
+                    )
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
                 CameraAdjustmentBar()
                     .disabled(camera.status.isCapturingPhoto || camera.status.isCapturingBurst || camera.status.isFinishingRecording)
             }
             .padding(.top, topControlInset)
             .padding(.horizontal, 12)
             .padding(.bottom, bottomControlInset + 8)
+            .animation(.spring(response: 0.28, dampingFraction: 0.84), value: camera.isTelemetryWatermarkEnabled)
 
             if let focusIndicator {
                 FocusReticleView(isLocked: camera.focusLocked)
@@ -379,6 +398,12 @@ struct CameraScreen: View {
         }
         .clipped()
         .animation(.easeOut(duration: 0.18), value: focusIndicator?.id)
+        .onChange(of: camera.stillCaptureFlashTrigger) { _, _ in
+            shutterFlashOpacity = 0.42
+            withAnimation(.easeOut(duration: 0.22)) {
+                shutterFlashOpacity = 0
+            }
+        }
     }
 
     private var previewTopControls: some View {
@@ -386,7 +411,7 @@ struct CameraScreen: View {
         return VStack(spacing: 10) {
             brandHeader
 
-            HStack(spacing: 6) {
+            HStack(spacing: 7) {
                 Button {
                     isQualityDialogPresented = true
                 } label: {
@@ -417,7 +442,7 @@ struct CameraScreen: View {
                             .font(.system(size: 11.5, weight: .regular, design: .monospaced))
                             .lineLimit(1)
                     }
-                    .padding(.horizontal, 9)
+                    .padding(.horizontal, 10)
                     .frame(height: 34)
                     .foregroundStyle(PurooBrandStyle.yellow)
                     .background(.black.opacity(0.58), in: Capsule())
@@ -434,7 +459,7 @@ struct CameraScreen: View {
                     camera.reticleMode = camera.reticleMode.next
                 } label: {
                     Image(systemName: camera.reticleMode == .gridAndLevel ? "squareshape.split.3x3" : "scope")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 13.5, weight: .medium))
                         .frame(width: 34, height: 34)
                         .foregroundStyle(camera.reticleMode == .off ? .white.opacity(0.85) : PurooBrandStyle.yellow)
                         .background(.black.opacity(0.58), in: Circle())
@@ -446,40 +471,37 @@ struct CameraScreen: View {
                 .accessibilityLabel("分划与水平仪")
 
                 Button {
-                    camera.setManualFocus(enabled: !camera.isManualFocusEnabled)
-                } label: {
-                    Text("MF")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .frame(width: 34, height: 34)
-                        .foregroundStyle(camera.isManualFocusEnabled ? .black : .white.opacity(0.88))
-                        .background(
-                            camera.isManualFocusEnabled ? PurooBrandStyle.yellow : Color.black.opacity(0.58),
-                            in: Circle()
-                        )
-                        .overlay {
-                            Circle().stroke(.white.opacity(0.18), lineWidth: 0.8)
-                        }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("手动峰值对焦")
-
-                Button {
                     camera.isTelemetryWatermarkEnabled.toggle()
                 } label: {
-                    Text("印")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .frame(width: 34, height: 34)
-                        .foregroundStyle(camera.isTelemetryWatermarkEnabled ? .black : .white.opacity(0.88))
-                        .background(
-                            camera.isTelemetryWatermarkEnabled ? PurooBrandStyle.yellow : Color.black.opacity(0.58),
-                            in: Circle()
-                        )
-                        .overlay {
-                            Circle().stroke(.white.opacity(0.18), lineWidth: 0.8)
-                        }
+                    HStack(spacing: 4) {
+                        Image(systemName: "camera.aperture")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("铭牌")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
+                    .foregroundStyle(
+                        camera.isTelemetryWatermarkEnabled
+                            ? Color.black
+                            : Color(red: 0.96, green: 0.86, blue: 0.48)
+                    )
+                    .background(
+                        camera.isTelemetryWatermarkEnabled
+                            ? Color(red: 0.96, green: 0.86, blue: 0.48)
+                            : Color.black.opacity(0.58),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(
+                                Color(red: 0.96, green: 0.86, blue: 0.48).opacity(camera.isTelemetryWatermarkEnabled ? 0 : 0.45),
+                                lineWidth: 0.9
+                            )
+                    }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("照片参数水印")
+                .accessibilityLabel("光学铭牌水印")
 
                 Spacer(minLength: 4)
             }
@@ -859,6 +881,117 @@ private struct FocusExposureControl: View {
 
     private var rangeLength: Double {
         range.upperBound - range.lowerBound
+    }
+}
+
+private struct TelemetryWatermarkLiveBanner: View {
+    let scopeMagnification: Int
+    let digitalZoom: Double
+    let totalMagnification: Int
+    let exposureSummary: String
+    let qualityTitle: String
+    let stabilizationTitle: String
+
+    private let champagneGold = Color(red: 0.96, green: 0.86, blue: 0.48)
+    private let coolSilver = Color(red: 0.65, green: 0.69, blue: 0.76)
+
+    var body: some View {
+        VStack(spacing: 0) {
+            LinearGradient(
+                colors: [
+                    champagneGold.opacity(0.08),
+                    champagneGold.opacity(0.85),
+                    champagneGold.opacity(0.08)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(height: 1)
+
+            HStack(spacing: 10) {
+                // Left: Optical Emblem + Brand
+                HStack(spacing: 7) {
+                    ZStack {
+                        Circle()
+                            .stroke(champagneGold.opacity(0.88), lineWidth: 1.1)
+                            .frame(width: 20, height: 20)
+
+                        Circle()
+                            .stroke(champagneGold.opacity(0.42), lineWidth: 0.8)
+                            .frame(width: 11, height: 11)
+
+                        Circle()
+                            .fill(champagneGold)
+                            .frame(width: 3, height: 3)
+                    }
+
+                    VStack(alignment: .leading, spacing: 1.5) {
+                        Text("PUROO PULAI")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .tracking(1.4)
+                            .foregroundStyle(champagneGold)
+                            .lineLimit(1)
+
+                        Text("OPTICAL TELEPHOTO")
+                            .font(.system(size: 7.5, weight: .medium))
+                            .tracking(0.6)
+                            .foregroundStyle(coolSilver)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 6)
+
+                // Column 1: Equivalent Magnification
+                VStack(alignment: .trailing, spacing: 1.5) {
+                    Text("\(totalMagnification)× EQUIV.")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.96))
+                        .lineLimit(1)
+
+                    Text(String(format: "%d×镜 · %.1f×数码", scopeMagnification, digitalZoom))
+                        .font(.system(size: 7.5, weight: .semibold))
+                        .foregroundStyle(champagneGold.opacity(0.88))
+                        .lineLimit(1)
+                }
+
+                Rectangle()
+                    .fill(champagneGold.opacity(0.26))
+                    .frame(width: 1, height: 18)
+
+                // Column 2: Exposure & EIS
+                VStack(alignment: .trailing, spacing: 1.5) {
+                    Text(exposureSummary)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.94))
+                        .lineLimit(1)
+
+                    Text("\(qualityTitle) · \(stabilizationTitle)")
+                        .font(.system(size: 7.5, weight: .medium))
+                        .foregroundStyle(coolSilver)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+        }
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.045, green: 0.050, blue: 0.065).opacity(0.90),
+                    Color(red: 0.075, green: 0.082, blue: 0.108).opacity(0.92)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            ),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(champagneGold.opacity(0.22), lineWidth: 0.8)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .shadow(color: .black.opacity(0.35), radius: 5, y: 2)
     }
 }
 
