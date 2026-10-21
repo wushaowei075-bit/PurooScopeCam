@@ -551,10 +551,10 @@ struct CameraScreen: View {
 
     private func toggleSubjectLock(at location: CGPoint, in previewSize: CGSize) {
         guard previewSize.width > 1, previewSize.height > 1 else { return }
-        if let existing = subjectLockLocation,
+        if let existing = lockedSubjectPoint,
            hypot(existing.x - location.x, existing.y - location.y) < 56 {
             withAnimation(.easeOut(duration: 0.16)) {
-                subjectLockLocation = nil
+                lockedSubjectPoint = nil
             }
             return
         }
@@ -563,7 +563,7 @@ struct CameraScreen: View {
             y: min(max(location.y, 44), max(previewSize.height - 44, 44))
         )
         withAnimation(.spring(response: 0.24, dampingFraction: 0.72)) {
-            subjectLockLocation = clamped
+            lockedSubjectPoint = clamped
         }
         let normalizedPoint = CGPoint(
             x: min(max(location.x / previewSize.width, 0), 1),
@@ -685,7 +685,7 @@ private struct FocusReticleView: View {
 }
 
 private struct SubjectLockReticleView: View {
-    let onClear: () -> Void
+    var onClear: (() -> Void)? = nil
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -698,13 +698,15 @@ private struct SubjectLockReticleView: View {
                 .frame(width: 5, height: 5)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Button(action: onClear) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.black, Color(red: 0.22, green: 0.96, blue: 0.45))
+            if let onClear {
+                Button(action: onClear) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.black, Color(red: 0.22, green: 0.96, blue: 0.45))
+                }
+                .buttonStyle(.plain)
+                .offset(x: 6, y: -6)
             }
-            .buttonStyle(.plain)
-            .offset(x: 6, y: -6)
         }
     }
 }
@@ -712,7 +714,11 @@ private struct SubjectLockReticleView: View {
 private struct ScopeReticleOverlayView: View {
     let mode: ScopeReticleMode
     let rollRadians: Double
-    let isLevel: Bool
+    let pitchRadians: Double
+
+    private var isLevel: Bool {
+        abs(rollRadians) < 0.025
+    }
 
     var body: some View {
         GeometryReader { proxy in
