@@ -22,42 +22,116 @@ struct CameraAdjustmentBar: View {
     @EnvironmentObject private var camera: CameraController
     @State private var isEditing = false
 
+    private var quickZoomPresets: [CGFloat] {
+        camera.isStabilizationEnabled ? [1.5, 3.0, 6.0, 10.0] : [1.0, 3.0, 6.0, 10.0]
+    }
+
     var body: some View {
-        HStack(spacing: isEditing ? 10 : 7) {
-            Image(systemName: "plus.magnifyingglass")
-                .font(.system(size: isEditing ? 15 : 12, weight: .regular))
-                .frame(width: isEditing ? 24 : 18)
+        VStack(spacing: 6) {
+            if camera.isManualFocusEnabled {
+                manualFocusBar
+            }
+
+            HStack(spacing: 6) {
+                ForEach(quickZoomPresets, id: \.self) { preset in
+                    let isSelected = abs(camera.zoomFactor - preset) < 0.22
+                    Button {
+                        withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                            camera.setDisplayedZoomFactor(preset)
+                        }
+                    } label: {
+                        Text(preset == floor(preset) ? String(format: "%.0f×", preset) : String(format: "%.1f×", preset))
+                            .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular, design: .monospaced))
+                            .foregroundStyle(isSelected ? .black : .white.opacity(0.88))
+                            .padding(.horizontal, 8)
+                            .frame(height: 22)
+                            .background(
+                                isSelected ? PurooBrandStyle.yellow : Color.black.opacity(0.60),
+                                in: Capsule()
+                            )
+                            .overlay {
+                                Capsule()
+                                    .stroke(.white.opacity(isSelected ? 0 : 0.14), lineWidth: 0.7)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            HStack(spacing: isEditing ? 10 : 7) {
+                Image(systemName: "plus.magnifyingglass")
+                    .font(.system(size: isEditing ? 15 : 12, weight: .regular))
+                    .frame(width: isEditing ? 24 : 18)
+
+                CompactZoomSlider(
+                    value: Binding(
+                        get: { Double(camera.zoomFactor) },
+                        set: { camera.setDisplayedZoomFactor(CGFloat($0)) }
+                    ),
+                    range: (camera.isStabilizationEnabled ? 1.5 : 1)...Double(StabilizationTuning.maximumDisplayZoom),
+                    isExpanded: isEditing,
+                    onEditingChanged: { editing in
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            isEditing = editing
+                        }
+                    }
+                )
+
+                Text(String(format: "%.1f×", camera.zoomFactor))
+                    .font(.system(size: isEditing ? 12 : 10, weight: .regular, design: .monospaced))
+                    .lineLimit(1)
+                    .frame(width: isEditing ? 50 : 42, alignment: .trailing)
+            }
+            .padding(.horizontal, isEditing ? 12 : 9)
+            .frame(maxWidth: isEditing ? 310 : 220)
+            .frame(height: isEditing ? 44 : 30)
+            .foregroundStyle(.white)
+            .background(.black.opacity(0.68), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(.white.opacity(isEditing ? 0.20 : 0.08), lineWidth: 0.8)
+            }
+            .animation(.easeOut(duration: 0.18), value: isEditing)
+            .accessibilityLabel("调节变焦")
+        }
+    }
+
+    private var manualFocusBar: some View {
+        HStack(spacing: 8) {
+            Text("MF")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(PurooBrandStyle.yellow)
 
             CompactZoomSlider(
                 value: Binding(
-                    get: { Double(camera.zoomFactor) },
-                    set: { camera.setDisplayedZoomFactor(CGFloat($0)) }
+                    get: { Double(camera.manualLensPosition) },
+                    set: { camera.setManualFocus(enabled: true, lensPosition: Float($0)) }
                 ),
-                range: (camera.isStabilizationEnabled ? 1.5 : 1)...Double(StabilizationTuning.maximumDisplayZoom),
-                isExpanded: isEditing,
-                onEditingChanged: { editing in
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        isEditing = editing
-                    }
-                }
+                range: 0.0...1.0,
+                isExpanded: false,
+                onEditingChanged: { _ in }
             )
 
-            Text(String(format: "%.1f×", camera.zoomFactor))
-                .font(.system(size: isEditing ? 12 : 10, weight: .regular, design: .monospaced))
-                .lineLimit(1)
-                .frame(width: isEditing ? 50 : 42, alignment: .trailing)
+            Button {
+                camera.isFocusPeakingEnabled.toggle()
+            } label: {
+                Text(camera.isFocusPeakingEnabled ? "峰值开" : "峰值关")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(camera.isFocusPeakingEnabled ? Color.green : .white.opacity(0.75))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(.white.opacity(0.12), in: Capsule())
+            }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, isEditing ? 12 : 9)
-        .frame(maxWidth: isEditing ? 310 : 210)
-        .frame(height: isEditing ? 44 : 30)
-        .foregroundStyle(.white)
-        .background(.black.opacity(0.68), in: Capsule())
+        .padding(.horizontal, 10)
+        .frame(maxWidth: 260)
+        .frame(height: 28)
+        .background(.black.opacity(0.72), in: Capsule())
         .overlay {
             Capsule()
-                .stroke(.white.opacity(isEditing ? 0.20 : 0.08), lineWidth: 0.8)
+                .stroke(PurooBrandStyle.yellow.opacity(0.45), lineWidth: 0.8)
         }
-        .animation(.easeOut(duration: 0.18), value: isEditing)
-        .accessibilityLabel("调节变焦")
     }
 }
 
@@ -131,6 +205,7 @@ struct ControlPanelView: View {
     }
 
     @EnvironmentObject private var camera: CameraController
+    @EnvironmentObject private var motionMonitor: MotionStabilityMonitor
     @State private var isPhotoLibraryPresented = false
     @State private var captureMode: CaptureMode = .photo
     @Namespace private var captureModeAnimation
@@ -198,6 +273,20 @@ struct ControlPanelView: View {
         .background(Color.black)
     }
 
+    private var shutterRingColor: Color {
+        guard camera.isStabilizationEnabled else { return .white.opacity(captureMode == .photo ? 1 : 0.38) }
+        switch motionMonitor.displaySample.band {
+        case .stable:
+            return Color(red: 0.12, green: 0.92, blue: 0.44)
+        case .warning:
+            return PurooBrandStyle.yellow
+        case .heavy:
+            return Color.orange
+        case .unavailable:
+            return .white.opacity(captureMode == .photo ? 1 : 0.38)
+        }
+    }
+
     private func captureButton(size: CGFloat) -> some View {
         let isPhoto = captureMode == .photo
         let isRecording = camera.status.isRecording
@@ -214,7 +303,7 @@ struct ControlPanelView: View {
         } label: {
             ZStack {
                 Circle()
-                    .stroke(.white.opacity(isPhoto ? 1 : 0.38), lineWidth: 3)
+                    .stroke(shutterRingColor, lineWidth: 3)
 
                 RoundedRectangle(cornerRadius: innerCornerRadius, style: .continuous)
                     .fill(isPhoto ? Color.white : Color.red)
@@ -274,11 +363,26 @@ struct ControlPanelView: View {
         Button {
             isPhotoLibraryPresented = true
         } label: {
-            Image(systemName: "photo.on.rectangle")
-                .font(.system(size: 20, weight: .light))
-                .foregroundStyle(.white)
-                .frame(width: 46, height: 46)
-                .background(.white.opacity(0.10), in: Circle())
+            ZStack {
+                if let thumb = camera.latestThumbnailImage {
+                    Image(uiImage: thumb)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 44, height: 44)
+                        .clipShape(Circle())
+                        .overlay {
+                            Circle()
+                                .stroke(PurooBrandStyle.yellow.opacity(0.85), lineWidth: 1.5)
+                        }
+                } else {
+                    Image(systemName: "photo.on.rectangle")
+                        .font(.system(size: 20, weight: .light))
+                        .foregroundStyle(.white)
+                        .frame(width: 46, height: 46)
+                        .background(.white.opacity(0.10), in: Circle())
+                }
+            }
+            .frame(width: 46, height: 46)
         }
         .buttonStyle(.plain)
         .disabled(camera.status.isRecording || camera.status.isFinishingRecording || camera.status.isCapturingPhoto || camera.status.isCapturingBurst)
@@ -287,23 +391,51 @@ struct ControlPanelView: View {
 
     private var burstButton: some View {
         Button {
-            camera.captureBurst()
+            if camera.status.isRecording {
+                camera.captureStillWhileRecording()
+            } else {
+                camera.captureBurst()
+            }
         } label: {
-            Image(systemName: "square.stack.3d.up")
-                .font(.system(size: 20, weight: .light))
-                .foregroundStyle(.white)
-                .frame(width: 46, height: 46)
-                .background(.white.opacity(0.10), in: Circle())
+            ZStack {
+                if let progress = camera.burstProgressText {
+                    Text(progress)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(PurooBrandStyle.yellow)
+                } else if camera.status.isRecording {
+                    Image(systemName: "camera.aperture")
+                        .font(.system(size: 20, weight: .regular))
+                        .foregroundStyle(.white)
+                } else {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 20, weight: .light))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 46, height: 46)
+            .background(
+                camera.status.isRecording ? Color.white.opacity(0.22) : Color.white.opacity(0.10),
+                in: Circle()
+            )
+            .overlay {
+                if camera.status.isRecording {
+                    Circle().stroke(.white.opacity(0.65), lineWidth: 1.2)
+                }
+            }
         }
         .buttonStyle(.plain)
-        .disabled(camera.status.isRecording || camera.status.isFinishingRecording || camera.status.isCapturingPhoto || camera.status.isCapturingBurst || !camera.status.isSessionRunning)
-        .opacity(camera.status.isRecording ? 0.42 : 1)
-        .accessibilityLabel("连拍")
+        .disabled(camera.status.isFinishingRecording || camera.status.isCapturingPhoto || camera.status.isCapturingBurst || !camera.status.isSessionRunning)
+        .accessibilityLabel(camera.status.isRecording ? "录像中抓拍照片" : "连拍")
     }
 
     @ViewBuilder
     private var recordingStatus: some View {
-        if camera.status.isRecording,
+        if let burstProgress = camera.burstProgressText {
+            Text("智能连拍优选 \(burstProgress)")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(PurooBrandStyle.yellow)
+                .lineLimit(1)
+        } else if camera.status.isRecording,
            let startedAt = camera.status.recordingStartedAt {
             TimelineView(.periodic(from: startedAt, by: 1)) { context in
                 Text(recordingTitle(at: context.date, startedAt: startedAt))
@@ -342,6 +474,7 @@ struct ControlPanelView: View {
         ControlPanelView()
     }
     .environmentObject(CameraController())
+    .environmentObject(MotionStabilityMonitor())
     .padding()
     .background(Color.black)
 }

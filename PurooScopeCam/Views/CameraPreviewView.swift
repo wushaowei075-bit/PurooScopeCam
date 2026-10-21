@@ -19,6 +19,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private let cropWindowView = UIView()
     private let cropCenterHorizontalView = UIView()
     private let cropCenterVerticalView = UIView()
+    private let focusPeakingImageView = UIImageView()
     private let debugOverlayLabel = UILabel()
     private let viewportLock = NSLock()
     private let preferenceLock = NSLock()
@@ -28,6 +29,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var systemStabilizationModeName = "未知"
     private weak var motionMonitor: MotionStabilityMonitor?
     private var latestCorrection = CGPoint.zero
+    private var latestCropUsage: CGFloat = 0
     private var overviewImageAspectRatio: CGFloat = 1
     private var lastOverviewUpdateTime: TimeInterval = 0
     private var lastDebugOverlayUpdateTime: TimeInterval = 0
@@ -35,6 +37,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var lastActiveSystemMode: Int?
     private var lastSourceSize = CGSize.zero
     private var isOverviewBusy = false
+    private var isOverviewExpanded = false
+    private var isFocusPeakingEnabled = false
+    var onTelemetryUpdate: ((CGFloat, Bool, CGPoint) -> Void)?
 
     override init(frame: CGRect) {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -56,6 +61,12 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         metalView.delegate = renderer
 
         addSubview(metalView)
+        focusPeakingImageView.contentMode = .scaleAspectFill
+        focusPeakingImageView.clipsToBounds = true
+        focusPeakingImageView.isUserInteractionEnabled = false
+        focusPeakingImageView.isHidden = true
+        focusPeakingImageView.alpha = 0.88
+        addSubview(focusPeakingImageView)
         configureOverview()
         configureDebugOverlay()
         stabilizationEngine.onResult = { [weak self] result in
@@ -70,6 +81,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     override func layoutSubviews() {
         super.layoutSubviews()
         metalView.frame = bounds
+        focusPeakingImageView.frame = bounds
         layoutOverview()
         layoutDebugOverlay()
         viewportLock.lock()
@@ -89,18 +101,21 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         isStabilizationEnabled: Bool,
         opticalMagnification: Double,
         displayZoomFactor: CGFloat,
-        systemModeName: String
+        systemModeName: String,
+        isFocusPeakingEnabled: Bool = false
     ) {
         let tuning = StabilizationTuning(
             isEnabled: isStabilizationEnabled,
             displayZoomFactor: displayZoomFactor,
-            opticalMagnification: opticalMagnification
+            opticalMagnification: opticalMagnification,
+            modeStrength: preference.modeStrength
         )
         preferenceLock.lock()
         let oldTuning = stabilizationTuning
         stabilizationPreference = preference
         stabilizationTuning = tuning
         systemStabilizationModeName = systemModeName
+        self.isFocusPeakingEnabled = isFocusPeakingEnabled
         preferenceLock.unlock()
 
         renderer.setPreviewDelayFrames(tuning.previewDelayFrames)
@@ -116,7 +131,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             guard let self else { return }
             if shouldReset || !tuning.usesDigitalStabilization {
                 self.latestCorrection = .zero
+                self.latestCropUsage = 0
             }
+            self.focusPeakingImageView.isHidden = !isFocusPeakingEnabled
             self.overviewContainer.isHidden = !tuning.usesDigitalStabilization
             self.layoutOverview()
             self.layoutCropWindow()
@@ -124,6 +141,13 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
                 self.updateDisabledDebugOverlay(systemModeName: systemModeName)
             }
         }
+    }
+
+    func nudgeStabilizationCenter(normalizedDeltaX: CGFloat, normalizedDeltaY: CGFloat) {
+        stabilizationEngine.nudgeDesiredCenter(
+            normalizedDeltaX: normalizedDeltaX,
+            normalizedDeltaY: normalizedDeltaY
+        )
     }
 
     func stopProcessing() {
@@ -337,25 +361,40 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
                 x: result.normalizedCorrectionX,
                 y: result.normalizedCorrectionY
             )
+            self.latestCropUsage = result.debug.cropUsage
             self.layoutCropWindow()
             if shouldUpdateDebug {
                 self.debugOverlayLabel.text = result.debug.overlayText(
                     systemModeName: systemModeName
+                )
+                self.onTelemetryUpdate?(
+                    result.debug.cropUsage,
+                    result.debug.isGyroCalibrationValid,
+                    result.vignetteCenterOffset
                 )
             }
         }
     }
 
     private func configureOverview() {
-        overviewContainer.backgroundColor = UIColor.black.withAlphaComponent(0.24)
+        overviewContainer.backgroundColor = UIColor.black.withAlphaComponent(0.28)
         overviewContainer.layer.cornerRadius = 6
-        overviewContainer.layer.borderColor = UIColor.white.withAlphaComponent(0.42).cgColor
+        overviewContainer.layer.borderColor = UIColor.white.withAlphaComponent(0.45).cgColor
         overviewContainer.layer.borderWidth = 1
         overviewContainer.clipsToBounds = true
         overviewContainer.isHidden = true
-        overviewContainer.isUserInteractionEnabled = false
+        overviewContainer.isUserInteractionEnabled = true
         overviewImageView.contentMode = .scaleAspectFit
         overviewImageView.clipsToBounds = true
+
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleOverviewDoubleTap))
+        doubleTap.numberOfTapsRequired = 2
+        overviewContainer.addGestureRecognizer(doubleTap)
+
+        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleOverviewSingleTap(_:)))
+        singleTap.numberOfTapsRequired = 1
+        singleTap.require(toFail: doubleTap)
+        overviewContainer.addGestureRecognizer(singleTap)
 
         cropWindowView.backgroundColor = .clear
         cropWindowView.layer.borderColor = UIColor.systemYellow.cgColor
@@ -364,6 +403,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         cropWindowView.layer.shadowOpacity = 0.45
         cropWindowView.layer.shadowRadius = 2
         cropWindowView.layer.shadowOffset = .zero
+        cropWindowView.isUserInteractionEnabled = false
         cropCenterHorizontalView.backgroundColor = UIColor.systemYellow
         cropCenterVerticalView.backgroundColor = UIColor.systemYellow
         cropWindowView.addSubview(cropCenterHorizontalView)
@@ -371,6 +411,26 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         overviewContainer.addSubview(overviewImageView)
         overviewContainer.addSubview(cropWindowView)
         addSubview(overviewContainer)
+    }
+
+    @objc private func handleOverviewDoubleTap() {
+        isOverviewExpanded.toggle()
+        UIView.animate(withDuration: 0.22, delay: 0, usingSpringWithDamping: 0.82, initialSpringVelocity: 0.2) {
+            self.layoutOverview()
+        }
+    }
+
+    @objc private func handleOverviewSingleTap(_ recognizer: UITapGestureRecognizer) {
+        let tap = recognizer.location(in: overviewContainer)
+        let imageRect = AVMakeRect(
+            aspectRatio: CGSize(width: max(overviewImageAspectRatio, 0.1), height: 1),
+            insideRect: overviewContainer.bounds
+        )
+        guard imageRect.width > 4, imageRect.height > 4 else { return }
+        let currentCenter = CGPoint(x: cropWindowView.frame.midX, y: cropWindowView.frame.midY)
+        let dx = (currentCenter.x - tap.x) / imageRect.width
+        let dy = (tap.y - currentCenter.y) / imageRect.height
+        stabilizationEngine.nudgeDesiredCenter(normalizedDeltaX: dx * 0.65, normalizedDeltaY: dy * 0.65)
     }
 
     private func configureDebugOverlay() {
@@ -390,10 +450,11 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
     private func layoutOverview() {
         let shortSide = min(bounds.width, bounds.height)
-        let width = min(max(shortSide * 0.18, 72), 92)
+        let scale: CGFloat = isOverviewExpanded ? 1.48 : 1.0
+        let width = min(max(shortSide * 0.18, 72), 92) * scale
         let contentAspect = max(overviewImageAspectRatio, 0.1)
         let height = min(width / contentAspect, width * 1.35)
-        let topInset: CGFloat = bounds.height > bounds.width ? 102 : 98
+        let topInset: CGFloat = bounds.height > bounds.width ? 104 : 98
         overviewContainer.frame = CGRect(
             x: bounds.maxX - width - 12,
             y: topInset,
@@ -417,6 +478,18 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             cropWindowView.frame = .zero
             return
         }
+
+        let borderColor: UIColor
+        if latestCropUsage >= 0.82 {
+            borderColor = .systemRed
+        } else if latestCropUsage >= 0.58 {
+            borderColor = .systemOrange
+        } else {
+            borderColor = .systemYellow
+        }
+        cropWindowView.layer.borderColor = borderColor.cgColor
+        cropCenterHorizontalView.backgroundColor = borderColor
+        cropCenterVerticalView.backgroundColor = borderColor
 
         let imageRect = AVMakeRect(
             aspectRatio: CGSize(width: max(overviewImageAspectRatio, 0.1), height: 1),
@@ -464,7 +537,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         pixelBuffer: CVPixelBuffer,
         motionTime: TimeInterval
     ) {
-        guard motionTime.isFinite, motionTime - lastOverviewUpdateTime >= 0.2 else { return }
+        guard motionTime.isFinite, motionTime - lastOverviewUpdateTime >= 0.18 else { return }
         overviewBusyLock.lock()
         guard !isOverviewBusy else {
             overviewBusyLock.unlock()
@@ -474,6 +547,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         overviewBusyLock.unlock()
         lastOverviewUpdateTime = motionTime
         let retainedPixelBuffer = pixelBuffer
+        preferenceLock.lock()
+        let buildPeaking = isFocusPeakingEnabled
+        preferenceLock.unlock()
 
         overviewQueue.async { [weak self] in
             guard let self else { return }
@@ -496,14 +572,81 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
                 return
             }
             let thumbnail = UIImage(cgImage: cgImage)
+            let peakingOverlay = buildPeaking ? Self.makeFocusPeakingOverlay(from: retainedPixelBuffer) : nil
             let aspectRatio = image.extent.width / max(image.extent.height, 1)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.overviewImageAspectRatio = aspectRatio
                 self.overviewImageView.image = thumbnail
+                if buildPeaking {
+                    self.focusPeakingImageView.image = peakingOverlay
+                    self.focusPeakingImageView.isHidden = peakingOverlay == nil
+                } else {
+                    self.focusPeakingImageView.isHidden = true
+                }
                 self.layoutCropWindow()
             }
         }
+    }
+
+    private static func makeFocusPeakingOverlay(from pixelBuffer: CVPixelBuffer) -> UIImage? {
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let isBiPlanar = format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+            format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        let srcW = isBiPlanar ? CVPixelBufferGetWidthOfPlane(pixelBuffer, 0) : CVPixelBufferGetWidth(pixelBuffer)
+        let srcH = isBiPlanar ? CVPixelBufferGetHeightOfPlane(pixelBuffer, 0) : CVPixelBufferGetHeight(pixelBuffer)
+        let bpr = isBiPlanar ? CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0) : CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let rawPtr = isBiPlanar ? CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) : CVPixelBufferGetBaseAddress(pixelBuffer)
+        guard let base = rawPtr?.assumingMemoryBound(to: UInt8.self), srcW > 32, srcH > 32 else { return nil }
+
+        let outW = 180
+        let outH = max(100, Int((Double(outW) * Double(srcH) / Double(srcW)).rounded()))
+        var rgba = [UInt8](repeating: 0, count: outW * outH * 4)
+        let stepX = max(1, srcW / outW)
+        let stepY = max(1, srcH / outH)
+        let pixelStride = isBiPlanar ? 1 : 4
+        let lumaOffset = isBiPlanar ? 0 : 1
+
+        for y in 2..<(outH - 2) {
+            let sy = min(srcH - 2, y * stepY)
+            let row = base + sy * bpr
+            let rowDown = base + min(srcH - 1, sy + stepY) * bpr
+            for x in 2..<(outW - 2) {
+                let sx = min(srcW - 2, x * stepX)
+                let c = Int(row[sx * pixelStride + lumaOffset])
+                let r = Int(row[min(srcW - 1, sx + stepX) * pixelStride + lumaOffset])
+                let d = Int(rowDown[sx * pixelStride + lumaOffset])
+                let grad = abs(r - c) + abs(d - c)
+                if grad >= 34 {
+                    let idx = (y * outW + x) * 4
+                    let alpha = UInt8(min(245, (grad - 26) * 5))
+                    rgba[idx] = 16
+                    rgba[idx + 1] = 255
+                    rgba[idx + 2] = 110
+                    rgba[idx + 3] = alpha
+                }
+            }
+        }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData),
+              let cgImg = CGImage(
+                  width: outW,
+                  height: outH,
+                  bitsPerComponent: 8,
+                  bitsPerPixel: 32,
+                  bytesPerRow: outW * 4,
+                  space: colorSpace,
+                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  provider: provider,
+                  decode: nil,
+                  shouldInterpolate: true,
+                  intent: .defaultIntent
+              ) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImg)
     }
 
     private func updateDisabledDebugOverlay(systemModeName: String) {
@@ -1566,6 +1709,8 @@ struct CameraPreviewView: UIViewRepresentable {
     let opticalMagnification: Double
     let displayZoomFactor: CGFloat
     let systemStabilizationModeName: String
+    var isFocusPeakingEnabled: Bool = false
+    var onTelemetryUpdate: ((CGFloat, Bool, CGPoint) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -1573,12 +1718,14 @@ struct CameraPreviewView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
+        view.onTelemetryUpdate = onTelemetryUpdate
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
             isStabilizationEnabled: isStabilizationEnabled,
             opticalMagnification: opticalMagnification,
             displayZoomFactor: displayZoomFactor,
-            systemModeName: systemStabilizationModeName
+            systemModeName: systemStabilizationModeName,
+            isFocusPeakingEnabled: isFocusPeakingEnabled
         )
         context.coordinator.attach(
             to: view,
@@ -1589,12 +1736,14 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PreviewContainerView, context: Context) {
+        view.onTelemetryUpdate = onTelemetryUpdate
         view.updateStabilizationSettings(
             preference: stabilizationPreference,
             isStabilizationEnabled: isStabilizationEnabled,
             opticalMagnification: opticalMagnification,
             displayZoomFactor: displayZoomFactor,
-            systemModeName: systemStabilizationModeName
+            systemModeName: systemStabilizationModeName,
+            isFocusPeakingEnabled: isFocusPeakingEnabled
         )
         context.coordinator.attach(
             to: view,

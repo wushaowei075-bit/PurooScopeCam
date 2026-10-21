@@ -126,6 +126,13 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var focusLocked = false
     @Published private(set) var exposureLocked = false
     @Published private(set) var pendingMediaCount = 0
+    @Published var isManualFocusEnabled = false
+    @Published var manualLensPosition: Float = 0.5
+    @Published var isFocusPeakingEnabled = false
+    @Published var reticleMode: ScopeReticleMode = .off
+    @Published var isTelemetryWatermarkEnabled = false
+    @Published private(set) var latestThumbnailImage: UIImage?
+    @Published private(set) var burstProgressText: String?
 
     private let sessionQueue = DispatchQueue(label: "com.puroo.scope.camera.session")
     private let videoOutputQueue = DispatchQueue(label: "com.puroo.scope.camera.videoOutput", qos: .userInteractive)
@@ -409,9 +416,143 @@ final class CameraController: NSObject, ObservableObject {
                     device.focusMode = .continuousAutoFocus
                 }
                 device.unlockForConfiguration()
-                self.publish { $0.focusLocked = locked }
+                self.publish {
+                    $0.focusLocked = locked
+                    if !locked { $0.isManualFocusEnabled = false }
+                }
             } catch {
                 self.publishStatus(error: "无法切换对焦模式。")
+            }
+        }
+    }
+
+    func setManualFocus(enabled: Bool, lensPosition: Float? = nil) {
+        let targetPosition = min(max(lensPosition ?? manualLensPosition, 0), 1)
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if enabled, device.isLockingFocusWithCustomLensPositionSupported {
+                    device.setFocusModeLocked(lensPosition: targetPosition, completionHandler: nil)
+                } else if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                }
+                device.unlockForConfiguration()
+                self.publish {
+                    $0.isManualFocusEnabled = enabled
+                    $0.manualLensPosition = targetPosition
+                    $0.focusLocked = enabled
+                    if enabled { $0.isFocusPeakingEnabled = true }
+                }
+            } catch {
+                self.publishStatus(error: "无法调节手动对焦。")
+            }
+        }
+    }
+
+    func lockFocusAndExposureInPreview(at normalizedPoint: CGPoint) {
+        CameraFeedbackSound.playFocus()
+        guard let source = frameSink?.sourceFocusPoint(from: normalizedPoint) else { return }
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            let angle = self.videoOutput.connection(with: .video)?.videoRotationAngle ?? 90
+            let point: CGPoint
+            switch Int(angle.rounded()) {
+            case 90: point = CGPoint(x: source.y, y: 1 - source.x)
+            case 180: point = CGPoint(x: 1 - source.x, y: 1 - source.y)
+            case 270: point = CGPoint(x: 1 - source.y, y: source.x)
+            default: point = source
+            }
+            let clamped = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
+            do {
+                try device.lockForConfiguration()
+                if device.isFocusPointOfInterestSupported {
+                    device.focusPointOfInterest = clamped
+                }
+                if device.isFocusModeSupported(.autoFocus) {
+                    device.focusMode = .autoFocus
+                } else if device.isFocusModeSupported(.locked) {
+                    device.focusMode = .locked
+                }
+                if device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = clamped
+                }
+                if device.isExposureModeSupported(.locked) {
+                    device.exposureMode = .locked
+                }
+                device.isSubjectAreaChangeMonitoringEnabled = false
+                device.unlockForConfiguration()
+                self.publish {
+                    $0.focusLocked = true
+                    $0.exposureLocked = true
+                    $0.isManualFocusEnabled = false
+                }
+                self.publishStatus(message: "已锁定 AE/AF 对焦与曝光")
+            } catch {
+                self.publishStatus(error: "无法锁定对焦与曝光。")
+            }
+        }
+    }
+
+    func unlockFocusAndExposure() {
+        CameraFeedbackSound.playFocus()
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                }
+                if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+                device.isSubjectAreaChangeMonitoringEnabled = true
+                device.unlockForConfiguration()
+                self.publish {
+                    $0.focusLocked = false
+                    $0.exposureLocked = false
+                    $0.isManualFocusEnabled = false
+                }
+                self.publishStatus(message: "已恢复自动对焦与测光")
+            } catch {
+                self.publishStatus(error: "无法解锁对焦与曝光。")
+            }
+        }
+    }
+
+    func cycleStabilizationMode() {
+        let modes = StabilizationPreference.activeModes
+        if !isStabilizationEnabled {
+            setStabilizationEnabled(true)
+            stabilizationPreference = .balanced
+            publishStatus(message: "稳定模式：\(stabilizationPreference.title)")
+            return
+        }
+        if let index = modes.firstIndex(of: stabilizationPreference) {
+            let nextIndex = (index + 1) % modes.count
+            stabilizationPreference = modes[nextIndex]
+            publishStatus(message: "稳定模式：\(stabilizationPreference.title)")
+        } else {
+            stabilizationPreference = .balanced
+            publishStatus(message: "稳定模式：\(stabilizationPreference.title)")
+        }
+    }
+
+    func captureStillWhileRecording() {
+        CameraFeedbackSound.playShutter()
+        sessionQueue.async { [weak self] in
+            guard let self, self.recordingActive, let sink = self.previewPhotoSink else { return }
+            sink.captureStabilizedPhoto { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let data):
+                    let processed = self.applyTelemetryWatermarkIfNeeded(to: data)
+                    self.updateLatestThumbnail(fromPhotoData: processed)
+                    self.savePhotoData(processed)
+                    self.publishStatus(message: "录像抓拍已保存")
+                case .failure(let error):
+                    self.publishStatus(error: "抓拍失败：\(error.localizedDescription)")
+                }
             }
         }
     }
@@ -527,11 +668,15 @@ final class CameraController: NSObject, ObservableObject {
             guard let self, self.isConfigured, self.session.isRunning,
                   !self.photoBusy, !self.recordingActive, !self.finishingRecording, !self.recordingRequestPending,
                   self.burstRemaining == 0 else { return }
-            self.publishStatus(message: "正在连拍...")
-            self.burstRemaining = max(1, min(plan.frameCount, 16))
+            let total = max(1, min(plan.frameCount, 16))
+            self.publishStatus(message: "正在连拍优选 (1/\(total))...")
+            self.burstRemaining = total
             self.burstSequenceActive = true
             self.burstFiles = []
-            self.publishStatus { $0.isCapturingBurst = true }
+            self.publish {
+                $0.status.isCapturingBurst = true
+                $0.burstProgressText = "1/\(total)"
+            }
             self.capturePhotoOnSessionQueue()
         }
     }
@@ -1164,6 +1309,7 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     private func saveVideo(at url: URL) {
+        updateLatestThumbnail(fromVideoURL: url)
         mediaQueue.async {
             do {
                 let destination = try self.pendingDirectory().appendingPathComponent(url.lastPathComponent)
@@ -1174,6 +1320,94 @@ final class CameraController: NSObject, ObservableObject {
                 self.endFinishingBackgroundTask()
             }
         }
+    }
+
+    private func updateLatestThumbnail(fromPhotoData data: Data) {
+        mediaQueue.async { [weak self] in
+            guard let self, let image = UIImage(data: data) else { return }
+            let thumbSize = CGSize(width: 96, height: 96)
+            let renderer = UIGraphicsImageRenderer(size: thumbSize)
+            let thumb = renderer.image { _ in
+                let aspect = max(thumbSize.width / max(image.size.width, 1), thumbSize.height / max(image.size.height, 1))
+                let drawSize = CGSize(width: image.size.width * aspect, height: image.size.height * aspect)
+                let rect = CGRect(
+                    x: (thumbSize.width - drawSize.width) * 0.5,
+                    y: (thumbSize.height - drawSize.height) * 0.5,
+                    width: drawSize.width,
+                    height: drawSize.height
+                )
+                image.draw(in: rect)
+            }
+            self.publish { $0.latestThumbnailImage = thumb }
+        }
+    }
+
+    private func updateLatestThumbnail(fromVideoURL url: URL) {
+        mediaQueue.async { [weak self] in
+            guard let self else { return }
+            let asset = AVAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 120, height: 120)
+            if let cgImage = try? generator.copyCGImage(at: .zero, actualTime: nil) {
+                let image = UIImage(cgImage: cgImage)
+                self.publish { $0.latestThumbnailImage = image }
+            }
+        }
+    }
+
+    private func applyTelemetryWatermarkIfNeeded(to data: Data) -> Data {
+        guard isTelemetryWatermarkEnabled, let image = UIImage(data: data),
+              image.size.width > 64, image.size.height > 64 else {
+            return data
+        }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+        let stamped = renderer.image { ctx in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+            let barHeight = max(36, min(image.size.height * 0.052, 84))
+            let barRect = CGRect(x: 0, y: image.size.height - barHeight, width: image.size.width, height: barHeight)
+            UIColor.black.withAlphaComponent(0.76).setFill()
+            ctx.fill(barRect)
+
+            let topLineRect = CGRect(x: 0, y: barRect.minY, width: image.size.width, height: max(1.5, barHeight * 0.03))
+            UIColor(red: 1.0, green: 0.90, blue: 0.24, alpha: 0.85).setFill()
+            ctx.fill(topLineRect)
+
+            let fontSize = max(12, barHeight * 0.36)
+            let brandAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: fontSize, weight: .semibold),
+                .foregroundColor: UIColor(red: 1.0, green: 0.90, blue: 0.24, alpha: 1.0)
+            ]
+            let infoAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: fontSize * 0.88, weight: .regular),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.92)
+            ]
+            let scopeMag = Int(telescopeMagnification.rounded())
+            let digiZoom = Double(zoomFactor)
+            let totalMag = Int((telescopeMagnification * digiZoom).rounded())
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            let dateStr = formatter.string(from: Date())
+            let leftText = "PUROO 普徕 · 远摄防抖"
+            let rightText = String(format: "%d×镜 · %.1f×数码 (总%d×) | %@ | %@", scopeMag, digiZoom, totalMag, activeCaptureQuality.shortTitle, dateStr)
+
+            let paddingX = max(12, image.size.width * 0.022)
+            let leftSize = (leftText as NSString).size(withAttributes: brandAttrs)
+            (leftText as NSString).draw(
+                at: CGPoint(x: paddingX, y: barRect.midY - leftSize.height * 0.5),
+                withAttributes: brandAttrs
+            )
+            let rightSize = (rightText as NSString).size(withAttributes: infoAttrs)
+            if image.size.width - paddingX * 2 - leftSize.width > rightSize.width + 8 {
+                (rightText as NSString).draw(
+                    at: CGPoint(x: image.size.width - paddingX - rightSize.width, y: barRect.midY - rightSize.height * 0.5),
+                    withAttributes: infoAttrs
+                )
+            }
+        }
+        return stamped.jpegData(compressionQuality: 0.92) ?? data
     }
 
     private func pendingDirectory() throws -> URL {
@@ -1241,13 +1475,15 @@ final class CameraController: NSObject, ObservableObject {
     private func completePhoto(_ result: Result<Data, Error>) {
         sessionQueue.async {
             switch result {
-            case .success(let data):
+            case .success(let rawData):
+                let data = self.applyTelemetryWatermarkIfNeeded(to: rawData)
+                self.updateLatestThumbnail(fromPhotoData: data)
                 if self.burstSequenceActive {
                     self.mediaQueue.async {
                         do {
                             let url = try self.pendingDirectory().appendingPathComponent("burst-\(UUID().uuidString).jpg")
                             try data.write(to: url, options: .atomic)
-                            let score = BurstPhotoCoordinator.sharpness(of: data)
+                            let score = BurstPhotoCoordinator.sharpness(of: rawData)
                             self.sessionQueue.async {
                                 self.burstFiles.append((url, score))
                                 self.finishPhotoStep()
@@ -1277,6 +1513,11 @@ final class CameraController: NSObject, ObservableObject {
         publishStatus { $0.isCapturingPhoto = false }
         if burstRemaining > 0 { burstRemaining -= 1 }
         if burstRemaining > 0, shouldRunSession {
+            let capturedCount = burstFiles.count + 1
+            let totalCount = burstFiles.count + burstRemaining
+            publish {
+                $0.burstProgressText = "\(capturedCount)/\(totalCount)"
+            }
             sessionQueue.asyncAfter(deadline: .now() + 0.08) { [weak self] in
                 guard let self else { return }
                 if self.shouldRunSession { self.capturePhotoOnSessionQueue() }
@@ -1300,7 +1541,10 @@ final class CameraController: NSObject, ObservableObject {
                     }
                 }
             }
-            publishStatus { $0.isCapturingBurst = false }
+            publish {
+                $0.status.isCapturingBurst = false
+                $0.burstProgressText = nil
+            }
             applyRequestedVideoRotation()
         }
     }

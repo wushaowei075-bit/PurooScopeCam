@@ -9,6 +9,7 @@ struct StabilizationFrameResult {
     var normalizedCorrectionX: CGFloat
     var normalizedCorrectionY: CGFloat
     var debug: StabilizationDebugSnapshot
+    var vignetteCenterOffset: CGPoint = .zero
 }
 
 struct StabilizationDebugSnapshot {
@@ -419,6 +420,12 @@ final class FrameStabilizationEngine {
         pendingLock.unlock()
     }
 
+    func nudgeDesiredCenter(normalizedDeltaX: CGFloat, normalizedDeltaY: CGFloat) {
+        queue.async { [weak self] in
+            self?.trajectory.nudgeDesired(dx: normalizedDeltaX, dy: normalizedDeltaY)
+        }
+    }
+
     private func processLoop(startingWith firstInput: FrameInput) {
         pendingLock.lock()
         let current = firstInput.generation == generation
@@ -553,7 +560,8 @@ final class FrameStabilizationEngine {
             transform: transform,
             normalizedCorrectionX: crop.correctionX,
             normalizedCorrectionY: crop.correctionY,
-            debug: debug
+            debug: debug,
+            vignetteCenterOffset: visualTracker.latestVignetteOffset
         )
         pendingLock.lock()
         let current = input.generation == generation
@@ -612,6 +620,7 @@ private final class SubpixelFrameMotionTracker {
     private lazy var roiMask: [Bool] = makeROIMask()
     private var activeROIMask: [Bool]?
     private var maskUpdateCounter = 0
+    private(set) var latestVignetteOffset: CGPoint = .zero
     private var previousFrame: AnalysisFrame?
     private var previousTimestamp: TimeInterval?
     private let phaseEstimator = PhaseCorrelationEstimator()
@@ -622,6 +631,7 @@ private final class SubpixelFrameMotionTracker {
         previousTimestamp = nil
         activeROIMask = nil
         maskUpdateCounter = 0
+        latestVignetteOffset = .zero
     }
 
     func process(
@@ -1067,6 +1077,7 @@ private final class SubpixelFrameMotionTracker {
         }
         guard samples.count >= 16 else {
             activeROIMask = roiMask
+            latestVignetteOffset = .zero
             return roiMask
         }
         samples.sort()
@@ -1074,6 +1085,7 @@ private final class SubpixelFrameMotionTracker {
         let lowLuma = samples[samples.count * 10 / 100]
         guard highLuma > 32, lowLuma < highLuma * 0.32 else {
             activeROIMask = roiMask
+            latestVignetteOffset = .zero
             return roiMask
         }
 
@@ -1094,10 +1106,16 @@ private final class SubpixelFrameMotionTracker {
         let totalSampled = CGFloat((gridSize / 4) * (gridSize / 4))
         guard brightCount >= totalSampled * 0.15, brightCount < totalSampled * 0.72 else {
             activeROIMask = roiMask
+            latestVignetteOffset = .zero
             return roiMask
         }
         let centerX = sumX / brightCount
         let centerY = sumY / brightCount
+        let gridCenter = CGFloat(gridSize - 1) * 0.5
+        latestVignetteOffset = CGPoint(
+            x: (centerX - gridCenter) / max(gridCenter, 1),
+            y: (centerY - gridCenter) / max(gridCenter, 1)
+        )
         let estimatedRadius = sqrt(brightCount * 16 / .pi) * 0.90
         let safeRadiusSquared = max(estimatedRadius * estimatedRadius, 36 * 36)
         var refined = Array(repeating: false, count: gridSize * gridSize)
@@ -2166,6 +2184,12 @@ private final class VirtualCameraTrajectoryController {
         panEnterCount = 0
         panExitCount = 0
         boundaryHoldCount = 0
+    }
+
+    func nudgeDesired(dx: CGFloat, dy: CGFloat) {
+        guard dx.isFinite, dy.isFinite else { return }
+        desiredX = clamp(desiredX + dx, min: lowPathX - 0.35, max: lowPathX + 0.35)
+        desiredY = clamp(desiredY + dy, min: lowPathY - 0.35, max: lowPathY + 0.35)
     }
 
     func update(

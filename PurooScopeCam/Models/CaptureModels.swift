@@ -95,6 +95,23 @@ enum StabilizationPreference: String, CaseIterable, Identifiable {
         }
     }
 
+    static var activeModes: [StabilizationPreference] {
+        [.balanced, .strong, .auto]
+    }
+
+    var modeStrength: CGFloat {
+        switch self {
+        case .off:
+            return 0
+        case .auto:
+            return 0.94
+        case .balanced:
+            return 1.0
+        case .strong:
+            return 1.05
+        }
+    }
+
     var usesElectronicPreviewStabilization: Bool {
         switch self {
         case .off:
@@ -170,12 +187,14 @@ struct StabilizationTuning: Equatable {
     var displayZoomFactor: CGFloat
     var motionTimeOffset: TimeInterval
     var opticalMagnification: Double
+    var modeStrength: CGFloat
 
     init(
         isEnabled: Bool,
         displayZoomFactor: CGFloat = 1,
         motionTimeOffset: TimeInterval = 0,
-        opticalMagnification: Double = StabilizationTuning.defaultOpticalMagnification
+        opticalMagnification: Double = StabilizationTuning.defaultOpticalMagnification,
+        modeStrength: CGFloat = 1.0
     ) {
         self.isEnabled = isEnabled
         self.displayZoomFactor = Swift.min(Swift.max(displayZoomFactor, 1), Self.maximumDisplayZoom)
@@ -184,6 +203,7 @@ struct StabilizationTuning: Equatable {
             Swift.max(opticalMagnification, TelescopeMagnificationOption.minimum),
             TelescopeMagnificationOption.maximum
         )
+        self.modeStrength = Swift.min(Swift.max(modeStrength, 0.85), 1.15)
     }
 
     var usesDigitalStabilization: Bool {
@@ -232,7 +252,7 @@ struct StabilizationTuning: Equatable {
     /// 亚像素噪声裕度。
     var lowFrequencyStabilizationAmount: CGFloat {
         guard usesDigitalStabilization else { return 0 }
-        return 0.95
+        return Swift.min(Swift.max(0.95 * modeStrength, 0.85), 0.99)
     }
 
     /// 判定为平移后虚拟相机跟随真实路径的带宽。
@@ -242,7 +262,7 @@ struct StabilizationTuning: Equatable {
     ///
     /// 0.9 Hz 对应约 175 ms，实测平移跟手且平滑，停止时也没有回拉。
     var panFollowFrequency: Double {
-        0.9
+        modeStrength < 0.98 ? 1.15 : (modeStrength > 1.02 ? 0.72 : 0.9)
     }
 
     /// 互补滤波分频点：低于此频率走虚拟相机轨迹，高于此频率走泄漏积分。
@@ -406,6 +426,36 @@ extension AVCaptureVideoStabilizationMode {
             return "自动"
         default:
             return "未知"
+        }
+    }
+}
+
+enum ScopeReticleMode: String, CaseIterable, Identifiable {
+    case off
+    case crosshairAndLevel
+    case gridAndLevel
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off:
+            return "无分划"
+        case .crosshairAndLevel:
+            return "十字+水平"
+        case .gridAndLevel:
+            return "九宫+水平"
+        }
+    }
+
+    var next: ScopeReticleMode {
+        switch self {
+        case .off:
+            return .crosshairAndLevel
+        case .crosshairAndLevel:
+            return .gridAndLevel
+        case .gridAndLevel:
+            return .off
         }
     }
 }
