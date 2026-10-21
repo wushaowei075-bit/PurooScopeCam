@@ -24,6 +24,10 @@ check(exposure(.nan, 100) == nil, "Reject invalid readings")
 check(StabilizationExposurePolicy.boundedDuration(1/120, minimum: 1/100, maximum: 1) == 1/100, "Respect format minimum")
 check(StabilizationExposurePolicy.boundedDuration(1/120, minimum: 1/1000, maximum: 1/240) == 1/240, "Respect format maximum")
 check(StabilizationExposurePolicy.boundedDuration(1/120, minimum: .nan, maximum: 1) == nil, "Invalid format fails closed")
+var highZoomPolicy = StabilizationExposurePolicy()
+_ = highZoomPolicy.update(enabled: true, automatic: true, duration: 1/60, iso: 100, maximumISO: 1600, targetOffset: 0, zoomFactor: 10)
+let tenXCap = highZoomPolicy.update(enabled: true, automatic: true, duration: 1/60, iso: 100, maximumISO: 1600, targetOffset: 0, zoomFactor: 10)
+check(abs((tenXCap ?? 0) - 1.0 / 180.0) < 0.00001, "Tighten exposure cap to 1/180s at 10x zoom when ISO headroom permits")
 
 for fps in [24, 30, 60] {
     var metrics = PresentationMetrics()

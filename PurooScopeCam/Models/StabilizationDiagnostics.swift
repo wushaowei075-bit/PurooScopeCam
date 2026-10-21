@@ -7,7 +7,8 @@ struct StabilizationExposurePolicy {
     private var darkSamples = 0
 
     mutating func update(enabled: Bool, automatic: Bool, duration: Double,
-                         iso: Double, maximumISO: Double, targetOffset: Double) -> Double? {
+                         iso: Double, maximumISO: Double, targetOffset: Double,
+                         zoomFactor: Double = 1.0) -> Double? {
         guard enabled, automatic, duration.isFinite, duration > 0,
               iso.isFinite, iso > 0, maximumISO.isFinite, maximumISO > 0,
               targetOffset.isFinite else {
@@ -15,7 +16,8 @@ struct StabilizationExposurePolicy {
             return nil
         }
         // Estimate the ISO needed at 1/120s, including any remaining underexposure.
-        let requiredISO = iso * duration * 120 * pow(2, min(max(-targetOffset, 0), 3))
+        let underexposureGain = pow(2, min(max(-targetOffset, 0), 3))
+        let requiredISO = iso * duration * 120 * underexposureGain
         if requiredISO < maximumISO * 0.55 && targetOffset > -0.4 {
             brightSamples += 1
             darkSamples = 0
@@ -28,7 +30,16 @@ struct StabilizationExposurePolicy {
         }
         if brightSamples >= 2 { prefersShortExposure = true }
         if darkSamples >= 2 { prefersShortExposure = false }
-        return prefersShortExposure ? 1.0 / 120.0 : nil
+        guard prefersShortExposure else { return nil }
+        if zoomFactor.isFinite, zoomFactor > 3.0 {
+            let highZoomProgress = min(max((zoomFactor - 3.0) / 7.0, 0), 1)
+            let highZoomRate = 120.0 + highZoomProgress * 60.0 // Up to 1/180s at 10x zoom
+            let highZoomISO = iso * duration * highZoomRate * underexposureGain
+            if highZoomISO < maximumISO * 0.55 {
+                return 1.0 / highZoomRate
+            }
+        }
+        return 1.0 / 120.0
     }
 
     static func boundedDuration(_ requested: Double?, minimum: Double, maximum: Double) -> Double? {

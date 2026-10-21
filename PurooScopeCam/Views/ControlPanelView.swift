@@ -33,7 +33,7 @@ struct CameraAdjustmentBar: View {
                     get: { Double(camera.zoomFactor) },
                     set: { camera.setDisplayedZoomFactor(CGFloat($0)) }
                 ),
-                range: (camera.isStabilizationEnabled ? 1.5 : 1)...6,
+                range: (camera.isStabilizationEnabled ? 1.5 : 1)...Double(StabilizationTuning.maximumDisplayZoom),
                 isExpanded: isEditing,
                 onEditingChanged: { editing in
                     withAnimation(.easeOut(duration: 0.18)) {
@@ -45,7 +45,7 @@ struct CameraAdjustmentBar: View {
             Text(String(format: "%.1f×", camera.zoomFactor))
                 .font(.system(size: isEditing ? 12 : 10, weight: .regular, design: .monospaced))
                 .lineLimit(1)
-                .frame(width: isEditing ? 46 : 38, alignment: .trailing)
+                .frame(width: isEditing ? 50 : 42, alignment: .trailing)
         }
         .padding(.horizontal, isEditing ? 12 : 9)
         .frame(maxWidth: isEditing ? 310 : 210)

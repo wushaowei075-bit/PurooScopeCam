@@ -164,6 +164,7 @@ struct TelescopeMagnificationOption: Identifiable, Hashable {
 
 struct StabilizationTuning: Equatable {
     static let defaultOpticalMagnification: Double = 10
+    static let maximumDisplayZoom: CGFloat = 10
 
     var isEnabled: Bool
     var displayZoomFactor: CGFloat
@@ -177,7 +178,7 @@ struct StabilizationTuning: Equatable {
         opticalMagnification: Double = StabilizationTuning.defaultOpticalMagnification
     ) {
         self.isEnabled = isEnabled
-        self.displayZoomFactor = Swift.min(Swift.max(displayZoomFactor, 1), 6)
+        self.displayZoomFactor = Swift.min(Swift.max(displayZoomFactor, 1), Self.maximumDisplayZoom)
         self.motionTimeOffset = Swift.min(Swift.max(motionTimeOffset, -0.08), 0.08)
         self.opticalMagnification = Swift.min(
             Swift.max(opticalMagnification, TelescopeMagnificationOption.minimum),
@@ -189,10 +190,17 @@ struct StabilizationTuning: Equatable {
         isEnabled
     }
 
-    /// 1.5 倍裁切在稳定余量和望远镜视场之间取平衡。
+    /// 1.5 倍裁切在常规倍率下兼顾稳定余量与视场；当数码放大超过 3x 直至 10x 时，
+    /// 动态将裁切比例平滑提升至最高 2.40x（使硬件变焦仅需承担约 4.17x，同时将
+    /// 防抖单侧安全行程从 0.23 扩大至 0.644），确保 10x 最大放大下依然具备充足防抖行程。
     var previewCropScale: CGFloat {
         guard usesDigitalStabilization else { return 1 }
-        return 1.50
+        guard displayZoomFactor > 3.0 else { return 1.50 }
+        let highZoomProgress = Swift.min(
+            Swift.max((displayZoomFactor - 3.0) / (Self.maximumDisplayZoom - 3.0), 0),
+            1
+        )
+        return 1.50 + highZoomProgress * 0.90
     }
 
     var previewCropTravelFactor: CGFloat {
@@ -250,13 +258,14 @@ struct StabilizationTuning: Equatable {
         7.0
     }
 
-    /// 进入平移状态的画面速度阈值，按光学放大倍率缩放。
+    /// 进入平移状态的画面速度阈值，按光学放大倍率与硬件数码变焦缩放。
     ///
-    /// 阈值作用在归一化画面速度上，而望远镜把角速度放大了约 11.5 倍，
-    /// 手部漂移在画面上的速度同样被放大。裸机标定出来的固定阈值因此
-    /// 在望远镜下形同虚设，轻微手抖就会被判成有意平移。
+    /// 阈值作用在归一化画面速度上，而望远镜光学倍率与传感器硬件数码变焦都会把
+    /// 手部角速度在源画面上的归一化速度放大。按倍率与 sqrt(digitalZoom) 同步扩展，
+    /// 防止 6x-10x 高倍数码放大下轻微手抖被误判成有意平移而提前泄放轨迹锁。
     var panActivationSpeed: CGFloat {
-        0.030 * CGFloat(max(opticalMagnification, 1))
+        let digitalZoom = Swift.max(displayZoomFactor / Swift.max(previewCropScale, 1), 1)
+        return 0.030 * CGFloat(Swift.max(opticalMagnification, 1)) * sqrt(digitalZoom)
     }
 
     /// 裁切窗口可以移动的范围，占裁切预留的比例。

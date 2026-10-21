@@ -453,7 +453,8 @@ final class FrameStabilizationEngine {
         let visual = visualTracker.process(
             pixelBuffer: input.pixelBuffer,
             timestamp: input.timestamp,
-            gyroHint: gyroHint
+            gyroHint: gyroHint,
+            displayZoomFactor: input.tuning.displayZoomFactor
         )
         let precedingSample = input.motionSamples.last { $0.timestamp <= input.motionReferenceTime }
         let followingSample = input.motionSamples.first { $0.timestamp >= input.motionReferenceTime }
@@ -626,7 +627,8 @@ private final class SubpixelFrameMotionTracker {
     func process(
         pixelBuffer: CVPixelBuffer,
         timestamp: TimeInterval,
-        gyroHint: (dx: CGFloat, dy: CGFloat)? = nil
+        gyroHint: (dx: CGFloat, dy: CGFloat)? = nil,
+        displayZoomFactor: CGFloat = 1
     ) -> VisualMotionObservation? {
         guard let current = makeLumaGrid(from: pixelBuffer) else { return nil }
         guard let previousFrame, let previousTimestamp else {
@@ -641,13 +643,20 @@ private final class SubpixelFrameMotionTracker {
         guard elapsed.isFinite, elapsed > 0, elapsed < 0.12,
               previousFrame.sourceWidth == current.sourceWidth,
               previousFrame.sourceHeight == current.sourceHeight else { return nil }
+        let highZoom = displayZoomFactor > 3.0
+        let effectiveMaxGuidedShift = highZoom ? 28 : maxGuidedShift
         let hintGrid: (dx: Int, dy: Int)? = gyroHint.flatMap { hint in
             let gx = Int((hint.dx * CGFloat(current.sourceWidth) / max(current.sourceStep, 0.001)).rounded())
             let gy = Int((hint.dy * CGFloat(current.sourceHeight) / max(current.sourceStep, 0.001)).rounded())
-            guard abs(gx) <= maxGuidedShift, abs(gy) <= maxGuidedShift else { return nil }
+            guard abs(gx) <= effectiveMaxGuidedShift, abs(gy) <= effectiveMaxGuidedShift else { return nil }
             return (gx, gy)
         }
-        let estimate = estimateShift(reference: previousFrame, current: current, hintGrid: hintGrid)
+        let estimate = estimateShift(
+            reference: previousFrame,
+            current: current,
+            hintGrid: hintGrid,
+            displayZoomFactor: displayZoomFactor
+        )
         var observation = estimate.map {
             VisualMotionObservation(timestamp: timestamp,
                 deltaX: $0.dx * current.sourceStep / CGFloat(max(current.sourceWidth, 1)),
@@ -712,26 +721,32 @@ private final class SubpixelFrameMotionTracker {
     private func estimateShift(
         reference: AnalysisFrame,
         current: AnalysisFrame,
-        hintGrid: (dx: Int, dy: Int)? = nil
+        hintGrid: (dx: Int, dy: Int)? = nil,
+        displayZoomFactor: CGFloat = 1
     ) -> (dx: CGFloat, dy: CGFloat, confidence: CGFloat, vectorCount: Int, texture: CGFloat)? {
         // 纹理分数取自相邻采样格的灰度差，与格距成正比。格距从 4.95 收到
         // 2.95 源像素后同一画面的分数降到约六成，门槛必须同步缩放，否则
-        // 可用率会跟着塌掉。误匹配仍由下面的中值内点剔除和残差检查拦截。
+        // 可用率会跟着塌掉。高倍数码放大（>3x 直至 10x）时 ISP 插值会进一步
+        // 平滑相邻像素梯度，按倍率适度放宽纹理门槛以维持 10x 下视觉跟踪连续性。
         let texture = textureScore(reference)
-        guard texture >= 0.84 else { return nil }
+        let highZoomProgress = clamp((displayZoomFactor - 3.0) / 7.0, min: 0, max: 1)
+        let minimumTexture: CGFloat = 0.84 - highZoomProgress * 0.20
+        guard texture >= minimumTexture else { return nil }
+        let activeGuidedRadius = displayZoomFactor > 5.0 ? guidedSearchRadius + 1 : guidedSearchRadius
+        let activeSearchRadius = displayZoomFactor > 5.0 ? searchRadius + 2 : searchRadius
         var vectors = patchVectors(
             reference: reference,
             current: current,
             centerShift: hintGrid ?? (0, 0),
-            radius: hintGrid != nil ? guidedSearchRadius : searchRadius
+            radius: hintGrid != nil ? activeGuidedRadius : activeSearchRadius
         )
         if vectors.count < 6, let hintGrid,
-           abs(hintGrid.dx) <= searchRadius, abs(hintGrid.dy) <= searchRadius {
+           abs(hintGrid.dx) <= activeSearchRadius, abs(hintGrid.dy) <= activeSearchRadius {
             vectors = patchVectors(
                 reference: reference,
                 current: current,
                 centerShift: (0, 0),
-                radius: searchRadius
+                radius: activeSearchRadius
             )
         }
         guard vectors.count >= 6 else { return nil }
@@ -1724,8 +1739,8 @@ private final class ComplementaryMotionFusion {
               let selected = selectedCandidate(from: candidates) else {
             return nil
         }
-        let dx = clamp(estimatedMagnification * selected.deltaX, min: -0.06, max: 0.06)
-        let dy = clamp(estimatedMagnification * selected.deltaY, min: -0.06, max: 0.06)
+        let dx = clamp(estimatedMagnification * selected.deltaX, min: -0.09, max: 0.09)
+        let dy = clamp(estimatedMagnification * selected.deltaY, min: -0.09, max: 0.09)
         guard dx.isFinite, dy.isFinite else { return nil }
         return (dx, dy)
     }
@@ -1757,15 +1772,21 @@ private final class ComplementaryMotionFusion {
             self.lastCalibrationObservation = nil
         }
 
+        let digitalZoom = max(tuning.displayZoomFactor / max(tuning.previewCropScale, 1), 1)
+        let zoomMotionScale = min(max(sqrt(digitalZoom), 1), 2.2)
         if let visual {
-            updateLagCorrelations(visual: visual, candidates: gyroCandidates)
+            updateLagCorrelations(
+                visual: visual,
+                candidates: gyroCandidates,
+                motionScale: zoomMotionScale
+            )
             selectBestOffsetIfNeeded()
         }
-        let digitalZoom = max(tuning.displayZoomFactor / max(tuning.previewCropScale, 1), 1)
         let maxAllowedMagnification = Self.maximumMagnification * digitalZoom
         let selected = selectedCandidate(from: gyroCandidates)
         let calibration = updateMagnificationFromSelectedCorrelation(
-            maxAllowedMagnification: maxAllowedMagnification
+            maxAllowedMagnification: maxAllowedMagnification,
+            digitalZoom: digitalZoom
         )
         let gyroTrust: CGFloat = selected == nil || !calibration.isValid ? 0 : calibration.trust
 
@@ -1856,10 +1877,12 @@ private final class ComplementaryMotionFusion {
             highVelocityY = 0
         }
 
-        let lowDeltaX = clamp(lowVelocityX * dt, min: -0.025, max: 0.025)
-        let lowDeltaY = clamp(lowVelocityY * dt, min: -0.025, max: 0.025)
-        let highDeltaX = clamp(highVelocityX * dt, min: -0.025, max: 0.025)
-        let highDeltaY = clamp(highVelocityY * dt, min: -0.025, max: 0.025)
+        let bandLimit: CGFloat = 0.025 * zoomMotionScale
+        let totalLimit: CGFloat = 0.04 * zoomMotionScale
+        let lowDeltaX = clamp(lowVelocityX * dt, min: -bandLimit, max: bandLimit)
+        let lowDeltaY = clamp(lowVelocityY * dt, min: -bandLimit, max: bandLimit)
+        let highDeltaX = clamp(highVelocityX * dt, min: -bandLimit, max: bandLimit)
+        let highDeltaY = clamp(highVelocityY * dt, min: -bandLimit, max: bandLimit)
         let fusedRollingShearX = clamp(
             (selected?.rollingShearX ?? 0) * estimatedMagnification * gyroTrust,
             min: -0.025,
@@ -1872,8 +1895,8 @@ private final class ComplementaryMotionFusion {
         )
 
         return FusedMotionDelta(
-            deltaX: clamp(lowDeltaX + highDeltaX, min: -0.04, max: 0.04),
-            deltaY: clamp(lowDeltaY + highDeltaY, min: -0.04, max: 0.04),
+            deltaX: clamp(lowDeltaX + highDeltaX, min: -totalLimit, max: totalLimit),
+            deltaY: clamp(lowDeltaY + highDeltaY, min: -totalLimit, max: totalLimit),
             lowFrequencyDeltaX: lowDeltaX,
             lowFrequencyDeltaY: lowDeltaY,
             highFrequencyDeltaX: highDeltaX,
@@ -1901,21 +1924,23 @@ private final class ComplementaryMotionFusion {
 
     private func updateLagCorrelations(
         visual: VisualMotionObservation,
-        candidates: [GyroMotionCandidate]
+        candidates: [GyroMotionCandidate],
+        motionScale: CGFloat = 1
     ) {
         guard visual.confidence >= 0.55, visual.vectorCount >= 6 else { return }
+        let maxMotion: CGFloat = 0.012 * max(motionScale, 1)
         let motionMagnitude = hypot(visual.deltaX, visual.deltaY)
-        guard motionMagnitude.isFinite, motionMagnitude <= 0.012 else { return }
+        guard motionMagnitude.isFinite, motionMagnitude <= maxMotion else { return }
         let decay: CGFloat = 0.990
         let weight = visual.confidence * visual.confidence
-        let visualX = clamp(visual.deltaX, min: -0.012, max: 0.012)
-        let visualY = clamp(visual.deltaY, min: -0.012, max: 0.012)
+        let visualX = clamp(visual.deltaX, min: -maxMotion, max: maxMotion)
+        let visualY = clamp(visual.deltaY, min: -maxMotion, max: maxMotion)
         for candidate in candidates {
             guard candidate.deltaX.isFinite, candidate.deltaY.isFinite else { continue }
             let key = Int((candidate.automaticOffset * 1000).rounded())
             var correlation = correlations[key] ?? LagCorrelation()
-            let gyroX = clamp(candidate.deltaX, min: -0.012, max: 0.012)
-            let gyroY = clamp(candidate.deltaY, min: -0.012, max: 0.012)
+            let gyroX = clamp(candidate.deltaX, min: -maxMotion, max: maxMotion)
+            let gyroY = clamp(candidate.deltaY, min: -maxMotion, max: maxMotion)
             correlation.crossX = correlation.crossX * decay + weight * visualX * gyroX
             correlation.crossY = correlation.crossY * decay + weight * visualY * gyroY
             correlation.visualEnergyX = correlation.visualEnergyX * decay + weight * visualX * visualX
@@ -1970,7 +1995,8 @@ private final class ComplementaryMotionFusion {
     }
 
     private func updateMagnificationFromSelectedCorrelation(
-        maxAllowedMagnification: CGFloat
+        maxAllowedMagnification: CGFloat,
+        digitalZoom: CGFloat = 1
     ) -> (
         trust: CGFloat,
         correlationX: CGFloat,
@@ -2019,12 +2045,15 @@ private final class ComplementaryMotionFusion {
         let wasValidated = measurementIsValidated
         measurementIsValidated = measurementIsReliable
         calibrationState = measurementIsReliable ? "validated" : "rejected"
+        let zoomStepScale = max(1, digitalZoom * 0.65)
+        let highZoomTrustBonus = clamp((digitalZoom - 1.5) * 0.018, min: 0, max: 0.05)
 
         if measurementIsReliable {
             let relativeMismatch = abs(targetMagnification - estimatedMagnification) / max(abs(targetMagnification), 0.5)
             let highConfidence = axisCorrelation >= 0.88 && correlation.normalizedError <= 0.35
             let gainRate: CGFloat = (!wasValidated || (relativeMismatch > 0.15 && highConfidence)) ? 0.18 : 0.035
-            let maxStep: CGFloat = (!wasValidated || (relativeMismatch > 0.15 && highConfidence)) ? 0.60 : 0.08
+            let baseMaxStep: CGFloat = (!wasValidated || (relativeMismatch > 0.15 && highConfidence)) ? 0.60 : 0.08
+            let maxStep = baseMaxStep * zoomStepScale
             estimatedMagnification += clamp(
                 (targetMagnification - estimatedMagnification) * gainRate,
                 min: -maxStep,
@@ -2043,14 +2072,16 @@ private final class ComplementaryMotionFusion {
                 min: 0,
                 max: 1
             )
-            let targetTrust: CGFloat = measurementIsValidated ? 0.70 + 0.15 * correlationQuality * residualQuality : 0
+            let targetTrust: CGFloat = measurementIsValidated
+                ? 0.70 + (0.15 + highZoomTrustBonus) * correlationQuality * residualQuality
+                : 0
             calibrationTrust += (targetTrust - calibrationTrust) * 0.04
         } else if axisCorrelation < 0.25 || correlation.normalizedError > 0.90 {
             calibrationTrust += (0 - calibrationTrust) * 0.08
         } else {
             calibrationTrust += (0.35 - calibrationTrust) * 0.01
         }
-        calibrationTrust = clamp(calibrationTrust, min: 0, max: 0.85)
+        calibrationTrust = clamp(calibrationTrust, min: 0, max: 0.85 + highZoomTrustBonus)
         return (
             calibrationTrust,
             correlation.correlationX,

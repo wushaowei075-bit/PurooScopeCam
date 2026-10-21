@@ -331,12 +331,13 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     func setZoomFactor(_ value: CGFloat) {
-        let clamped = min(max(value, 1), 6)
+        let maxZoom = StabilizationTuning.maximumDisplayZoom
+        let clamped = min(max(value, 1), maxZoom)
         sessionQueue.async { [weak self] in
             guard let self, let device = self.videoDeviceInput?.device else { return }
             do {
                 try device.lockForConfiguration()
-                let deviceMax = min(device.activeFormat.videoMaxZoomFactor, 6)
+                let deviceMax = min(device.activeFormat.videoMaxZoomFactor, maxZoom)
                 device.videoZoomFactor = min(clamped, deviceMax)
                 device.unlockForConfiguration()
                 self.publish { $0.zoomFactor = min(clamped, deviceMax) }
@@ -347,7 +348,7 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     func setDisplayedZoomFactor(_ value: CGFloat) {
-        let clamped = min(max(value, 1), 6)
+        let clamped = min(max(value, 1), StabilizationTuning.maximumDisplayZoom)
         sessionQueue.async { [weak self] in
             self?.requestedZoomFactor = clamped
             self?.applyZoomFactorOnSessionQueue(clamped)
@@ -360,14 +361,18 @@ final class CameraController: NSObject, ObservableObject {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
 
-            let tuning = StabilizationTuning(isEnabled: isStabilizationEnabled)
+            let maxZoom = StabilizationTuning.maximumDisplayZoom
+            let tuning = StabilizationTuning(
+                isEnabled: isStabilizationEnabled,
+                displayZoomFactor: desiredDisplayZoom
+            )
             let cropScale = tuning.usesDigitalStabilization ? tuning.previewCropScale : 1
-            let deviceMax = min(device.activeFormat.videoMaxZoomFactor, 6)
+            let deviceMax = min(device.activeFormat.videoMaxZoomFactor, maxZoom)
             let compensatedDeviceZoom = desiredDisplayZoom / max(cropScale, 1)
             let deviceZoom = min(max(compensatedDeviceZoom, 1), deviceMax)
             device.videoZoomFactor = deviceZoom
 
-            let actualDisplayZoom = min(max(deviceZoom * max(cropScale, 1), 1), 6)
+            let actualDisplayZoom = min(max(deviceZoom * max(cropScale, 1), 1), maxZoom)
             publish { $0.zoomFactor = actualDisplayZoom }
         } catch {
             publishStatus(error: "无法设置变焦。")
@@ -663,7 +668,8 @@ final class CameraController: NSObject, ObservableObject {
         let proposed = exposurePolicy.update(enabled: stabilizationExposureEnabled,
             automatic: device.exposureMode == .continuousAutoExposure,
             duration: CMTimeGetSeconds(device.exposureDuration), iso: Double(device.iso),
-            maximumISO: Double(device.activeFormat.maxISO), targetOffset: Double(device.exposureTargetOffset))
+            maximumISO: Double(device.activeFormat.maxISO), targetOffset: Double(device.exposureTargetOffset),
+            zoomFactor: Double(requestedZoomFactor))
         let cap = StabilizationExposurePolicy.boundedDuration(proposed,
             minimum: CMTimeGetSeconds(device.activeFormat.minExposureDuration),
             maximum: CMTimeGetSeconds(device.activeFormat.maxExposureDuration))
@@ -1484,7 +1490,8 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapt
         let fieldOfViewDegrees = videoDeviceInput?.device.activeFormat.videoFieldOfView ?? 60
         let fieldOfViewRadians = CGFloat(fieldOfViewDegrees) * .pi / 180
         let longDimension = CGFloat(max(width, height))
-        let focalLength = longDimension / max(2 * tan(fieldOfViewRadians * 0.5), 0.001)
+        let hardwareZoom = max(videoDeviceInput?.device.videoZoomFactor ?? 1, 1)
+        let focalLength = (longDimension / max(2 * tan(fieldOfViewRadians * 0.5), 0.001)) * hardwareZoom
         return (focalLength, focalLength)
     }
 }

@@ -461,6 +461,62 @@ do {
         "Trajectory controller must oppose rolling-shutter shear and stretch")
 }
 
+// 10x maximum digital zoom stabilization: adaptive crop scale (2.40x), extended motion admittance,
+// and strong jitter suppression without false pan activation or boundary saturation.
+do {
+    let tenXTuning = StabilizationTuning(isEnabled: true, displayZoomFactor: 10.0, opticalMagnification: 15)
+    check(abs(tenXTuning.displayZoomFactor - 10.0) < 0.001, "Allow up to 10x display zoom")
+    check(abs(tenXTuning.previewCropScale - 2.40) < 0.001, "Expand preview crop scale to 2.40x at 10x display zoom")
+    check(tenXTuning.safeCropOffsetFraction > 0.64, "Provide >64% single-sided crop travel at 10x zoom")
+
+    let tenXFusion = ComplementaryMotionFusion()
+    let tenXTrajectory = VirtualCameraTrajectoryController()
+    let trueHighZoomGain: CGFloat = 62 // 15x scope * ~4.17x hardware zoom
+    var inputEnergy: CGFloat = 0
+    var outputEnergy: CGFloat = 0
+    var previousX: CGFloat = 0
+    var previousCrop: CGFloat = 0
+    var falsePanFrames = 0
+    var lastResult: FusedMotionDelta?
+    for frame in 0..<360 {
+        let t = Double(frame) / 60
+        // High-zoom amplified hand tremor (up to ~0.017 per-frame delta, exceeding the old 0.012 1x cap)
+        let x = CGFloat(0.0042 * sin(2 * .pi * 3.2 * t) + 0.0018 * sin(2 * .pi * 8.5 * t))
+        let dx = x - previousX
+        previousX = x
+        let fused = tenXFusion.update(
+            timestamp: t,
+            visual: observation(t, dx, 0),
+            gyroCandidates: [candidate(dx / trueHighZoomGain, 0)],
+            tuning: tenXTuning
+        )
+        lastResult = fused
+        let crop = tenXTrajectory.update(
+            timestamp: t,
+            lowFrequencyDeltaX: fused.lowFrequencyDeltaX,
+            lowFrequencyDeltaY: fused.lowFrequencyDeltaY,
+            highFrequencyDeltaX: fused.highFrequencyDeltaX,
+            highFrequencyDeltaY: fused.highFrequencyDeltaY,
+            deltaRoll: fused.deltaRoll,
+            confidence: fused.confidence,
+            tuning: tenXTuning
+        )
+        if crop.isIntentionalPan { falsePanFrames += 1 }
+        let outputDelta = dx * tenXTuning.previewCropScale + crop.correctionX - previousCrop
+        previousCrop = crop.correctionX
+        if frame >= 120 {
+            inputEnergy += pow(dx * tenXTuning.previewCropScale, 2)
+            outputEnergy += outputDelta * outputDelta
+        }
+    }
+    let tenXResidual = sqrt(outputEnergy / max(inputEnergy, 0.000001))
+    print("10x zoom residual ratio=\(tenXResidual), gain=\(lastResult?.opticalMagnification ?? 0), trust=\(lastResult?.gyroTrust ?? 0)")
+    check(lastResult?.isGyroCalibrationValid == true && (lastResult?.gyroTrust ?? 0) > 0.80,
+        "Calibrate high-zoom optical gain without rejecting amplified frame deltas")
+    check(falsePanFrames == 0, "Do not misclassify 10x amplified hand tremor as intentional pan")
+    check(tenXResidual < 0.14, "Maintain strong stabilization at 10x maximum zoom")
+}
+
 print("Missing-gyro reconstruction error: \(largestMissingError)")
 print("Motion fusion/controller checks: \(checks), failures: \(failures)")
 if failures > 0 && !characterize { exit(1) }
