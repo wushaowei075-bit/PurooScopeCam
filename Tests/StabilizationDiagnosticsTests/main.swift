@@ -135,8 +135,11 @@ check(!IndependentTranslationValidation.accepts(reference: reference, current: r
     mask: allMask, size: n, dx: .nan, dy: 0), "Invalid translation cannot validate")
 check(IndependentTranslationValidation.accepts(reference: ringReference, current: ringCurrent,
     mask: interiorMask, size: n, dx: 1, dy: 0), "Distributed masked interior supports recovery")
-let localOnly = (0..<n*n).map { i -> Float in
-    i % n < n/2 && i / n < n/2 ? texture(Double(i % n) - 2, Double(i / n)) : reference[i]
+var localOnly = reference
+for y in 0..<(n/2) {
+    for x in 0..<(n/2) {
+        localOnly[y*n+x] = texture(Double(x) - 2, Double(y))
+    }
 }
 check(!IndependentTranslationValidation.accepts(reference: reference, current: localOnly,
     mask: allMask, size: n, dx: 2, dy: 0), "A moving object in one quadrant is not global motion")
