@@ -106,15 +106,16 @@ final class CameraController: NSObject, ObservableObject {
     @Published var stabilizationPreference: StabilizationPreference = .balanced {
         didSet {
             applySelectedStabilizationMode()
-            let desiredZoomFactor = requestedZoomFactor
             sessionQueue.async { [weak self] in
-                self?.applyZoomFactorOnSessionQueue(desiredZoomFactor)
+                guard let self else { return }
+                self.applyZoomFactorOnSessionQueue(self.requestedZoomFactor)
             }
         }
     }
     @Published private(set) var isStabilizationEnabled = true
     @Published private(set) var telescopeMagnification: Double = StabilizationTuning.defaultOpticalMagnification
     @Published var zoomFactor: CGFloat = 1
+    @Published private(set) var zoomControlFactor: CGFloat = 1.5
     @Published var exposureBias: Float = 0
     @Published var captureQualityPreference: CaptureQualityOption = .default4K60 {
         didSet {
@@ -130,7 +131,7 @@ final class CameraController: NSObject, ObservableObject {
     @Published var manualLensPosition: Float = 0.5
     @Published var isFocusPeakingEnabled = false
     @Published var reticleMode: ScopeReticleMode = .off
-    @Published var isTelemetryWatermarkEnabled = false
+    private let isTelemetryWatermarkEnabled = false
     @Published private(set) var latestThumbnailImage: UIImage?
     @Published private(set) var burstProgressText: String?
     @Published private(set) var stillCaptureFlashTrigger: Int = 0
@@ -154,6 +155,8 @@ final class CameraController: NSObject, ObservableObject {
     private var isConfigured = false
     private var targetFrameRate = 60
     private var requestedZoomFactor: CGFloat = 1
+    private var requestedZoomRevision: UInt64 = 0
+    private let zoomRequests = CameraZoomRequests()
     private var requestedVideoRotationAngle: CGFloat = 90
     private var isVideoOrientationLocked = false
     private var subjectAreaObserver: NSObjectProtocol?
@@ -317,10 +320,9 @@ final class CameraController: NSObject, ObservableObject {
             values: ["value": enabled]
         )
 
-        let desiredZoomFactor = requestedZoomFactor
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.applyZoomFactorOnSessionQueue(desiredZoomFactor)
+            self.applyZoomFactorOnSessionQueue(self.requestedZoomFactor)
             self.stabilizationExposureEnabled = enabled
             self.updateStabilizationExposureOnSessionQueue()
         }
@@ -339,32 +341,29 @@ final class CameraController: NSObject, ObservableObject {
         )
     }
 
-    func setZoomFactor(_ value: CGFloat) {
-        let maxZoom = StabilizationTuning.maximumDisplayZoom
-        let clamped = min(max(value, 1), maxZoom)
-        sessionQueue.async { [weak self] in
-            guard let self, let device = self.videoDeviceInput?.device else { return }
-            do {
-                try device.lockForConfiguration()
-                let deviceMax = min(device.activeFormat.videoMaxZoomFactor, maxZoom)
-                device.videoZoomFactor = min(clamped, deviceMax)
-                device.unlockForConfiguration()
-                self.publish { $0.zoomFactor = min(clamped, deviceMax) }
-            } catch {
-                self.publishStatus(error: "无法设置变焦。")
-            }
-        }
-    }
-
     func setDisplayedZoomFactor(_ value: CGFloat) {
-        let clamped = min(max(value, 1), StabilizationTuning.maximumDisplayZoom)
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard value.isFinite else { return }
+        let minimum: CGFloat = isStabilizationEnabled ? 1.5 : 1
+        let clamped = min(max(value, minimum), StabilizationTuning.maximumDisplayZoom)
+        zoomControlFactor = clamped
+        guard zoomRequests.submit(clamped) else { return }
         sessionQueue.async { [weak self] in
-            self?.requestedZoomFactor = clamped
-            self?.applyZoomFactorOnSessionQueue(clamped)
+            self?.consumeZoomRequest()
         }
     }
 
-    private func applyZoomFactorOnSessionQueue(_ desiredDisplayZoom: CGFloat) {
+    private func consumeZoomRequest() {
+        guard let request = zoomRequests.take() else { return }
+        requestedZoomFactor = request.zoom
+        requestedZoomRevision = request.revision
+        applyZoomFactorOnSessionQueue(request.zoom, revision: request.revision)
+        // Yield between samples so focus, recording and format changes are not starved.
+        sessionQueue.async { [weak self] in self?.consumeZoomRequest() }
+    }
+
+    private func applyZoomFactorOnSessionQueue(_ desiredDisplayZoom: CGFloat, revision: UInt64? = nil) {
+        let appliedRevision = revision ?? requestedZoomRevision
         guard let device = videoDeviceInput?.device else { return }
         do {
             try device.lockForConfiguration()
@@ -382,8 +381,18 @@ final class CameraController: NSObject, ObservableObject {
             device.videoZoomFactor = deviceZoom
 
             let actualDisplayZoom = min(max(deviceZoom * max(cropScale, 1), 1), maxZoom)
-            publish { $0.zoomFactor = actualDisplayZoom }
+            publish { controller in
+                controller.zoomFactor = actualDisplayZoom
+                if controller.zoomRequests.canPublishControlValue(for: appliedRevision) {
+                    controller.zoomControlFactor = actualDisplayZoom
+                }
+            }
         } catch {
+            publish { controller in
+                if controller.zoomRequests.canPublishControlValue(for: appliedRevision) {
+                    controller.zoomControlFactor = controller.zoomFactor
+                }
+            }
             publishStatus(error: "无法设置变焦。")
         }
     }

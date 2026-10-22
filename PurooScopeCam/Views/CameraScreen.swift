@@ -344,7 +344,7 @@ struct CameraScreen: View {
                 .simultaneousGesture(
                     MagnificationGesture()
                         .onChanged { scale in
-                            let base = pinchBaseZoom ?? camera.zoomFactor
+                            let base = pinchBaseZoom ?? camera.zoomControlFactor
                             if pinchBaseZoom == nil {
                                 pinchBaseZoom = base
                             }
@@ -400,17 +400,6 @@ struct CameraScreen: View {
                     .disabled(camera.status.isSaving || camera.status.isCapturingBurst)
                 }
 
-                if camera.isTelemetryWatermarkEnabled {
-                    TelemetryWatermarkLiveBanner(
-                        scopeMagnification: Int(camera.telescopeMagnification.rounded()),
-                        digitalZoom: Double(camera.zoomFactor),
-                        totalMagnification: Int((camera.telescopeMagnification * Double(camera.zoomFactor)).rounded()),
-                        exposureSummary: camera.liveExposureText,
-                        qualityTitle: camera.activeCaptureQuality.shortTitle,
-                        stabilizationTitle: camera.isStabilizationEnabled ? camera.stabilizationPreference.title : "直通"
-                    )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
 
                 CameraAdjustmentBar()
                     .disabled(camera.status.isCapturingPhoto || camera.status.isCapturingBurst || camera.status.isFinishingRecording)
@@ -418,7 +407,6 @@ struct CameraScreen: View {
             .padding(.top, topControlInset)
             .padding(.horizontal, 12)
             .padding(.bottom, bottomControlInset + 8)
-            .animation(.spring(response: 0.28, dampingFraction: 0.84), value: camera.isTelemetryWatermarkEnabled)
 
             if let focusIndicator {
                 FocusReticleView(isLocked: camera.focusLocked)
@@ -513,38 +501,6 @@ struct CameraScreen: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("分划与水平仪")
 
-                Button {
-                    camera.isTelemetryWatermarkEnabled.toggle()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "camera.aperture")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("铭牌")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 34)
-                    .foregroundStyle(
-                        camera.isTelemetryWatermarkEnabled
-                            ? Color.black
-                            : Color(red: 0.96, green: 0.86, blue: 0.48)
-                    )
-                    .background(
-                        camera.isTelemetryWatermarkEnabled
-                            ? Color(red: 0.96, green: 0.86, blue: 0.48)
-                            : Color.black.opacity(0.58),
-                        in: Capsule()
-                    )
-                    .overlay {
-                        Capsule()
-                            .stroke(
-                                Color(red: 0.96, green: 0.86, blue: 0.48).opacity(camera.isTelemetryWatermarkEnabled ? 0 : 0.45),
-                                lineWidth: 0.9
-                            )
-                    }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("光学铭牌水印")
 
                 Spacer(minLength: 4)
             }
@@ -928,116 +884,6 @@ private struct FocusExposureControl: View {
     }
 }
 
-private struct TelemetryWatermarkLiveBanner: View {
-    let scopeMagnification: Int
-    let digitalZoom: Double
-    let totalMagnification: Int
-    let exposureSummary: String
-    let qualityTitle: String
-    let stabilizationTitle: String
-
-    private let champagneGold = Color(red: 0.96, green: 0.86, blue: 0.48)
-    private let coolSilver = Color(red: 0.65, green: 0.69, blue: 0.76)
-
-    var body: some View {
-        VStack(spacing: 0) {
-            LinearGradient(
-                colors: [
-                    champagneGold.opacity(0.08),
-                    champagneGold.opacity(0.85),
-                    champagneGold.opacity(0.08)
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(height: 1)
-
-            HStack(spacing: 10) {
-                // Left: Optical Emblem + Brand
-                HStack(spacing: 7) {
-                    ZStack {
-                        Circle()
-                            .stroke(champagneGold.opacity(0.88), lineWidth: 1.1)
-                            .frame(width: 20, height: 20)
-
-                        Circle()
-                            .stroke(champagneGold.opacity(0.42), lineWidth: 0.8)
-                            .frame(width: 11, height: 11)
-
-                        Circle()
-                            .fill(champagneGold)
-                            .frame(width: 3, height: 3)
-                    }
-
-                    VStack(alignment: .leading, spacing: 1.5) {
-                        Text("PUROO PULAI")
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .tracking(1.4)
-                            .foregroundStyle(champagneGold)
-                            .lineLimit(1)
-
-                        Text("OPTICAL TELEPHOTO")
-                            .font(.system(size: 7.5, weight: .medium))
-                            .tracking(0.6)
-                            .foregroundStyle(coolSilver)
-                            .lineLimit(1)
-                    }
-                }
-
-                Spacer(minLength: 6)
-
-                // Column 1: Equivalent Magnification
-                VStack(alignment: .trailing, spacing: 1.5) {
-                    Text("\(totalMagnification)× EQUIV.")
-                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.96))
-                        .lineLimit(1)
-
-                    Text(String(format: "%d×镜 · %.1f×数码", scopeMagnification, digitalZoom))
-                        .font(.system(size: 7.5, weight: .semibold))
-                        .foregroundStyle(champagneGold.opacity(0.88))
-                        .lineLimit(1)
-                }
-
-                Rectangle()
-                    .fill(champagneGold.opacity(0.26))
-                    .frame(width: 1, height: 18)
-
-                // Column 2: Exposure & EIS
-                VStack(alignment: .trailing, spacing: 1.5) {
-                    Text(exposureSummary)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.94))
-                        .lineLimit(1)
-
-                    Text("\(qualityTitle) · \(stabilizationTitle)")
-                        .font(.system(size: 7.5, weight: .medium))
-                        .foregroundStyle(coolSilver)
-                        .lineLimit(1)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-        }
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.045, green: 0.050, blue: 0.065).opacity(0.90),
-                    Color(red: 0.075, green: 0.082, blue: 0.108).opacity(0.92)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            ),
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(champagneGold.opacity(0.22), lineWidth: 0.8)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .shadow(color: .black.opacity(0.35), radius: 5, y: 2)
-    }
-}
 
 private extension UIDeviceOrientation {
     var interfaceOrientation: UIInterfaceOrientation? {

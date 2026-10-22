@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        1A0000010000000000000014 /* CameraZoom.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000014; };
+        1A0000010000000000000015 /* CameraZoomControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000015; };
 		1A0000010000000000000012 /* StabilizationDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000012; };
 		1A0000010000000000000013 /* PhaseCorrelationEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000013; };
 		1A000001000000000000000F /* CameraGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000011 /* CameraGeometry.swift */; };
@@ -27,6 +29,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        1A0001010000000000000014 /* CameraZoom.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraZoom.swift; sourceTree = "<group>"; };
+        1A0001010000000000000015 /* CameraZoomControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraZoomControl.swift; sourceTree = "<group>"; };
 		1A0001010000000000000012 /* StabilizationDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StabilizationDiagnostics.swift; sourceTree = "<group>"; };
 		1A0001010000000000000013 /* PhaseCorrelationEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhaseCorrelationEstimator.swift; sourceTree = "<group>"; };
 		1A0001010000000000000011 /* CameraGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGeometry.swift; sourceTree = "<group>"; };
@@ -85,6 +89,7 @@
 			children = (
 				1A0001010000000000000002 /* CaptureModels.swift */,
 				1A0001010000000000000011 /* CameraGeometry.swift */,
+                1A0001010000000000000014 /* CameraZoom.swift */,
 				1A0001010000000000000012 /* StabilizationDiagnostics.swift */,
 			);
 			path = Models;
@@ -109,6 +114,7 @@
 				1A0001010000000000000008 /* CameraPreviewView.swift */,
 				1A0001010000000000000009 /* CameraScreen.swift */,
 				1A000101000000000000000A /* ControlPanelView.swift */,
+                1A0001010000000000000015 /* CameraZoomControl.swift */,
 				1A0001010000000000000010 /* PhotoLibraryView.swift */,
 				1A000101000000000000000B /* ShakeMeterView.swift */,
 				1A000101000000000000000C /* CrosshairView.swift */,
@@ -193,6 +199,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                1A0000010000000000000014 /* CameraZoom.swift in Sources */,
+                1A0000010000000000000015 /* CameraZoomControl.swift in Sources */,
 				1A0000010000000000000001 /* PurooScopeCamApp.swift in Sources */,
 				1A0000010000000000000012 /* StabilizationDiagnostics.swift in Sources */,
 				1A0000010000000000000013 /* PhaseCorrelationEstimator.swift in Sources */,
@@ -334,7 +342,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 33;
+				CURRENT_PROJECT_VERSION = 34;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PurooScopeCam/Info.plist;
@@ -358,7 +366,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 33;
+				CURRENT_PROJECT_VERSION = 34;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PurooScopeCam/Info.plist;
