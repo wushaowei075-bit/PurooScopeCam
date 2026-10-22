@@ -103,12 +103,14 @@ do {
     var totalTime = 0.0
     for contrast in [Float(0.10), 0.12, 0.15, 0.18, 0.22] {
         let tracker = SubpixelFrameMotionTracker()
-        let a = (0..<n*n).map { 128 + (texture(Double($0 % n), Double($0 / n)) - 128) * contrast }
-        let b = (0..<n*n).map { 128 + (texture(Double($0 % n) - 0.4, Double($0 / n) + 0.3) - 128) * contrast }
+        // Preserve scene variance but soften gradients, as magnified detail does.
+        let a = (0..<n*n).map { 128 + (texture(Double($0 % n) * 0.5, Double($0 / n) * 0.5) - 128) * contrast }
+        let b = (0..<n*n).map { 128 + (texture((Double($0 % n) - 0.4) * 0.5, (Double($0 / n) + 0.3) * 0.5) - 128) * contrast }
         _ = tracker.processSampledGrid(a, timestamp: 1)
         let start = Date.timeIntervalSinceReferenceDate
         let result = tracker.processSampledGrid(b, timestamp: 1 + 1/60)
         totalTime += Date.timeIntervalSinceReferenceDate - start
+        print("Soft contrast=\(contrast), estimator=\(result?.estimator ?? "none"), NCC reason=\(tracker.rejectionReason)")
         if let result, result.estimator == "phase_recovery" {
             recovered += 1
             check(result.independentlyValidated && !result.calibrationEligible,
