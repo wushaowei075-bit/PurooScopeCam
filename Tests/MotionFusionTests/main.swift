@@ -213,7 +213,7 @@ private let fineWrong = simulate { t in
 }
 check(!fineWrong.isGyroCalibrationValid && fineWrong.gyroTrust == 0, "Reject a reversed fine signal")
 private let stale = cold.update(timestamp: 10, visual: nil, gyroCandidates: [candidate(0.0001, 0)], tuning: tuning)
-check(stale.calibrationState == "stale" && stale.gyroTrust == 0, "Stale calibration loses authority")
+check(["stale", "interrupted"].contains(stale.calibrationState) && stale.gyroTrust == 0, "Stale calibration loses authority")
 private let wrongPrior = ComplementaryMotionFusion()
 for i in 0..<300 {
     let t = Double(i) / 60
@@ -524,6 +524,78 @@ do {
         "Calibrate high-zoom optical gain without rejecting amplified frame deltas")
     check(falsePanFrames == 0, "Do not misclassify 10x amplified hand tremor as intentional pan")
     check(tenXResidual < 0.14, "Maintain strong stabilization at 10x maximum zoom")
+}
+
+// Build 37: continuous quiet holding, multi-second texture gaps, and missing lag.
+// These tests are also run against build 36 in characterize mode by CI.
+private func warmedFusion() -> ComplementaryMotionFusion {
+    let fusion = ComplementaryMotionFusion()
+    for i in 0..<600 {
+        let t = Double(i)/60
+        let x = CGFloat(0.0006 * sin(2 * .pi * 9 * t))
+        _ = fusion.update(timestamp: t, visual: observation(t, x, 0),
+                          gyroCandidates: [candidate(x/10, 0)], tuning: tuning)
+    }
+    return fusion
+}
+do {
+    let quiet = warmedFusion()
+    var result: FusedMotionDelta?
+    for i in 600..<2400 {
+        let t = Double(i)/60
+        result = quiet.update(timestamp: t, visual: observation(t, 0, 0),
+                              gyroCandidates: [candidate(0, 0)], tuning: tuning)
+    }
+    check(result!.isGyroCalibrationValid && result!.gyroTrust > 0.80,
+          "REGRESSION: 30 seconds of jointly quiet sensors must not erase validated gain")
+    let resumed = quiet.update(timestamp: 40, visual: nil,
+                               gyroCandidates: [candidate(0.00004, 0)], tuning: tuning)
+    check(resumed.isGyroCalibrationValid && abs(resumed.deltaX - 0.0004) < 1e-10,
+          "REGRESSION: tremor after a quiet hold must be corrected without re-learning")
+}
+do {
+    let gap = warmedFusion()
+    var result: FusedMotionDelta?
+    for i in 600..<960 {
+        let t = Double(i)/60
+        result = gap.update(timestamp: t, visual: nil,
+                            gyroCandidates: [candidate(CGFloat(0.00006 * sin(t * 53)), 0)], tuning: tuning)
+    }
+    check(result!.isGyroCalibrationValid && result!.gyroTrust > 0.80,
+          "REGRESSION: six-second visual gap with continuous IMU must retain calibrated correction")
+    for i in 960..<1320 {
+        let t = Double(i)/60
+        result = gap.update(timestamp: t, visual: nil,
+                            gyroCandidates: [candidate(0.00004, 0)], tuning: tuning)
+        if i == 1140 {
+            check(result!.gyroTrust > 0 && result!.gyroTrust < 0.5,
+                  "Expired visual support fades before disabling gyro")
+            check(result!.deltaX > 0 && result!.deltaX < 0.0003,
+                  "Gyro-only output must actually fade, not stay at full amplitude")
+        }
+    }
+    check(!result!.isGyroCalibrationValid && result!.gyroTrust == 0 && result!.deltaX == 0,
+          "Long visual loss must not authorize indefinite blind gyro")
+}
+do {
+    let lag = warmedFusion()
+    var other = candidate(0.00004, 0)
+    other.automaticOffset = 0.008
+    let result = lag.update(timestamp: 10, visual: observation(10, 0.0004, 0),
+                            gyroCandidates: [other], tuning: tuning)
+    check(result.gyroTrust == 0 && !result.isGyroCalibrationValid,
+          "REGRESSION: a different IMU time offset cannot inherit the selected lag's calibration")
+    check(abs(result.deltaX - 0.0004) < 1e-12,
+          "Unavailable calibrated lag preserves the complete visual correction")
+}
+do {
+    let zoom = warmedFusion()
+    let result = zoom.update(timestamp: 10, visual: nil, gyroCandidates: [candidate(0.00004, 0)],
+                             tuning: StabilizationTuning(isEnabled: true, displayZoomFactor: 3))
+    check(result.gyroTrust == 0, "Changed zoom cannot reuse an unverified optical mapping")
+    let interrupted = warmedFusion().update(timestamp: 10.3, visual: nil,
+        gyroCandidates: [candidate(0.00004, 0)], tuning: tuning)
+    check(interrupted.gyroTrust == 0, "A frame discontinuity must invalidate time calibration")
 }
 
 print("Missing-gyro reconstruction error: \(largestMissingError)")

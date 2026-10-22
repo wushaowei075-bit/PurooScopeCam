@@ -72,5 +72,29 @@ do {
     check(zero != nil && !zero!.rollingWindowComplete, "Partial future IMU span is not a complete readout")
     check(result.allSatisfy { $0.rollingShearX == 0 && $0.rollingStretchY == 0 }, "Production cannot inject unvalidated rolling warp")
 }
+do {
+    let estimator = QuaternionMotionEstimator()
+    let tuning = StabilizationTuning(isEnabled: true)
+    let samples = (0...60).map { i -> StabilitySample in
+        var sample = StabilitySample.unavailable
+        sample.timestamp = 0.9 + Double(i) * 0.002
+        sample.quaternionY = sin(0.1 * sample.timestamp / 2)
+        sample.quaternionW = cos(0.1 * sample.timestamp / 2)
+        return sample
+    }
+    func measure(_ t: Double, _ values: [StabilitySample]) -> [GyroMotionCandidate] {
+        estimator.candidates(samples: values, frameTime: t, videoRotationAngle: 90, tuning: tuning,
+            focalLengthPixelsX: 2160, focalLengthPixelsY: 3840, frameWidth: 2160, frameHeight: 3840)
+    }
+    _ = measure(1, samples)
+    let result = measure(1 + 1/60, samples)
+    check(result.contains { $0.automaticOffset == 0 }, "Bracketed zero-offset IMU remains available")
+    check(!result.contains { $0.automaticOffset == 0.008 },
+          "Unbracketed future sample cannot be fabricated by holding the latest quaternion")
+    estimator.reset()
+    let gapped = samples.filter { $0.timestamp < 0.985 || $0.timestamp > 1.017 }
+    _ = measure(1, gapped)
+    check(measure(1 + 1/60, gapped).isEmpty, "Do not interpolate across an IMU delivery interruption")
+}
 print("Production measurement checks: \(checks), failures: \(failures)")
 if failures > 0 { exit(1) }

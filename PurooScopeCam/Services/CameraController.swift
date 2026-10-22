@@ -71,6 +71,7 @@ protocol StabilizedRecordingFrameSink: AnyObject {
     func startStabilizedRecording(
         to outputURL: URL,
         includeAudio: Bool,
+        outputRotationAngle: CGFloat,
         completion: @escaping (Result<URL, Error>) -> Void
     )
     func stopStabilizedRecording()
@@ -79,7 +80,8 @@ protocol StabilizedRecordingFrameSink: AnyObject {
 protocol StabilizedPhotoFrameSink: AnyObject {
     func photoContext() -> StabilizedPhotoContext?
     func waitForOptimalPhotoMoment(maxWait: TimeInterval, completion: @escaping () -> Void)
-    func processPhoto(_ data: Data, at sourceTimestamp: TimeInterval, completion: @escaping (Result<Data, Error>) -> Void)
+    func processPhoto(_ data: Data, at sourceTimestamp: TimeInterval, outputRotationAngle: CGFloat,
+                      completion: @escaping (Result<Data, Error>) -> Void)
     func captureStabilizedPhoto(
         completion: @escaping (Result<Data, Error>) -> Void
     )
@@ -96,6 +98,7 @@ struct StabilizedPhotoContext {
     var viewport: CGSize
     var transform: PreviewRenderTransform
     var cropScale: CGFloat
+    var outputRotationAngle: CGFloat = 90
 }
 
 final class CameraController: NSObject, ObservableObject {
@@ -681,7 +684,7 @@ final class CameraController: NSObject, ObservableObject {
 
     private func capturePhotoOnSessionQueue() {
         guard !photoBusy, !recordingActive, !finishingRecording, !recordingRequestPending else { return }
-        guard isConfigured, session.isRunning, let context = previewPhotoSink?.photoContext() else {
+        guard isConfigured, session.isRunning, var context = previewPhotoSink?.photoContext() else {
             burstRemaining = 0
             finishPhotoStep()
             publishStatus(message: "取景画面尚未就绪，请稍后拍摄。")
@@ -693,6 +696,7 @@ final class CameraController: NSObject, ObservableObject {
         settings.flashMode = .off
         settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
         settings.photoQualityPrioritization = burstRemaining > 0 ? .speed : .quality
+        context.outputRotationAngle = requestedVideoRotationAngle
         photoContexts[settings.uniqueID] = context
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
@@ -1032,7 +1036,7 @@ final class CameraController: NSObject, ObservableObject {
 
     private func configureVideoOutputConnection() {
         guard let connection = videoOutput.connection(with: .video) else { return }
-        applyVideoRotation(to: connection)
+        applyVideoRotation(to: connection, angle: CameraPresentation.captureRotationAngle)
         if connection.isVideoMirroringSupported {
             connection.isVideoMirrored = false
         }
@@ -1047,7 +1051,7 @@ final class CameraController: NSObject, ObservableObject {
             session.addOutput(photoOutput)
             photoOutput.maxPhotoQualityPrioritization = .quality
             if let device = videoDeviceInput?.device { configurePhotoDimensions(device) }
-            applyVideoRotation(to: photoOutput.connection(with: .video))
+            applyVideoRotation(to: photoOutput.connection(with: .video), angle: CameraPresentation.captureRotationAngle)
         }
     }
 
@@ -1158,22 +1162,23 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     private func applyRequestedVideoRotation() {
-        applyVideoRotation(to: videoOutput.connection(with: .video))
-        applyVideoRotation(to: photoOutput.connection(with: .video))
-        applyVideoRotation(to: movieOutput.connection(with: .video))
+        // Never reconfigure preview/photo buffers on a device orientation event.
+        // Switching their dimensions clears tracking, calibration and the render queue.
         StabilizationTraceRecorder.shared.recordControl(
             "video_orientation",
-            values: ["angle": requestedVideoRotationAngle]
+            values: ["angle": requestedVideoRotationAngle, "capture_angle": CameraPresentation.captureRotationAngle]
         )
     }
 
-    private func applyVideoRotation(to connection: AVCaptureConnection?) {
+    private func applyVideoRotation(to connection: AVCaptureConnection?, angle: CGFloat? = nil) {
+        let angle = angle ?? requestedVideoRotationAngle
         guard let connection,
-              connection.isVideoRotationAngleSupported(requestedVideoRotationAngle)
+              abs(connection.videoRotationAngle - angle) > 0.5,
+              connection.isVideoRotationAngleSupported(angle)
         else {
             return
         }
-        connection.videoRotationAngle = requestedVideoRotationAngle
+        connection.videoRotationAngle = angle
     }
 
     private func unlockVideoOrientationAfterRecording() {
@@ -1196,7 +1201,8 @@ final class CameraController: NSObject, ObservableObject {
                     $0.isRecording = true
                     $0.recordingStartedAt = Date()
                 }
-                previewRecordingSink.startStabilizedRecording(to: url, includeAudio: self.audioDeviceInput != nil) { [weak self] result in
+                previewRecordingSink.startStabilizedRecording(to: url, includeAudio: self.audioDeviceInput != nil,
+                    outputRotationAngle: self.requestedVideoRotationAngle) { [weak self] result in
                     guard let self else { return }
                     self.sessionQueue.async {
                         self.recordingActive = false
@@ -1223,6 +1229,7 @@ final class CameraController: NSObject, ObservableObject {
             guard let url = self.makeRecordingURL(extension: "mov") else { self.releaseAudioInput(); return }
             self.isVideoOrientationLocked = true
             self.recordingActive = true
+            self.applyVideoRotation(to: self.movieOutput.connection(with: .video))
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
             self.publishStatus {
                 $0.isRecording = true
@@ -1790,7 +1797,7 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
         error: Error?
     ) {
         sessionQueue.async {
-            guard self.photoContexts.removeValue(forKey: photo.resolvedSettings.uniqueID) != nil else { return }
+            guard let context = self.photoContexts.removeValue(forKey: photo.resolvedSettings.uniqueID) else { return }
             if let error { self.completePhoto(.failure(error)); return }
             guard let data = photo.fileDataRepresentation(),
                   let sink = self.previewPhotoSink else {
@@ -1798,7 +1805,9 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
                     userInfo: [NSLocalizedDescriptionKey: "照片数据或取景信息不可用。"])))
                 return
             }
-            sink.processPhoto(data, at: CMTimeGetSeconds(photo.timestamp)) { [weak self] result in self?.completePhoto(result) }
+            sink.processPhoto(data, at: CMTimeGetSeconds(photo.timestamp), outputRotationAngle: context.outputRotationAngle) {
+                [weak self] result in self?.completePhoto(result)
+            }
         }
     }
 

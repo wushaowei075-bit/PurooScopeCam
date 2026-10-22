@@ -182,9 +182,11 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     func startStabilizedRecording(
         to outputURL: URL,
         includeAudio: Bool,
+        outputRotationAngle: CGFloat,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
-        renderer.startRecording(to: outputURL, includeAudio: includeAudio, completion: completion)
+        renderer.startRecording(to: outputURL, includeAudio: includeAudio,
+                                outputRotationAngle: outputRotationAngle, completion: completion)
     }
 
     func receiveAudio(_ sampleBuffer: CMSampleBuffer) { renderer.appendAudio(sampleBuffer) }
@@ -219,8 +221,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         }
     }
 
-    func processPhoto(_ data: Data, at sourceTimestamp: TimeInterval, completion: @escaping (Result<Data, Error>) -> Void) {
-        renderer.processPhoto(data, at: sourceTimestamp, completion: completion)
+    func processPhoto(_ data: Data, at sourceTimestamp: TimeInterval, outputRotationAngle: CGFloat,
+                      completion: @escaping (Result<Data, Error>) -> Void) {
+        renderer.processPhoto(data, at: sourceTimestamp, outputRotationAngle: outputRotationAngle, completion: completion)
     }
 
     func stopStabilizedRecording() {
@@ -862,9 +865,11 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     func startRecording(
         to outputURL: URL,
         includeAudio: Bool,
+        outputRotationAngle: CGFloat,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
-        recorder.startRecording(to: outputURL, includeAudio: includeAudio, completion: completion)
+        recorder.startRecording(to: outputURL, includeAudio: includeAudio,
+                                outputRotationAngle: outputRotationAngle, completion: completion)
     }
 
     func appendAudio(_ sampleBuffer: CMSampleBuffer) { recorder.appendAudio(sampleBuffer) }
@@ -893,14 +898,17 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         )
     }
 
-    func processPhoto(_ data: Data, at sourceTimestamp: TimeInterval, completion: @escaping (Result<Data, Error>) -> Void) {
+    func processPhoto(_ data: Data, at sourceTimestamp: TimeInterval, outputRotationAngle: CGFloat,
+                      completion: @escaping (Result<Data, Error>) -> Void) {
         resolvePhotoContext(at: sourceTimestamp, attemptsLeft: 6) { context in
             guard let context else {
                 completion(.failure(NSError(domain: "PUROO.Photo", code: 2,
                     userInfo: [NSLocalizedDescriptionKey: "照片曝光时刻未找到同步的稳像画面，请重试。"])))
                 return
             }
-            self.encodePhoto(data, context: context, completion: completion)
+            var orientedContext = context
+            orientedContext.outputRotationAngle = outputRotationAngle
+            self.encodePhoto(data, context: orientedContext, completion: completion)
         }
     }
 
@@ -942,7 +950,10 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                     imageExtent: matchingRect, outputSize: outputSize, logicalViewport: context.viewport,
                     previewTransform: context.transform, cropWindowScale: context.cropScale
                 ))
-                guard let jpeg = self.ciContext.jpegRepresentation(of: transformed.cropped(to: CGRect(origin: .zero, size: outputSize)),
+                let presentation = CameraPresentation(videoRotationAngle: context.outputRotationAngle)
+                let output = transformed.cropped(to: CGRect(origin: .zero, size: outputSize))
+                    .transformed(by: presentation.outputTransform(portraitSize: outputSize))
+                guard let jpeg = self.ciContext.jpegRepresentation(of: output,
                                                                  colorSpace: self.colorSpace, options: [:]) else {
                     completion(.failure(StabilizedPhotoCaptureError.encodingFailed))
                     return
@@ -1312,6 +1323,7 @@ private final class StabilizedPreviewRecorder {
     private var lastPresentationTime: CMTime?
     private var writtenFrameCount: Int64 = 0
     private var recordingFrameRate = 60
+    private var recordingRotationAngle: CGFloat = 90
     private var outputWidth = 0
     private var outputHeight = 0
     private var targetFrameRate = 60
@@ -1334,6 +1346,7 @@ private final class StabilizedPreviewRecorder {
     func startRecording(
         to outputURL: URL,
         includeAudio: Bool,
+        outputRotationAngle: CGFloat = 90,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
         lock.lock()
@@ -1358,6 +1371,7 @@ private final class StabilizedPreviewRecorder {
         lastSourceTimestamp = nil
         lastPresentationTime = nil
         recordingFrameRate = targetFrameRate
+        recordingRotationAngle = outputRotationAngle
         pendingAppendCount = 0
         attemptedFrameCount = 0
         pendingDropCount = 0
@@ -1475,9 +1489,11 @@ private final class StabilizedPreviewRecorder {
             lock.unlock()
             return
         }
+        let presentation = CameraPresentation(videoRotationAngle: recordingRotationAngle)
+        let orientedSize = presentation.cameraSize(for: outputSize)
         if state == .waitingForFirstFrame {
             do {
-                try startWriterLocked(outputSize: outputSize, sourceTimestamp: sourceTimestamp)
+                try startWriterLocked(outputSize: orientedSize, sourceTimestamp: sourceTimestamp)
             } catch {
                 finishLocked(result: .failure(error))
                 return
@@ -1531,9 +1547,10 @@ private final class StabilizedPreviewRecorder {
             finishLocked(result: .failure(StabilizedPreviewRecorderError.pixelBufferUnavailable))
             return
         }
-        let scaleX = CGFloat(currentOutputWidth) / max(outputSize.width, 1)
-        let scaleY = CGFloat(currentOutputHeight) / max(outputSize.height, 1)
-        let recordingImage = stabilizedImage.transformed(
+        let scaleX = CGFloat(currentOutputWidth) / max(orientedSize.width, 1)
+        let scaleY = CGFloat(currentOutputHeight) / max(orientedSize.height, 1)
+        let recordingImage = stabilizedImage.cropped(to: CGRect(origin: .zero, size: outputSize))
+            .transformed(by: presentation.outputTransform(portraitSize: outputSize)).transformed(
             by: CGAffineTransform(scaleX: scaleX, y: scaleY)
         )
         ciContext.render(

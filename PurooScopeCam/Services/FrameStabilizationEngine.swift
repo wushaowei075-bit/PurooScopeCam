@@ -517,6 +517,7 @@ final class FrameStabilizationEngine {
             frameWidth: CGFloat(CVPixelBufferGetWidth(input.pixelBuffer)),
             frameHeight: CGFloat(CVPixelBufferGetHeight(input.pixelBuffer))
         )
+        fusion.prepare(timestamp: input.timestamp, tuning: input.tuning)
         let gyroHint = fusion.predictedMotionHint(from: gyroCandidates)
         let visual = visualTracker.process(
             pixelBuffer: input.pixelBuffer,
@@ -1655,16 +1656,15 @@ private final class QuaternionMotionEstimator {
 
         if let previous, let next {
             let span = next.timestamp - previous.timestamp
+            guard span >= 0, span <= 0.025 else { return nil }
             let amount = span > 0 ? (timestamp - previous.timestamp) / span : 0
             return quaternion(from: previous).slerp(
                 to: quaternion(from: next),
                 amount: max(0, min(amount, 1))
             )
         }
-        if let nearest = previous ?? next,
-           abs(nearest.timestamp - timestamp) <= 1.0 / 100.0 {
-            return quaternion(from: nearest)
-        }
+        // A nearest sample is not the attitude at the exposure time. Holding an
+        // endpoint for 10 ms changes the phase/amplitude of fine hand tremor.
         return nil
     }
 
@@ -1796,6 +1796,38 @@ private final class ComplementaryMotionFusion {
     private var gyroLowVelocityX: CGFloat = 0
     private var gyroLowVelocityY: CGFloat = 0
     private var lastTimestamp: TimeInterval?
+    private var calibrationAuthority: CGFloat = 1
+    private var calibrationZoom: CGFloat?
+
+    // Run before guided visual search too: stale or differently zoomed evidence
+    // must not steer the measurements that will be used to validate it.
+    func prepare(timestamp: TimeInterval, tuning: StabilizationTuning) {
+        applyReferenceMagnification(CGFloat(tuning.opticalMagnification))
+        if let calibrationZoom, abs(tuning.displayZoomFactor / calibrationZoom - 1) > 0.01 {
+            reset(keepCalibration: false)
+            calibrationState = "zoom_changed"
+            self.calibrationZoom = tuning.displayZoomFactor
+        }
+        if calibrationZoom == nil { calibrationZoom = tuning.displayZoomFactor }
+        if let lastTimestamp, timestamp - lastTimestamp > 0.12 || timestamp <= lastTimestamp {
+            reset(keepCalibration: false)
+            calibrationState = "interrupted"
+        }
+        calibrationAuthority = 1
+        if let lastCalibrationObservation {
+            let age = max(0, timestamp - lastCalibrationObservation)
+            // Previously validated geometry survives a brief loss of texture;
+            // a cold prior gets no such authority. Never retain blind gyro forever.
+            let hold: Double = measurementIsValidated ? 8 : 2
+            let expiry = hold + (measurementIsValidated ? 2 : 0)
+            if age > expiry {
+                reset(keepCalibration: false)
+                calibrationState = "stale"
+            } else if age > hold {
+                calibrationAuthority = CGFloat(max(0, (expiry - age) / 2))
+            }
+        }
+    }
 
     func reset(keepCalibration: Bool) {
         visualLowVelocityX = 0
@@ -1812,6 +1844,7 @@ private final class ComplementaryMotionFusion {
             lastCalibrationObservation = nil
             calibrationState = "unverified"
             measurementIsValidated = false
+            calibrationAuthority = 1
         }
     }
 
@@ -1836,7 +1869,7 @@ private final class ComplementaryMotionFusion {
 
     /// 在视觉块匹配开始前，若陀螺倍率已完成可靠标定，输出当前帧预测位移以引导搜索中心。
     func predictedMotionHint(from candidates: [GyroMotionCandidate]) -> (dx: CGFloat, dy: CGFloat)? {
-        guard measurementIsValidated, calibrationTrust >= 0.25,
+        guard measurementIsValidated, calibrationTrust * calibrationAuthority >= 0.25,
               let selected = selectedCandidate(from: candidates) else {
             return nil
         }
@@ -1852,7 +1885,7 @@ private final class ComplementaryMotionFusion {
         gyroCandidates: [GyroMotionCandidate],
         tuning: StabilizationTuning
     ) -> FusedMotionDelta {
-        applyReferenceMagnification(CGFloat(tuning.opticalMagnification))
+        prepare(timestamp: timestamp, tuning: tuning)
         let elapsed = lastTimestamp.map { timestamp - $0 } ?? (1.0 / 60.0)
         lastTimestamp = timestamp
         if !elapsed.isFinite || elapsed <= 0 || elapsed > 0.12 {
@@ -1860,18 +1893,6 @@ private final class ComplementaryMotionFusion {
             lastTimestamp = timestamp
         }
         let dt = CGFloat(min(max(elapsed, 1.0 / 120.0), 1.0 / 20.0))
-
-        // A reference magnification is a prior, not a validated measurement.
-        // Expire stale evidence before accepting new samples after an interruption.
-        if let lastCalibrationObservation, timestamp - lastCalibrationObservation > 2 {
-            correlations.removeAll(keepingCapacity: true)
-            selectedOffsetKey = 0
-            lastCalibrationSampleCount = 0
-            calibrationTrust = 0
-            measurementIsValidated = false
-            calibrationState = "stale"
-            self.lastCalibrationObservation = nil
-        }
 
         let digitalZoom = max(tuning.displayZoomFactor / max(tuning.previewCropScale, 1), 1)
         let zoomMotionScale = min(max(sqrt(digitalZoom), 1), 2.2)
@@ -1889,7 +1910,10 @@ private final class ComplementaryMotionFusion {
             maxAllowedMagnification: maxAllowedMagnification,
             digitalZoom: digitalZoom
         )
-        let gyroTrust: CGFloat = selected == nil || !calibration.isValid ? 0 : calibration.trust
+        let gyroTrust: CGFloat = selected == nil || !calibration.isValid ? 0 : calibration.trust * calibrationAuthority
+        if calibration.isValid, let lastCalibrationObservation, timestamp - lastCalibrationObservation > 0.1 {
+            calibrationState = calibrationAuthority < 1 ? "fading_visual_gap" : "held_visual_gap"
+        }
 
         let visualVelocityX = visual.map { $0.deltaX / dt }
         let visualVelocityY = visual.map { $0.deltaY / dt }
@@ -1910,7 +1934,7 @@ private final class ComplementaryMotionFusion {
         if let visualVelocityX, let visualVelocityY {
             visualLowVelocityX += (visualVelocityX - visualLowVelocityX) * alpha
             visualLowVelocityY += (visualVelocityY - visualLowVelocityY) * alpha
-        } else if gyroTrust > 0.20 {
+        } else if gyroTrust > 0 {
             // 视觉短暂缺失时，用已验证的陀螺速度连续维护视觉低通状态，
             // 避免 visualLowVelocity 按 (1 - alpha) 坍塌并在视觉恢复时产生伪高频跳变。
             visualLowVelocityX += (gyroVelocityX - visualLowVelocityX) * alpha
@@ -1962,10 +1986,10 @@ private final class ComplementaryMotionFusion {
             lowVelocityY = zeroPhaseVisualLowY
             highVelocityX = visualHighX * (1 - gyroTrust) + gyroHighX * gyroTrust
             highVelocityY = visualHighY * (1 - gyroTrust) + gyroHighY * gyroTrust
-        } else if gyroTrust > 0.20 {
+        } else if gyroTrust > 0 {
             // 视觉失效期间由已验证的陀螺全量驱动低频与高频通道，不再把缺失的
             // 视觉当作 0 样本按 (1 - gyroTrust) 混入而人为折减约 20% 幅度。
-            let fallbackWeight: CGFloat = calibration.isValid ? 1.0 : gyroTrust
+            let fallbackWeight = calibrationAuthority
             lowVelocityX = zeroPhaseGyroLowX * fallbackWeight
             lowVelocityY = zeroPhaseGyroLowY * fallbackWeight
             highVelocityX = gyroHighX * fallbackWeight
@@ -2032,6 +2056,16 @@ private final class ComplementaryMotionFusion {
         let maxMotion: CGFloat = 0.012 * max(motionScale, 1)
         let motionMagnitude = hypot(visual.deltaX, visual.deltaY)
         guard motionMagnitude.isFinite, motionMagnitude <= maxMotion else { return }
+        if measurementIsValidated, let selected = selectedCandidate(from: candidates),
+           motionMagnitude < 0.000025,
+           hypot(selected.deltaX, selected.deltaY) * estimatedMagnification < 0.000025 {
+            // Both sensors agree that motion is below the calibration noise floor.
+            // Keep the last measured gain; zeros cannot re-fit or erase it.
+            lastCalibrationObservation = visual.timestamp
+            calibrationAuthority = 1
+            calibrationState = "held_quiet"
+            return
+        }
         let decay: CGFloat = 0.990
         let weight = visual.confidence * visual.confidence
         let visualX = clamp(visual.deltaX, min: -maxMotion, max: maxMotion)
@@ -2052,6 +2086,7 @@ private final class ComplementaryMotionFusion {
             correlation.weightSum = correlation.weightSum * decay + weight
             correlations[key] = correlation
             lastCalibrationObservation = visual.timestamp
+            calibrationAuthority = 1
         }
     }
 
@@ -2089,10 +2124,7 @@ private final class ComplementaryMotionFusion {
     }
 
     private func selectedCandidate(from candidates: [GyroMotionCandidate]) -> GyroMotionCandidate? {
-        candidates.min {
-            abs(Int(($0.automaticOffset * 1000).rounded()) - selectedOffsetKey) <
-                abs(Int(($1.automaticOffset * 1000).rounded()) - selectedOffsetKey)
-        }
+        candidates.first { Int(($0.automaticOffset * 1000).rounded()) == selectedOffsetKey }
     }
 
     private func updateMagnificationFromSelectedCorrelation(

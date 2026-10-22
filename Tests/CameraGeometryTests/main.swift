@@ -128,4 +128,27 @@ for width in [CGFloat(320), 393, 430] {
 check(CameraPresentation(videoRotationAngle: 90).controlDegrees == 0, "Portrait labels upright")
 check(CameraPresentation(videoRotationAngle: 0).controlDegrees == 90, "Landscape right labels clockwise")
 check(CameraPresentation(videoRotationAngle: 180).controlDegrees == -90, "Landscape left labels counterclockwise")
+check(CameraPresentation.captureRotationAngle == 90, "Capture coordinates do not depend on device orientation")
+for angle in [CGFloat(90), 0, 180, 270] {
+    let portrait = CGSize(width: 1080, height: 1920)
+    let presentation = CameraPresentation(videoRotationAngle: angle)
+    let transform = presentation.outputTransform(portraitSize: portrait)
+    let exported = CGRect(origin: .zero, size: portrait).applying(transform)
+    let size = presentation.cameraSize(for: portrait)
+    check(near(exported.minX, 0) && near(exported.minY, 0)
+        && near(exported.width, size.width) && near(exported.height, size.height),
+        "Rotated media has exact bounds without adding black margins")
+    for crop in [CGFloat(1), 1.5, 2.4] {
+        let correction = PreviewRenderTransform(scale: crop, rotationRadians: 0.06, translationX: 14, translationY: -11)
+        let viewport = CGSize(width: 360, height: 640)
+        let render = CameraGeometry.transform(source: CGRect(origin: .zero, size: portrait), output: portrait,
+            viewport: viewport, correction: correction, cropScale: crop)
+        let sourcePoint = CGPoint(x: 450, y: 900)
+        let previewPixel = sourcePoint.applying(render)
+        let exportedPixel = previewPixel.applying(transform)
+        let back = exportedPixel.applying(presentation.displayTransform(cameraSize: size))
+        check(near(back.x, previewPixel.x) && near(back.y, previewPixel.y),
+              "Fixed preview and physically oriented export preserve the same crop and correction")
+    }
+}
 print("PASS: \(checks) camera geometry, focus, output and layout checks")

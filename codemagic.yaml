@@ -65,6 +65,9 @@ workflows:
       - name: Test small-motion fusion and high-frequency fallback
         script: |
           set -euo pipefail
+          git show 5f18627:PurooScopeCam/Services/FrameStabilizationEngine.swift > build/build36-engine.swift
+          bash Tests/MotionFusionTests/run.sh build/build36-engine.swift --characterize > build/build36-regressions.log
+          cat build/build36-regressions.log
           bash Tests/MotionFusionTests/run.sh
       - name: Test zoom mapping, gestures and request coalescing
         script: |

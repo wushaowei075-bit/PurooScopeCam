@@ -71,9 +71,10 @@ enum CameraGeometry {
     }
 }
 
-// Camera controls stay in portrait coordinates. Frames and saved media still
-// follow the physical camera orientation; only their on-screen presentation turns.
+// Capture and stabilization stay in portrait coordinates. Only controls and
+// exported media follow the physical orientation; preview buffers never switch axes.
 struct CameraPresentation {
+    static let captureRotationAngle: CGFloat = 90
     let videoRotationAngle: CGFloat
 
     private var quarterTurns: Int {
@@ -103,6 +104,10 @@ struct CameraPresentation {
         case 3: return CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: size.width, ty: size.height)
         default: return .identity
         }
+    }
+
+    func outputTransform(portraitSize: CGSize) -> CGAffineTransform {
+        displayTransform(cameraSize: cameraSize(for: portraitSize)).inverted()
     }
 
     func cameraPoint(fromDisplay point: CGPoint) -> CGPoint {

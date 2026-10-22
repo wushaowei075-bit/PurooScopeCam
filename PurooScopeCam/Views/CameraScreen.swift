@@ -568,7 +568,8 @@ struct CameraScreen: View {
 
     private func updateOrientation(from deviceOrientation: UIDeviceOrientation) {
         guard !orientationLocked else { return }
-        guard let nextOrientation = deviceOrientation.interfaceOrientation else { return }
+        guard let nextOrientation = deviceOrientation.interfaceOrientation,
+              nextOrientation != interfaceOrientation else { return }
         interfaceOrientation = nextOrientation
         camera.setVideoOrientation(nextOrientation)
         focusIndicator = nil
