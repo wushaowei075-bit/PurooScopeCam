@@ -288,7 +288,8 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
                 tuning: tuning,
                 viewportSize: frameViewport,
                 focalLengthPixelsX: metadata.focalLengthPixelsX,
-                focalLengthPixelsY: metadata.focalLengthPixelsY
+                focalLengthPixelsY: metadata.focalLengthPixelsY,
+                cameraSourceID: metadata.cameraSourceID + ":" + String(metadata.activeSystemStabilization)
             )
         } else {
             renderer.setRenderTransform(.identity, at: frameTime)

@@ -40,6 +40,7 @@ struct CameraFrameMetadata {
     var exposureTargetOffset: Float
     var activeSystemStabilization: Int
     var maximumExposureDuration: Double
+    var cameraSourceID: String = "wide"
 }
 
 protocol CameraFrameSink: AnyObject {
@@ -1901,7 +1902,8 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapt
                 iso: videoDeviceInput?.device.iso ?? 0,
                 exposureTargetOffset: videoDeviceInput?.device.exposureTargetOffset ?? 0,
                 activeSystemStabilization: connection.activeVideoStabilizationMode.rawValue,
-                maximumExposureDuration: videoDeviceInput.map { CMTimeGetSeconds($0.device.activeMaxExposureDuration) } ?? 0
+                maximumExposureDuration: videoDeviceInput.map { CMTimeGetSeconds($0.device.activeMaxExposureDuration) } ?? 0,
+                cameraSourceID: videoDeviceInput?.device.uniqueID ?? "unknown"
             )
             frameSink?.cameraController(
                 self,

@@ -183,6 +183,67 @@ struct StabilizationExposurePolicy {
     }
 }
 
+// Capture projection, not UI zoom. Both visual and IMU deltas use these units.
+struct MotionProjectionGeometry: Equatable {
+    var focalX: Double
+    var focalY: Double
+    var width: Int
+    var height: Int
+    var rotation: Double = 90
+    var sourceID: String = "wide"
+
+    var isValid: Bool {
+        width > 1 && height > 1 && focalX.isFinite && focalY.isFinite &&
+            focalX > 1 && focalY > 1 && rotation.isFinite && !sourceID.isEmpty
+    }
+
+    func scale(from old: Self) -> (x: Double, y: Double)? {
+        guard isValid, old.isValid, width == old.width, height == old.height,
+              rotation == old.rotation, sourceID == old.sourceID else { return nil }
+        return (focalX / old.focalX, focalY / old.focalY)
+    }
+}
+
+// Check an unseeded FFT proposal against spatially distributed image evidence.
+// This validates translation only; it never calibrates a gyro by itself.
+enum IndependentTranslationValidation {
+    static func accepts(reference: [Float], current: [Float], mask: [Bool], size: Int,
+                        dx: Double, dy: Double) -> Bool {
+        guard size >= 32, reference.count == size * size, current.count == reference.count,
+              mask.count == reference.count, dx.isFinite, dy.isFinite,
+              abs(dx) <= 28, abs(dy) <= 28 else { return false }
+        var passed = 0
+        for region in 0..<4 {
+            var n = 0.0, sx = 0.0, sy = 0.0, xx = 0.0, yy = 0.0, xy = 0.0
+            let left = (region % 2) * size / 2 + 4
+            let top = (region / 2) * size / 2 + 4
+            for y in stride(from: top, to: top + size / 2 - 8, by: 3) {
+                for x in stride(from: left, to: left + size / 2 - 8, by: 3) {
+                    let u = Double(x) + dx, v = Double(y) + dy
+                    let ix = Int(floor(u)), iy = Int(floor(v))
+                    guard ix >= 0, iy >= 0, ix + 1 < size, iy + 1 < size,
+                          mask[y * size + x], mask[iy * size + ix],
+                          mask[iy * size + ix + 1], mask[(iy + 1) * size + ix],
+                          mask[(iy + 1) * size + ix + 1] else { continue }
+                    let fx = u - Double(ix), fy = v - Double(iy)
+                    let a = Double(reference[y * size + x])
+                    let b = Double(current[iy * size + ix]) * (1 - fx) * (1 - fy) +
+                        Double(current[iy * size + ix + 1]) * fx * (1 - fy) +
+                        Double(current[(iy + 1) * size + ix]) * (1 - fx) * fy +
+                        Double(current[(iy + 1) * size + ix + 1]) * fx * fy
+                    guard a.isFinite, b.isFinite else { return false }
+                    n += 1; sx += a; sy += b; xx += a*a; yy += b*b; xy += a*b
+                }
+            }
+            guard n >= 80 else { continue }
+            let vx = xx - sx*sx/n, vy = yy - sy*sy/n
+            if vx/n >= 2.25, vy/n >= 2.25,
+               (xy - sx*sy/n) / sqrt(vx*vy) >= 0.90 { passed += 1 }
+        }
+        return passed >= 3
+    }
+}
+
 struct PresentationMetrics {
     private(set) var submitted = 0
     private(set) var presented = 0

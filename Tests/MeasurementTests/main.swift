@@ -96,5 +96,29 @@ do {
     _ = measure(1, gapped)
     check(measure(1 + 1/60, gapped).isEmpty, "Do not interpolate across an IMU delivery interruption")
 }
+// Low-contrast global texture must have a recovery path without a gyro hint.
+// Its independent translation can restore a cached model but cannot create one.
+do {
+    var recovered = 0
+    var totalTime = 0.0
+    for contrast in [Float(0.10), 0.12, 0.15, 0.18, 0.22] {
+        let tracker = SubpixelFrameMotionTracker()
+        let a = (0..<n*n).map { 128 + (texture(Double($0 % n), Double($0 / n)) - 128) * contrast }
+        let b = (0..<n*n).map { 128 + (texture(Double($0 % n) - 0.4, Double($0 / n) + 0.3) - 128) * contrast }
+        _ = tracker.processSampledGrid(a, timestamp: 1)
+        let start = Date.timeIntervalSinceReferenceDate
+        let result = tracker.processSampledGrid(b, timestamp: 1 + 1/60)
+        totalTime += Date.timeIntervalSinceReferenceDate - start
+        if let result, result.estimator == "phase_recovery" {
+            recovered += 1
+            check(result.independentlyValidated && !result.calibrationEligible,
+                  "Independent phase recovery is never self-calibration evidence")
+            check(abs(result.deltaX * CGFloat(n) - 0.4) < 0.35 && abs(result.deltaY * CGFloat(n) + 0.3) < 0.35,
+                  "Unseeded fallback follows actual subpixel translation")
+        }
+    }
+    print("Independent weak-texture recoveries=\(recovered)/5, host mean analysis ms=\(totalTime * 200)")
+    check(recovered > 0, "Production visual fallback must work without a validated gyro prior")
+}
 print("Production measurement checks: \(checks), failures: \(failures)")
 if failures > 0 { exit(1) }

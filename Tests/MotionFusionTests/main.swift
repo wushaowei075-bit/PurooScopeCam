@@ -598,6 +598,136 @@ do {
     check(interrupted.gyroTrust == 0, "A frame discontinuity must invalidate time calibration")
 }
 
+// Build 38: replay the production state transitions, not a stand-in filter.
+// The baseline adapter only supplies the new API to the unmodified build 37 code.
+#if BUILD37_BASELINE
+private extension ComplementaryMotionFusion {
+    func prepare(timestamp: Double, tuning: StabilizationTuning, projection: MotionProjectionGeometry) {
+        prepare(timestamp: timestamp, tuning: tuning)
+    }
+}
+#endif
+
+private func independentObservation(_ t: Double, _ x: CGFloat, _ y: CGFloat) -> VisualMotionObservation {
+    var value = observation(t, x, y)
+    value.estimator = "phase_recovery"
+    value.calibrationEligible = false
+#if !BUILD37_BASELINE
+    value.independentlyValidated = true
+#endif
+    return value
+}
+
+private func geometry(_ scale: Double = 1, source: String = "wide", rotation: Double = 90) -> MotionProjectionGeometry {
+    MotionProjectionGeometry(focalX: 5040 * scale, focalY: 5040 * scale,
+                             width: 2160, height: 3840, rotation: rotation, sourceID: source)
+}
+
+// Measured focal lengths already include hardware zoom. Never multiply the
+// optical gain by display zoom a second time. Geometry-only changes are covered too.
+for path in ["step", "ramp", "display-only", "focal-only"] {
+    let fusion = ComplementaryMotionFusion()
+    var disabledAfterZoom = 0
+    var maximumGainError: CGFloat = 0
+    var minimumSamples = Int.max
+    for frame in 0..<1500 {
+        let t = Double(frame)/60
+        let scale: Double = frame < 600 ? 1 : (path == "ramp" ? min(1 + Double(frame-600)/120, 2) : 2)
+        let focalScale = path == "display-only" ? 1 : scale
+        let uiScale = path == "focal-only" ? 1 : scale
+        let settings = StabilizationTuning(isEnabled: true, displayZoomFactor: CGFloat(2 * uiScale))
+        let x = CGFloat(0.0006 * sin(t * 53) * focalScale)
+        fusion.prepare(timestamp: t, tuning: settings, projection: geometry(focalScale))
+        // Six seconds of missing visual evidence while zooming, then recovery.
+        let visual = frame < 600 || frame >= 960 ? observation(t, x, 0) : nil
+        let result = fusion.update(timestamp: t, visual: visual,
+            gyroCandidates: [candidate(x/10, 0)], tuning: settings)
+        if frame >= 600 {
+            if !result.isGyroCalibrationValid { disabledAfterZoom += 1 }
+            maximumGainError = max(maximumGainError, abs(result.opticalMagnification - 10))
+            minimumSamples = min(minimumSamples, result.calibrationSamples)
+        }
+    }
+    print("Zoom \(path): disabled frames=\(disabledAfterZoom), minimum samples=\(minimumSamples), gain error=\(maximumGainError)")
+    check(disabledAfterZoom == 0, "ZOOM REGRESSION: \(path) preserves validated authority across a short visual gap")
+    check(minimumSamples >= 64, "ZOOM REGRESSION: \(path) retains bounded calibration evidence")
+    check(maximumGainError < 0.01, "Zoom must not be applied twice to the physical optical gain")
+}
+
+// Short gaps must not continually erase a cold learner's accepted observations.
+do {
+    let fusion = ComplementaryMotionFusion()
+    var result: FusedMotionDelta?
+    for frame in 0..<1440 {
+        let t = Double(frame)/60
+        let x = CGFloat(0.0006 * sin(Double(frame) * 0.9))
+        let available = frame % 180 < 12
+        result = fusion.update(timestamp: t, visual: available ? observation(t, x, 0) : nil,
+            gyroCandidates: [candidate(x/10, 0)], tuning: tuning)
+        if frame < 900 {
+            check(result!.gyroTrust == 0, "Sparse cold evidence is not authority before the minimum sample count")
+        }
+    }
+    check(result!.calibrationSamples >= 64 && result!.isGyroCalibrationValid,
+          "RECOVERY REGRESSION: evidence survives 2.8-second gaps instead of repeatedly restarting")
+}
+
+// Cached calibration is not permission to output forever. Both NCC and independently
+// validated FFT recovery require three fresh agreements after suspension.
+for estimator in ["ncc", "phase_recovery"] {
+    let fusion = warmedFusion()
+    for frame in 600..<1320 {
+        _ = fusion.update(timestamp: Double(frame)/60, visual: nil,
+            gyroCandidates: [candidate(0.00004, 0)], tuning: tuning)
+    }
+    for frame in 1320..<1323 {
+        let t = Double(frame)/60
+        let visual = estimator == "ncc" ? observation(t, 0.0004, 0) : independentObservation(t, 0.0004, 0)
+        let result = fusion.update(timestamp: t, visual: visual,
+            gyroCandidates: [candidate(0.00004, 0)], tuning: tuning)
+        if frame < 1322 {
+            check(result.gyroTrust == 0, "One cached-fit update cannot bypass recovery confirmations")
+        } else {
+            check(result.isGyroCalibrationValid && result.gyroTrust > 0.80,
+                  "RECOVERY REGRESSION: \(estimator) restores a suspended model after three agreeing frames")
+        }
+    }
+}
+
+do {
+    let cold = ComplementaryMotionFusion()
+    for frame in 0..<600 {
+        let t = Double(frame)/60
+        let x = CGFloat(0.0006 * sin(t * 53))
+        let result = cold.update(timestamp: t, visual: independentObservation(t, x, 0),
+            gyroCandidates: [candidate(x/10, 0)], tuning: tuning)
+        check(result.gyroTrust == 0, "Unseeded FFT cannot establish its own gyro calibration")
+    }
+    let contradicted = warmedFusion()
+    var result: FusedMotionDelta?
+    for frame in 600..<606 {
+        let t = Double(frame)/60
+        result = contradicted.update(timestamp: t, visual: independentObservation(t, -0.001, 0),
+            gyroCandidates: [candidate(0.0001, 0)], tuning: tuning)
+    }
+    check(result!.gyroTrust == 0, "Contradictory independent motion revokes a previously valid model")
+}
+
+for change in ["source", "rotation", "dimensions", "invalid"] {
+    let fusion = warmedFusion()
+    fusion.prepare(timestamp: 10, tuning: tuning, projection: geometry())
+    _ = fusion.update(timestamp: 10, visual: nil, gyroCandidates: [candidate(0.00004, 0)], tuning: tuning)
+    var changed = geometry()
+    if change == "source" { changed.sourceID = "other-camera" }
+    if change == "rotation" { changed.rotation = 0 }
+    if change == "dimensions" { changed.width = 1080 }
+    if change == "invalid" { changed.focalX = .nan }
+    fusion.prepare(timestamp: 10 + 1/60, tuning: tuning, projection: changed)
+    let result = fusion.update(timestamp: 10 + 1/60, visual: nil,
+        gyroCandidates: [candidate(0.00004, 0)], tuning: tuning)
+    check(result.gyroTrust == 0, "Incompatible \(change) cannot reuse old calibration")
+}
+
 print("Missing-gyro reconstruction error: \(largestMissingError)")
 print("Motion fusion/controller checks: \(checks), failures: \(failures)")
 if failures > 0 && !characterize { exit(1) }

@@ -11,5 +11,7 @@ mkdir -p build/motion-tests
   awk '/^private struct FusedMotionDelta / {copy=1} copy' "$ENGINE"
   cat Tests/MotionFusionTests/main.swift
 } > build/motion-tests/main.swift
-swiftc -swift-version 5 PurooScopeCam/Models/StabilizationDiagnostics.swift build/motion-tests/main.swift -o build/motion-tests/test
+FLAGS=()
+if ! grep -q 'projection currentProjection' "$ENGINE"; then FLAGS+=(-D BUILD37_BASELINE); fi
+swiftc -O -swift-version 5 "${FLAGS[@]}" PurooScopeCam/Models/StabilizationDiagnostics.swift build/motion-tests/main.swift -o build/motion-tests/test
 build/motion-tests/test "${2:-}"

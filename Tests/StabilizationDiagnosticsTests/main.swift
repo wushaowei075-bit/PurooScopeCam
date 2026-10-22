@@ -112,5 +112,33 @@ for (dx, dy) in [(0.0, 0.0), (1, -2), (-3, 1), (0.1, -0.1), (0.35, -0.6), (-0.7,
 let blank = [Float](repeating: 100, count: n*n)
 check(estimator.estimate(reference: blank, current: blank, gridSize: n) == nil, "Reject textureless images")
 check(estimator.estimate(reference: [], current: [], gridSize: n) == nil, "Reject malformed grids")
+let oldProjection = MotionProjectionGeometry(focalX: 5000, focalY: 5000, width: 2160, height: 3840)
+var newProjection = oldProjection
+newProjection.focalX = 7500
+newProjection.focalY = 10000
+let projectionScale = newProjection.scale(from: oldProjection)
+check(projectionScale?.x == 1.5 && projectionScale?.y == 2, "Transport actual per-axis focal scaling")
+newProjection.sourceID = "other"
+check(newProjection.scale(from: oldProjection) == nil, "Never transport between physical cameras")
+
+let allMask = [Bool](repeating: true, count: n*n)
+for (dx, dy) in [(1.0, -2.0), (0.35, -0.6), (6.0, 1.0)] {
+    let moved = (0..<n*n).map { texture(Double($0 % n) - dx, Double($0 / n) - dy) * 1.15 + 8 }
+    check(IndependentTranslationValidation.accepts(reference: reference, current: moved,
+        mask: allMask, size: n, dx: dx, dy: dy), "Distributed photometric-invariant evidence accepts real translation")
+    check(!IndependentTranslationValidation.accepts(reference: reference, current: moved,
+        mask: allMask, size: n, dx: dx + 3, dy: dy), "Wrong translation fails independent spatial validation")
+}
+check(!IndependentTranslationValidation.accepts(reference: blank, current: blank,
+    mask: allMask, size: n, dx: 0, dy: 0), "Blank images cannot confirm a cached gyro")
+check(!IndependentTranslationValidation.accepts(reference: reference, current: reference,
+    mask: allMask, size: n, dx: .nan, dy: 0), "Invalid translation cannot validate")
+check(IndependentTranslationValidation.accepts(reference: ringReference, current: ringCurrent,
+    mask: interiorMask, size: n, dx: 1, dy: 0), "Distributed masked interior supports recovery")
+let localOnly = (0..<n*n).map { i -> Float in
+    i % n < n/2 && i / n < n/2 ? texture(Double(i % n) - 2, Double(i / n)) : reference[i]
+}
+check(!IndependentTranslationValidation.accepts(reference: reference, current: localOnly,
+    mask: allMask, size: n, dx: 2, dy: 0), "A moving object in one quadrant is not global motion")
 print("Diagnostics/exposure/FFT checks: \(checks), failures: \(failures)")
 if failures > 0 { exit(1) }
