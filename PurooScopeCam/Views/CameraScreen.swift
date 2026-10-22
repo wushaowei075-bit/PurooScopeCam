@@ -3,6 +3,19 @@ import Combine
 import SwiftUI
 import UIKit
 
+private struct DiagnosticExport: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct DiagnosticShareView: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
 struct CameraScreen: View {
     @EnvironmentObject private var camera: CameraController
     @EnvironmentObject private var motionMonitor: MotionStabilityMonitor
@@ -14,11 +27,14 @@ struct CameraScreen: View {
     @State private var focusIndicator: FocusIndicatorState?
     @State private var focusDismissToken = UUID()
     @State private var pinchBaseZoom: CGFloat?
-    @State private var lockedSubjectPoint: CGPoint?
+    @State private var compositionMarkerPoint: CGPoint?
     @State private var cropUsage: CGFloat = 0
     @State private var isGyroCalibrated = false
     @State private var vignetteOffset: CGPoint = .zero
     @State private var shutterFlashOpacity: Double = 0
+    @State private var diagnosticPrompt = false
+    @State private var diagnosticMessage: String?
+    @State private var diagnosticExport: DiagnosticExport?
 
     var body: some View {
         GeometryReader { proxy in
@@ -56,6 +72,22 @@ struct CameraScreen: View {
             .clipped()
         }
         .ignoresSafeArea(.container, edges: .horizontal)
+        .confirmationDialog("记录稳定诊断", isPresented: $diagnosticPrompt, titleVisibility: .visible) {
+            Button("开始记录（最多 2 分钟）") {
+                StabilizationTraceRecorder.shared.startTimedDiagnostics()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("日志含运动数据和少量低分辨率场景样本，仅保存在本机，不会自动上传。")
+        }
+        .sheet(item: $diagnosticExport) { item in
+            DiagnosticShareView(url: item.url)
+        }
+        .alert("稳定诊断", isPresented: Binding(get: { diagnosticMessage != nil }, set: { if !$0 { diagnosticMessage = nil } })) {
+            Button("好", role: .cancel) { diagnosticMessage = nil }
+        } message: {
+            Text(diagnosticMessage ?? "")
+        }
         .task {
             camera.requestAccessAndConfigure()
             motionMonitor.start()
@@ -144,6 +176,17 @@ struct CameraScreen: View {
                 Capsule()
                     .stroke(PurooBrandStyle.gradient, lineWidth: 1)
                     .opacity(0.72)
+            }
+            .contextMenu {
+                Button("记录稳定诊断（2 分钟）", systemImage: "waveform.path.ecg") {
+                    diagnosticPrompt = true
+                }
+                Button("结束并导出诊断", systemImage: "square.and.arrow.up") {
+                    StabilizationTraceRecorder.shared.finishAndExport { url in
+                        if let url { diagnosticExport = DiagnosticExport(url: url) }
+                        else { diagnosticMessage = "本次尚未记录诊断。" }
+                    }
+                }
             }
 
             Spacer(minLength: 16)
@@ -262,8 +305,8 @@ struct CameraScreen: View {
                 .allowsHitTesting(false)
             }
 
-            if let lockedPoint = lockedSubjectPoint {
-                SubjectLockReticleView()
+            if let lockedPoint = compositionMarkerPoint {
+                CompositionMarkerView()
                     .frame(width: 78, height: 78)
                     .position(lockedPoint)
                     .allowsHitTesting(false)
@@ -280,7 +323,7 @@ struct CameraScreen: View {
                 .gesture(
                     SpatialTapGesture(count: 2)
                         .onEnded { value in
-                            toggleSubjectLock(at: value.location, in: size)
+                            toggleCompositionMarker(at: value.location, in: size)
                         }
                 )
                 .simultaneousGesture(
@@ -319,7 +362,7 @@ struct CameraScreen: View {
 
                 if camera.focusLocked || camera.exposureLocked {
                     Button {
-                        lockedSubjectPoint = nil
+                        compositionMarkerPoint = nil
                         camera.unlockFocusAndExposure()
                     } label: {
                         Label(
@@ -571,12 +614,12 @@ struct CameraScreen: View {
         scheduleFocusDismiss(for: nextIndicator, after: 5.0)
     }
 
-    private func toggleSubjectLock(at location: CGPoint, in previewSize: CGSize) {
+    private func toggleCompositionMarker(at location: CGPoint, in previewSize: CGSize) {
         guard previewSize.width > 1, previewSize.height > 1 else { return }
-        if let existing = lockedSubjectPoint,
+        if let existing = compositionMarkerPoint,
            hypot(existing.x - location.x, existing.y - location.y) < 56 {
             withAnimation(.easeOut(duration: 0.16)) {
-                lockedSubjectPoint = nil
+                compositionMarkerPoint = nil
             }
             return
         }
@@ -585,7 +628,7 @@ struct CameraScreen: View {
             y: min(max(location.y, 44), max(previewSize.height - 44, 44))
         )
         withAnimation(.spring(response: 0.24, dampingFraction: 0.72)) {
-            lockedSubjectPoint = clamped
+            compositionMarkerPoint = clamped
         }
         let normalizedPoint = CGPoint(
             x: min(max(location.x / previewSize.width, 0), 1),
@@ -706,7 +749,7 @@ private struct FocusReticleView: View {
     }
 }
 
-private struct SubjectLockReticleView: View {
+private struct CompositionMarkerView: View {
     var onClear: (() -> Void)? = nil
 
     var body: some View {
@@ -719,6 +762,7 @@ private struct SubjectLockReticleView: View {
                 .fill(Color(red: 0.22, green: 0.96, blue: 0.45))
                 .frame(width: 5, height: 5)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel("构图位置标记")
 
             if let onClear {
                 Button(action: onClear) {

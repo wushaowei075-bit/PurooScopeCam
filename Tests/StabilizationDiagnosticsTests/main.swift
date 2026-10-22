@@ -7,6 +7,37 @@ func check(_ value: Bool, _ message: String) {
     if !value { failures += 1; print("FAIL: \(message)") }
 }
 
+check(!VisualMeasurementPolicy.acceptsConsensus(inliers: 12, candidates: 64, occupiedRegions: 4), "Reject 12/64 minority consensus")
+check(VisualMeasurementPolicy.acceptsConsensus(inliers: 30, candidates: 64, occupiedRegions: 3), "Keep sufficiently supported tracking")
+check(!VisualMeasurementPolicy.permitsCalibration(inliers: 30, candidates: 64, occupiedRegions: 3), "Calibration requires stronger evidence than tracking")
+check(!VisualMeasurementPolicy.acceptsConsensus(inliers: 20, candidates: 24, occupiedRegions: 1), "Reject a single clustered subject")
+check(VisualMeasurementPolicy.permitsCalibration(inliers: 45, candidates: 64, occupiedRegions: 3), "Accept distributed consensus for calibration")
+check(!VisualMeasurementPolicy.acceptsPhase(dx: 0.04375, dy: 0, gyroX: 1, gyroY: 0), "Reject fixed-rim false zero at small motion")
+check(VisualMeasurementPolicy.acceptsPhase(dx: 0.12, dy: -0.1, gyroX: 0.15, gyroY: -0.12), "Keep agreeing subpixel motion")
+check(!RollingShutterPolicy.productionEnabled, "Unmeasured readout must not warp production frames")
+check(!RollingShutterPolicy.hasCompleteWindow(previous: 1, current: 1 + 1/60, halfReadout: 0.006,
+    firstSample: 0.9, lastSample: 1 + 1/60 + 0.002), "Reject asymmetric readout windows")
+check(RollingShutterPolicy.hasCompleteWindow(previous: 1, current: 1 + 1/60, halfReadout: 0.006,
+    firstSample: 0.9, lastSample: 1.1), "Accept complete temporal windows")
+check(PhotoTimestampPolicy.nearestIndex(to: 1.017, times: [1, 1.0167, 1.0333], tolerance: 0.0125) == 1, "Match actual photo exposure rather than highest quality history")
+check(PhotoTimestampPolicy.nearestIndex(to: 1.2, times: [1, 1.0167], tolerance: 0.0125) == nil, "Never apply stale photo transform")
+
+var removedObservers: [UUID] = []
+var completions = 0
+let observerID = UUID()
+let gate = PhotoMomentGate(initialVelocity: 0.5, remove: { removedObservers.append($0) }, completion: { completions += 1 })
+gate.observe(velocity: 0.1) // Synchronous delivery before registration returns.
+gate.install(observerID)
+gate.finish() // Timeout after the synchronous completion.
+check(completions == 1 && removedObservers == [observerID], "Synchronous observer must complete and unregister exactly once")
+let delayedID = UUID()
+let delayedGate = PhotoMomentGate(initialVelocity: 0.5, remove: { removedObservers.append($0) }, completion: { completions += 1 })
+delayedGate.install(delayedID)
+delayedGate.observe(velocity: 0.3)
+delayedGate.observe(velocity: 0.35)
+delayedGate.finish()
+check(completions == 2 && removedObservers == [observerID, delayedID], "Valley after registration removes observer once")
+
 var policy = StabilizationExposurePolicy()
 func exposure(_ seconds: Double, _ iso: Double, _ offset: Double = 0, enabled: Bool = true, automatic: Bool = true) -> Double? {
     policy.update(enabled: enabled, automatic: automatic, duration: seconds,
@@ -57,6 +88,17 @@ func texture(_ x: Double, _ y: Double) -> Float {
     return Float(result)
 }
 let reference = (0..<n*n).map { texture(Double($0 % n), Double($0 / n)) }
+let splitLighting = (0..<n*n).map { Float($0 % n < n/2 ? 10 : 128) }
+check(VignetteDetector.detect(splitLighting, size: n) == nil, "Half-dark ordinary scene is not a telescope vignette")
+let circle = (0..<n*n).map { hypot(Double($0 % n) - 143.5, Double($0 / n) - 143.5) < 85 ? Float(160) : Float(5) }
+let circleRegion = VignetteDetector.detect(circle, size: n)
+check(circleRegion != nil && abs(circleRegion!.x - 143.5) < 2 && abs(circleRegion!.radius - 85) < 5, "Validate an enclosing circular edge")
+let interiorMask = (0..<n*n).map { hypot(Double($0 % n) - 143.5, Double($0 / n) - 143.5) < 65 }
+let ringReference = (0..<n*n).map { circle[$0] > 100 ? 160 + (texture(Double($0 % n), Double($0 / n)) - 110) * 0.2 : 5 }
+let ringCurrent = (0..<n*n).map { circle[$0] > 100 ? 160 + (texture(Double($0 % n) - 1, Double($0 / n)) - 110) * 0.2 : 5 }
+if let maskedPhase = estimator.estimate(reference: ringReference, current: ringCurrent, gridSize: n, validMask: interiorMask) {
+    check(abs(maskedPhase.dx - 1) < 0.35 && abs(maskedPhase.dy) < 0.35, "Masked FFT follows interior texture instead of static rim")
+} else { check(false, "Textured circle interior supports masked FFT") }
 for (dx, dy) in [(0.0, 0.0), (1, -2), (-3, 1), (0.1, -0.1), (0.35, -0.6), (-0.7, 0.2), (2.35, -1.8), (10, 0)] {
     let current = (0..<n*n).map { texture(Double($0 % n) - dx, Double($0 / n) - dy) * 1.15 + 8 }
     if let result = estimator.estimate(reference: reference, current: current, gridSize: n) {

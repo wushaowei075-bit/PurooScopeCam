@@ -15,6 +15,13 @@ struct PreviewRenderTransform: Equatable {
 }
 
 enum CameraGeometry {
+    static func centeredSourceRect(_ source: CGRect, matching videoSize: CGSize) -> CGRect {
+        let ratio = videoSize.width / max(videoSize.height, 1)
+        let width = min(source.width, source.height * ratio)
+        let height = min(source.height, source.width / max(ratio, 0.0001))
+        return CGRect(x: source.midX - width / 2, y: source.midY - height / 2, width: width, height: height)
+    }
+
     static func outputSize(for source: CGSize) -> CGSize {
         let portrait = source.height > source.width
         let long = max(source.width, source.height)
@@ -36,7 +43,8 @@ enum CameraGeometry {
         let stretch = min(max(correction.rollingStretchY, -0.025), 0.025)
         let a = scale * cos(correction.rotationRadians)
         let b = scale * sin(correction.rotationRadians)
-        let c = -b + scale * shear
+        // shear is a horizontal displacement fraction across the full image height.
+        let c = -b + scale * shear * source.width / max(source.height, 1)
         let d = a * (1 + stretch)
         let x = output.width * (0.5 + correction.translationX / max(viewport.width, 1))
         let y = output.height * (0.5 - correction.translationY / max(viewport.height, 1))

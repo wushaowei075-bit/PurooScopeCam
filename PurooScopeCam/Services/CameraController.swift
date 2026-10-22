@@ -79,7 +79,7 @@ protocol StabilizedRecordingFrameSink: AnyObject {
 protocol StabilizedPhotoFrameSink: AnyObject {
     func photoContext() -> StabilizedPhotoContext?
     func waitForOptimalPhotoMoment(maxWait: TimeInterval, completion: @escaping () -> Void)
-    func processPhoto(_ data: Data, context: StabilizedPhotoContext, completion: @escaping (Result<Data, Error>) -> Void)
+    func processPhoto(_ data: Data, at sourceTimestamp: TimeInterval, completion: @escaping (Result<Data, Error>) -> Void)
     func captureStabilizedPhoto(
         completion: @escaping (Result<Data, Error>) -> Void
     )
@@ -554,7 +554,7 @@ final class CameraController: NSObject, ObservableObject {
                         let processed = self.applyTelemetryWatermarkIfNeeded(to: data)
                         self.updateLatestThumbnail(fromPhotoData: processed)
                         self.savePhotoData(processed)
-                        self.publishStatus(message: "已抓拍 4K 防抖照片")
+                        self.publishStatus(message: "已抓拍防抖照片")
                     case .failure(let error):
                         self.publishStatus(error: "抓拍失败：\(error.localizedDescription)")
                         self.endBackgroundTaskWhenSavesFinish()
@@ -1766,15 +1766,15 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
         error: Error?
     ) {
         sessionQueue.async {
-            let context = self.photoContexts.removeValue(forKey: photo.resolvedSettings.uniqueID)
+            guard self.photoContexts.removeValue(forKey: photo.resolvedSettings.uniqueID) != nil else { return }
             if let error { self.completePhoto(.failure(error)); return }
-            guard let data = photo.fileDataRepresentation(), let context,
+            guard let data = photo.fileDataRepresentation(),
                   let sink = self.previewPhotoSink else {
                 self.completePhoto(.failure(NSError(domain: "PUROO.Photo", code: 1,
                     userInfo: [NSLocalizedDescriptionKey: "照片数据或取景信息不可用。"])))
                 return
             }
-            sink.processPhoto(data, context: context) { [weak self] result in self?.completePhoto(result) }
+            sink.processPhoto(data, at: CMTimeGetSeconds(photo.timestamp)) { [weak self] result in self?.completePhoto(result) }
         }
     }
 

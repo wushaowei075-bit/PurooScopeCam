@@ -9,7 +9,7 @@ struct PhaseCorrelationEstimate {
     var accepted: Bool
 }
 
-// Shadow estimator only. Its result never controls the production crop.
+// Also used as a gated fallback; callers must validate ROI and motion agreement.
 final class PhaseCorrelationEstimator {
     private let size = 256
     private let logSize: vDSP_Length = 8
@@ -19,10 +19,36 @@ final class PhaseCorrelationEstimator {
 
     deinit { if let setup { vDSP_destroy_fftsetup(setup) } }
 
-    func estimate(reference: [Float], current: [Float], gridSize: Int) -> PhaseCorrelationEstimate? {
+    func estimate(reference: [Float], current: [Float], gridSize: Int,
+                  validMask: [Bool]? = nil) -> PhaseCorrelationEstimate? {
         guard setup != nil, gridSize >= size, reference.count == gridSize * gridSize,
               current.count == reference.count else { return nil }
-        let weights = windowWeights(for: gridSize)
+        guard validMask == nil || validMask?.count == reference.count else { return nil }
+        var weights = windowWeights(for: gridSize)
+        if let validMask {
+            let offset = (gridSize - size) / 2
+            var distance = [Int](repeating: size, count: size * size)
+            for y in 0..<size {
+                for x in 0..<size {
+                    let i = y * size + x
+                    if !validMask[(y + offset) * gridSize + x + offset] { distance[i] = 0 }
+                    else {
+                        distance[i] = min(x == 0 ? 1 : distance[i - 1] + 1,
+                                          y == 0 ? 1 : distance[i - size] + 1)
+                    }
+                }
+            }
+            for y in stride(from: size - 1, through: 0, by: -1) {
+                for x in stride(from: size - 1, through: 0, by: -1) {
+                    let i = y * size + x
+                    distance[i] = min(distance[i], x == size - 1 ? 1 : distance[i + 1] + 1,
+                                      y == size - 1 ? 1 : distance[i + size] + 1)
+                    let taper = min(max(Double(distance[i] - 2) / 8, 0), 1)
+                    weights[i] *= Float(0.5 - 0.5 * cos(.pi * taper))
+                }
+            }
+        }
+        guard weights.reduce(0, +) >= 256 else { return nil }
         var ar = windowed(reference, gridSize: gridSize, weights: weights)
         var br = windowed(current, gridSize: gridSize, weights: weights)
         guard ar.reduce(Float(0), { $0 + $1 * $1 }) > 1,
@@ -106,7 +132,12 @@ final class PhaseCorrelationEstimator {
 
     private func windowed(_ input: [Float], gridSize: Int, weights: [Float]) -> [Float] {
         let offset = (gridSize - size) / 2
-        let mean = input.reduce(0, +) / Float(input.count)
+        var weightedSum: Float = 0
+        let weightSum = weights.reduce(0, +)
+        for y in 0..<size {
+            for x in 0..<size { weightedSum += input[(y + offset) * gridSize + x + offset] * weights[y * size + x] }
+        }
+        let mean = weightedSum / max(weightSum, 0.0001)
         var output = [Float](repeating: 0, count: size * size)
         for y in 0..<size {
             let inputRow = (y + offset) * gridSize + offset

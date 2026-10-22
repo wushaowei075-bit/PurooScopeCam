@@ -166,14 +166,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         guard changed else { return }
         stabilizationEngine.reset()
         if monitor != nil {
-            StabilizationTraceRecorder.shared.startSession(metadata: [
-                "pipeline": "noninertial-virtual-camera-v9-output-crop-budget",
-                "shadow_estimator": "regularized_phase_correlation_256",
-                "maximum_replay_pairs": 12,
-                "motion_rate_hz": 240,
-                "visual_grid": FrameStabilizationEngine.visualGridSize,
-                "preview_delay_frames": 1
-            ])
+            StabilizationTraceRecorder.shared.startSession(metadata: StabilizationTraceRecorder.sessionMetadata)
         } else {
             StabilizationTraceRecorder.shared.stopSession()
         }
@@ -210,44 +203,21 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             completion()
             return
         }
-        let gateLock = NSLock()
-        var completed = false
-        var observerID: UUID?
         let initialVelocity = monitor.sample.angularVelocity
-        var minimumSeen = initialVelocity
-
-        let finish: () -> Void = { [weak monitor] in
-            gateLock.lock()
-            guard !completed else {
-                gateLock.unlock()
-                return
-            }
-            completed = true
-            let id = observerID
-            observerID = nil
-            gateLock.unlock()
-            if let id {
-                monitor?.removeSampleObserver(id)
-            }
-            completion()
+        let gate = PhotoMomentGate(initialVelocity: initialVelocity, remove: { [weak monitor] id in
+            monitor?.removeSampleObserver(id)
+        }, completion: completion)
+        let observerID = monitor.addSampleObserver { sample in
+            gate.observe(velocity: sample.angularVelocity)
         }
-
-        observerID = monitor.addSampleObserver { sample in
-            let velocity = sample.angularVelocity
-            let hitValley = velocity <= 0.16 ||
-                (velocity > minimumSeen * 1.06 && minimumSeen < initialVelocity * 0.85)
-            minimumSeen = min(minimumSeen, velocity)
-            if hitValley {
-                finish()
-            }
-        }
+        gate.install(observerID)
         DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + maxWait) {
-            finish()
+            gate.finish()
         }
     }
 
-    func processPhoto(_ data: Data, context: StabilizedPhotoContext, completion: @escaping (Result<Data, Error>) -> Void) {
-        renderer.processPhoto(data, context: context, completion: completion)
+    func processPhoto(_ data: Data, at sourceTimestamp: TimeInterval, completion: @escaping (Result<Data, Error>) -> Void) {
+        renderer.processPhoto(data, at: sourceTimestamp, completion: completion)
     }
 
     func stopStabilizedRecording() {
@@ -728,6 +698,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     private var lastDisplayedSourceTimestamp: TimeInterval?
     private var displayedPhotoFrame: DisplayedPhotoFrame?
     private var recentPhotoFrames: [DisplayedPhotoFrame] = []
+    private var photoContextHistory: [(time: TimeInterval, context: StabilizedPhotoContext)] = []
     private let inFlightFrames = DispatchSemaphore(value: 2)
     private var presentationMetrics = PresentationMetrics()
     private var presentationGeneration = 0
@@ -810,17 +781,12 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 readyFrame = frameQueue[index]
                 transform = renderTransformForFrame(at: timestamp)
                 if readyFrame!.viewport.width > 1, readyFrame!.viewport.height > 1 {
-                    let candidate = DisplayedPhotoFrame(
-                        pixelBuffer: readyFrame!.pixelBuffer,
-                        transform: transform,
-                        cropScale: scale,
-                        logicalViewport: readyFrame!.viewport,
-                        timestamp: timestamp,
-                        qualityScore: 0.78
-                    )
-                    if displayedPhotoFrame == nil || recorder.isRecording {
-                        displayedPhotoFrame = candidate
-                    }
+                    let frame = readyFrame!
+                    let context = StabilizedPhotoContext(
+                        sourceSize: CGSize(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer)),
+                        viewport: frame.viewport, transform: transform, cropScale: scale)
+                    photoContextHistory.append((frame.sourceTimestamp, context))
+                    if photoContextHistory.count > 180 { photoContextHistory.removeFirst(photoContextHistory.count - 180) }
                 }
             }
         }
@@ -866,6 +832,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         lastDisplayedSourceTimestamp = nil
         displayedPhotoFrame = nil
         recentPhotoFrames.removeAll(keepingCapacity: true)
+        photoContextHistory.removeAll(keepingCapacity: true)
         presentationGeneration += 1
         presentationMetrics = PresentationMetrics()
         stateLock.unlock()
@@ -888,7 +855,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     func photoContext() -> StabilizedPhotoContext? {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard let frame = bestPhotoFrameLocked() else { return nil }
+        guard let frame = displayedPhotoFrame else { return nil }
         return StabilizedPhotoContext(
             sourceSize: CGSize(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer)),
             viewport: frame.logicalViewport, transform: frame.transform, cropScale: frame.cropScale
@@ -904,16 +871,53 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         )
     }
 
-    func processPhoto(_ data: Data, context: StabilizedPhotoContext, completion: @escaping (Result<Data, Error>) -> Void) {
+    func processPhoto(_ data: Data, at sourceTimestamp: TimeInterval, completion: @escaping (Result<Data, Error>) -> Void) {
+        resolvePhotoContext(at: sourceTimestamp, attemptsLeft: 6) { context in
+            guard let context else {
+                completion(.failure(NSError(domain: "PUROO.Photo", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "照片曝光时刻未找到同步的稳像画面，请重试。"])))
+                return
+            }
+            self.encodePhoto(data, context: context, completion: completion)
+        }
+    }
+
+    private func resolvePhotoContext(at timestamp: TimeInterval, attemptsLeft: Int,
+                                     completion: @escaping (StabilizedPhotoContext?) -> Void) {
+        photoQueue.async {
+            self.stateLock.lock()
+            let times = self.photoContextHistory.map(\.time)
+            let tolerance = 0.75 / Double(max(self.presentationTargetFPS, 24))
+            let index = PhotoTimestampPolicy.nearestIndex(to: timestamp, times: times, tolerance: tolerance)
+            let context = index.map { self.photoContextHistory[$0].context }
+            let caughtUp = (times.last ?? -.infinity) >= timestamp
+            self.stateLock.unlock()
+            if !caughtUp, attemptsLeft > 0 {
+                self.photoQueue.asyncAfter(deadline: .now() + 0.02) {
+                    self.resolvePhotoContext(at: timestamp, attemptsLeft: attemptsLeft - 1, completion: completion)
+                }
+                return
+            }
+            StabilizationTraceRecorder.shared.recordControl("photo_context_match", values: [
+                "photo_pts": timestamp, "matched": context != nil,
+                "context_pts": index.map { times[$0] } ?? -1,
+                "maximum_age_ms": tolerance * 1000])
+            completion(context)
+        }
+    }
+
+    private func encodePhoto(_ data: Data, context: StabilizedPhotoContext, completion: @escaping (Result<Data, Error>) -> Void) {
         photoQueue.async {
             autoreleasepool {
                 guard let image = CIImage(data: data, options: [.applyOrientationProperty: true]) else {
                     completion(.failure(StabilizedPhotoCaptureError.encodingFailed))
                     return
                 }
-                let outputSize = CameraGeometry.outputSize(for: image.extent.size)
-                let transformed = image.transformed(by: self.imageToOutputTransform(
-                    imageExtent: image.extent, outputSize: outputSize, logicalViewport: context.viewport,
+                let matchingRect = CameraGeometry.centeredSourceRect(image.extent, matching: context.sourceSize)
+                let matchingImage = image.cropped(to: matchingRect)
+                let outputSize = CameraGeometry.outputSize(for: matchingRect.size)
+                let transformed = matchingImage.transformed(by: self.imageToOutputTransform(
+                    imageExtent: matchingRect, outputSize: outputSize, logicalViewport: context.viewport,
                     previewTransform: context.transform, cropWindowScale: context.cropScale
                 ))
                 guard let jpeg = self.ciContext.jpegRepresentation(of: transformed.cropped(to: CGRect(origin: .zero, size: outputSize)),
@@ -1060,7 +1064,6 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
             timestamp: queuedFrame.motionTime,
             qualityScore: frameSharpness * 0.65 + stabilityWeight * 0.35
         )
-        displayedPhotoFrame = candidatePhoto
         recentPhotoFrames.append(candidatePhoto)
         let freshnessCutoff = queuedFrame.motionTime - 0.10
         recentPhotoFrames.removeAll { $0.timestamp < freshnessCutoff }
@@ -1085,6 +1088,10 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
             let current = generation == self.presentationGeneration
             if current {
                 self.presentationMetrics.present(at: drawable.presentedTime, targetFPS: self.presentationTargetFPS)
+                if drawable.presentedTime > 0,
+                   candidatePhoto.timestamp >= (self.displayedPhotoFrame?.timestamp ?? -.infinity) {
+                    self.displayedPhotoFrame = candidatePhoto
+                }
             }
             self.stateLock.unlock()
             guard current else { return }
@@ -1188,7 +1195,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     }
 
     private func bestPhotoFrameLocked() -> DisplayedPhotoFrame? {
-        guard let latest = displayedPhotoFrame else { return nil }
+        guard let latest = recentPhotoFrames.last ?? displayedPhotoFrame else { return nil }
         let cutoff = latest.timestamp - 0.10
         let candidates = recentPhotoFrames.filter { $0.timestamp >= cutoff }
         return candidates.max(by: { $0.qualityScore < $1.qualityScore }) ?? latest

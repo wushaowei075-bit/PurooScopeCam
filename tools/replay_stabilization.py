@@ -1,4 +1,4 @@
-"""Read a local v8/v9 trace and replay its bounded FFT/NCC comparison pairs.
+"""Read a local v8/v9/v10 trace and replay its bounded shadow FFT/NCC pairs.
 
 Requires NumPy. Does not upload anything or claim accuracy from agreement.
 The FFT implementation is an independent offline check, not the app binary.
@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 
-def phase_shift(reference, current):
+def phase_shift(reference, current, weighted_mean=False):
     n = reference.shape[0]
     if reference.shape != current.shape or reference.shape != (n, n) or n < 256:
         raise ValueError("Expected equal square luminance grids of at least 256 pixels")
@@ -23,7 +23,9 @@ def phase_shift(reference, current):
     offset = (n - 256) // 2
 
     def spectrum(grid):
-        data = (grid[offset:offset + 256, offset:offset + 256] - grid.mean()) * window
+        cropped = grid[offset:offset + 256, offset:offset + 256]
+        mean = float(np.sum(cropped * window) / window.sum()) if weighted_mean else grid.mean()
+        data = (cropped - mean) * window
         return np.fft.fft2(data), float(np.sum(data * data))
 
     fa, energy_a = spectrum(reference)
@@ -57,6 +59,10 @@ def distribution(values):
 def analyze(path):
     states = Counter()
     modes = Counter()
+    estimators = Counter()
+    lookahead_ms = []
+    rolling_enabled = 0
+    photo_matches = Counter()
     frames = 0
     active_gyro = 0
     presentation_times = []
@@ -86,6 +92,10 @@ def analyze(path):
                 states[record.get("calibration_state", "legacy_unknown")] += 1
                 active_gyro += bool(record.get("gyro_trust", 0) > 0)
                 analysis_ms.append(record.get("analysis_ms", 0))
+                estimators[record.get("visual_estimator", "legacy_unknown")] += 1
+                if "lookahead_ms" in record:
+                    lookahead_ms.append(record["lookahead_ms"])
+                rolling_enabled += bool(record.get("rolling_enabled", False))
                 for key, values in budget.items():
                     requested = record.get(f"crop_requested_{key}")
                     applied = record.get(f"crop_applied_{key}")
@@ -101,6 +111,8 @@ def analyze(path):
                 ages.append(record["frame_age_ms"])
             elif name == "frame_gpu":
                 gpu_ms.append(record.get("gpu_ms", 0))
+            elif name == "photo_context_match":
+                photo_matches["matched" if record.get("matched") else "missing"] += 1
             elif kind == "estimator_comparison":
                 if record.get("phase_accepted") and record.get("ncc_available"):
                     disagreements.append(float(np.hypot(
@@ -113,7 +125,7 @@ def analyze(path):
                     raise ValueError("Unsupported replay format")
                 arrays = [np.frombuffer(base64.b64decode(record[key], validate=True), dtype="<f4").reshape(n, n)
                           for key in ("reference_luma", "current_luma")]
-                result = phase_shift(*arrays)
+                result = phase_shift(*arrays, weighted_mean=(session.get("format_version") or 0) >= 10)
                 if result is not None:
                     sx, sy = (v * record["source_step"] for v in result)
                     replayed.append({"t": record["t"], "dx_source_px": sx, "dy_source_px": sy,
@@ -125,6 +137,8 @@ def analyze(path):
     return {"session": session, "frames": frames, "calibration_states": dict(states),
             "gyro_active_fraction": active_gyro / frames if frames else None,
             "actual_system_modes": dict(modes), "presented_fps": fps,
+            "visual_estimators": dict(estimators), "lookahead_ms": distribution(lookahead_ms),
+            "rolling_enabled_frames": rolling_enabled, "photo_context_matches": dict(photo_matches),
             "presentation_intervals_ms": distribution(np.diff(times) * 1000),
             "presentation_age_ms": distribution(ages), "exposure_ms": distribution(exposures),
             "analysis_ms": distribution(analysis_ms), "gpu_ms": distribution(gpu_ms),

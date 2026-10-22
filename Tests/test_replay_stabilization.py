@@ -64,6 +64,24 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(differences["high_x"]["count"], 0)
         self.assertAlmostEqual(report["crop_pre_usage"]["max"], 0.96)
 
+    def test_v10_measurement_provenance(self):
+        records = [
+            {"type": "session", "app_build": "33", "format_version": 10},
+            {"type": "frame", "visual_estimator": "phase", "lookahead_ms": 5, "rolling_enabled": False},
+            {"type": "frame", "visual_estimator": "ncc", "lookahead_ms": 0, "rolling_enabled": False},
+            {"type": "control", "name": "photo_context_match", "matched": True},
+            {"type": "estimator_comparison", "production_estimator": "phase", "ncc_available": False,
+             "phase_accepted": True},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trace.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in records), encoding="utf-8")
+            report = replay.analyze(path)
+        self.assertEqual(report["visual_estimators"], {"phase": 1, "ncc": 1})
+        self.assertEqual(report["rolling_enabled_frames"], 0)
+        self.assertEqual(report["photo_context_matches"], {"matched": 1})
+        self.assertEqual(report["ncc_phase_disagreement_source_px"]["count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

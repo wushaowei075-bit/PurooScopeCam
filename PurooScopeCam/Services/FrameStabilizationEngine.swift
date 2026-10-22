@@ -61,6 +61,15 @@ struct StabilizationDebugSnapshot {
     var cropAppliedHighX: CGFloat
     var cropAppliedHighY: CGFloat
     var cropPreUsage: CGFloat
+    var visualEstimator: String = "none"
+    var visualCalibrationEligible: Bool = false
+    var vignetteValidated: Bool = false
+    var lookaheadMilliseconds: Double = 0
+    var rollingWindowComplete: Bool = false
+    var requestedShear: CGFloat = 0
+    var requestedStretch: CGFloat = 0
+    var appliedShear: CGFloat = 0
+    var appliedStretch: CGFloat = 0
 
     func overlayText(systemModeName: String) -> String {
         """
@@ -90,7 +99,9 @@ final class StabilizationTraceRecorder {
     private var writeBuffer = Data()
     private var isActive = false
     private var replayPairCount = 0
-    var isDiagnosticsEnabled: Bool = {
+    private var lastFileURL: URL?
+    private var sessionID = UUID()
+    private static let launchDiagnosticsEnabled: Bool = {
         if let env = ProcessInfo.processInfo.environment["PUROO_TRACE_ENABLED"] {
             return env == "1" || env.lowercased() == "true"
         }
@@ -99,6 +110,34 @@ final class StabilizationTraceRecorder {
         }
         return false
     }()
+
+    static var sessionMetadata: [String: Any] {
+        ["pipeline": "virtual-camera-v10-validated-measurements",
+         "shadow_estimator": "regularized_phase_correlation_256",
+         "maximum_replay_pairs": 12, "motion_rate_hz": 240,
+         "visual_grid": FrameStabilizationEngine.visualGridSize, "preview_delay_frames": 1,
+         "rolling_shutter_enabled": RollingShutterPolicy.productionEnabled]
+    }
+
+    func startTimedDiagnostics() {
+        startSession(metadata: Self.sessionMetadata, userInitiated: true)
+    }
+
+    func finishAndExport(_ completion: @escaping (URL?) -> Void) {
+        stopSession()
+        queue.async {
+            if self.lastFileURL == nil,
+               let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                let directory = documents.appendingPathComponent("PurooStabilizationTraces", isDirectory: true)
+                let files = (try? FileManager.default.contentsOfDirectory(at: directory,
+                    includingPropertiesForKeys: nil)) ?? []
+                self.lastFileURL = files.filter { $0.pathExtension == "jsonl" }
+                    .sorted { $0.lastPathComponent > $1.lastPathComponent }.first
+            }
+            let url = self.lastFileURL
+            DispatchQueue.main.async { completion(url) }
+        }
+    }
 
     var hasActiveSession: Bool {
         stateLock.lock()
@@ -109,8 +148,8 @@ final class StabilizationTraceRecorder {
 
     private init() {}
 
-    func startSession(metadata: [String: Any]) {
-        guard isDiagnosticsEnabled else { return }
+    func startSession(metadata: [String: Any], userInitiated: Bool = false) {
+        guard userInitiated || Self.launchDiagnosticsEnabled else { return }
         queue.async { [weak self] in
             guard let self, !self.isActive else { return }
             guard let documents = FileManager.default.urls(
@@ -139,6 +178,13 @@ final class StabilizationTraceRecorder {
                     .appendingPathExtension("jsonl")
                 FileManager.default.createFile(atPath: fileURL.path, contents: nil)
                 self.fileHandle = try FileHandle(forWritingTo: fileURL)
+                self.lastFileURL = fileURL
+                self.sessionID = UUID()
+                let activeID = self.sessionID
+                self.queue.asyncAfter(deadline: .now() + 120) { [weak self] in
+                    guard let self, self.sessionID == activeID else { return }
+                    self.closeSession()
+                }
                 self.stateLock.lock()
                 self.isActive = true
                 self.stateLock.unlock()
@@ -147,7 +193,8 @@ final class StabilizationTraceRecorder {
                 var header = metadata
                 header["type"] = "session"
                 header["created_at"] = ISO8601DateFormatter().string(from: Date())
-                header["format_version"] = 9
+                header["format_version"] = 10
+                header["maximum_duration_s"] = 120
                 header["app_build"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
                 header["app_version"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
                 self.appendJSONObject(header)
@@ -163,19 +210,23 @@ final class StabilizationTraceRecorder {
 
     func stopSession() {
         queue.async { [weak self] in
-            guard let self, self.isActive else { return }
-            self.appendJSONObject([
-                "type": "session_end",
-                "host_time": CACurrentMediaTime()
-            ])
-            self.flushIfNeeded(force: true)
-            try? self.fileHandle?.synchronize()
-            try? self.fileHandle?.close()
-            self.fileHandle = nil
-            self.stateLock.lock()
-            self.isActive = false
-            self.stateLock.unlock()
+            self?.closeSession()
         }
+    }
+
+    private func closeSession() {
+        guard isActive else { return }
+        appendJSONObject([
+            "type": "session_end",
+            "host_time": CACurrentMediaTime()
+        ])
+        flushIfNeeded(force: true)
+        try? fileHandle?.synchronize()
+        try? fileHandle?.close()
+        fileHandle = nil
+        stateLock.lock()
+        isActive = false
+        stateLock.unlock()
     }
 
     func recordMotion(_ sample: StabilitySample) {
@@ -231,6 +282,16 @@ final class StabilizationTraceRecorder {
                 "visual_dy": debug.visualDeltaY,
                 "visual_confidence": debug.visualConfidence,
                 "visual_vectors": debug.visualVectorCount,
+                "visual_estimator": debug.visualEstimator,
+                "visual_calibration_eligible": debug.visualCalibrationEligible,
+                "vignette_validated": debug.vignetteValidated,
+                "lookahead_ms": debug.lookaheadMilliseconds,
+                "rolling_window_complete": debug.rollingWindowComplete,
+                "rolling_enabled": RollingShutterPolicy.productionEnabled,
+                "rolling_requested_shear": debug.requestedShear,
+                "rolling_requested_stretch": debug.requestedStretch,
+                "rolling_applied_shear": debug.appliedShear,
+                "rolling_applied_stretch": debug.appliedStretch,
                 "fused_dx": debug.fusedDeltaX,
                 "fused_dy": debug.fusedDeltaY,
                 "low_dx": debug.lowFrequencyDeltaX,
@@ -505,7 +566,7 @@ final class FrameStabilizationEngine {
             rollingShearX: crop.correctionShearX,
             rollingStretchY: crop.correctionStretchY
         )
-        let debug = StabilizationDebugSnapshot(
+        var debug = StabilizationDebugSnapshot(
             cropScale: input.tuning.previewCropScale,
             visualDeltaX: visual?.deltaX ?? 0,
             visualDeltaY: visual?.deltaY ?? 0,
@@ -555,6 +616,16 @@ final class FrameStabilizationEngine {
             cropAppliedHighY: crop.appliedHighY,
             cropPreUsage: crop.preUsage
         )
+        let selectedGyro = gyroCandidates.min { abs($0.automaticOffset - fused.automaticOffset) < abs($1.automaticOffset - fused.automaticOffset) }
+        debug.visualEstimator = visual?.estimator ?? "none"
+        debug.visualCalibrationEligible = visual?.calibrationEligible ?? false
+        debug.vignetteValidated = visualTracker.vignetteValidated
+        debug.lookaheadMilliseconds = (selectedGyro?.lookaheadDuration ?? 0) * 1000
+        debug.rollingWindowComplete = selectedGyro?.rollingWindowComplete ?? false
+        debug.requestedShear = fused.rollingShearX
+        debug.requestedStretch = fused.rollingStretchY
+        debug.appliedShear = transform.rollingShearX
+        debug.appliedStretch = transform.rollingStretchY
         let result = StabilizationFrameResult(
             timestamp: input.timestamp,
             transform: transform,
@@ -587,6 +658,8 @@ private struct VisualMotionObservation {
     var confidence: CGFloat
     var vectorCount: Int
     var texture: CGFloat
+    var estimator: String = "ncc"
+    var calibrationEligible: Bool = true
 }
 
 private final class SubpixelFrameMotionTracker {
@@ -602,6 +675,7 @@ private final class SubpixelFrameMotionTracker {
         var dx: CGFloat
         var dy: CGFloat
         var confidence: CGFloat
+        var region: Int
     }
 
     // 采样格距决定亚像素估计的下限，而竖屏下横向尺寸只有纵向的 56%，
@@ -620,6 +694,9 @@ private final class SubpixelFrameMotionTracker {
     private lazy var roiMask: [Bool] = makeROIMask()
     private var activeROIMask: [Bool]?
     private var maskUpdateCounter = 0
+    private var pendingVignette: VignetteRegion?
+    private var vignetteConfirmations = 0
+    private(set) var vignetteValidated = false
     private(set) var latestVignetteOffset: CGPoint = .zero
     private var previousFrame: AnalysisFrame?
     private var previousTimestamp: TimeInterval?
@@ -632,6 +709,9 @@ private final class SubpixelFrameMotionTracker {
         activeROIMask = nil
         maskUpdateCounter = 0
         latestVignetteOffset = .zero
+        pendingVignette = nil
+        vignetteConfirmations = 0
+        vignetteValidated = false
     }
 
     func process(
@@ -641,6 +721,20 @@ private final class SubpixelFrameMotionTracker {
         displayZoomFactor: CGFloat = 1
     ) -> VisualMotionObservation? {
         guard let current = makeLumaGrid(from: pixelBuffer) else { return nil }
+        return process(current: current, timestamp: timestamp, gyroHint: gyroHint, displayZoomFactor: displayZoomFactor)
+    }
+
+    // Replays the same production matcher without retaining a camera buffer.
+    func processSampledGrid(_ luma: [Float], timestamp: TimeInterval,
+                            gyroHint: (dx: CGFloat, dy: CGFloat)? = nil) -> VisualMotionObservation? {
+        guard luma.count == gridSize * gridSize else { return nil }
+        let current = AnalysisFrame(luma: luma, roiMask: currentROIMask(for: luma),
+                                    sourceWidth: gridSize, sourceHeight: gridSize, sourceStep: 1)
+        return process(current: current, timestamp: timestamp, gyroHint: gyroHint, displayZoomFactor: 1)
+    }
+
+    private func process(current: AnalysisFrame, timestamp: TimeInterval,
+                         gyroHint: (dx: CGFloat, dy: CGFloat)?, displayZoomFactor: CGFloat) -> VisualMotionObservation? {
         guard let previousFrame, let previousTimestamp else {
             self.previousFrame = current
             self.previousTimestamp = timestamp
@@ -671,8 +765,10 @@ private final class SubpixelFrameMotionTracker {
             VisualMotionObservation(timestamp: timestamp,
                 deltaX: $0.dx * current.sourceStep / CGFloat(max(current.sourceWidth, 1)),
                 deltaY: $0.dy * current.sourceStep / CGFloat(max(current.sourceHeight, 1)),
-                confidence: $0.confidence, vectorCount: $0.vectorCount, texture: $0.texture)
+                confidence: $0.confidence, vectorCount: $0.vectorCount, texture: $0.texture,
+                calibrationEligible: $0.calibrationEligible)
         }
+        let ncc = observation
         if observation == nil {
             observation = gatedPhaseFallback(
                 reference: previousFrame,
@@ -683,7 +779,8 @@ private final class SubpixelFrameMotionTracker {
         }
         shadow.submit(reference: previousFrame.luma, current: current.luma, gridSize: gridSize,
             previousTime: previousTimestamp, time: timestamp, sourceStep: current.sourceStep,
-            width: current.sourceWidth, height: current.sourceHeight, visual: observation)
+            width: current.sourceWidth, height: current.sourceHeight, visual: ncc,
+            productionEstimator: observation?.estimator ?? "none")
         return observation
     }
 
@@ -693,29 +790,22 @@ private final class SubpixelFrameMotionTracker {
         timestamp: TimeInterval,
         gyroHint: (dx: CGFloat, dy: CGFloat)?
     ) -> VisualMotionObservation? {
+        // A low-texture fallback must not establish or validate its own gyro prior.
+        guard let gyroHint else { return nil }
+        let commonMask = zip(reference.roiMask, current.roiMask).map { $0 && $1 }
         guard let phase = phaseEstimator.estimate(
             reference: reference.luma,
             current: current.luma,
-            gridSize: gridSize
+            gridSize: gridSize,
+            validMask: commonMask
         ), phase.accepted else {
             return nil
         }
         let phaseDX = CGFloat(phase.dx) * current.sourceStep / CGFloat(max(current.sourceWidth, 1))
         let phaseDY = CGFloat(phase.dy) * current.sourceStep / CGFloat(max(current.sourceHeight, 1))
-        let phaseMag = hypot(phaseDX, phaseDY)
-        if let gyroHint {
-            let gyroMag = hypot(gyroHint.dx, gyroHint.dy)
-            if gyroMag > 0.0025 && phaseMag < 0.0005 {
-                return nil
-            }
-            guard hypot(phaseDX - gyroHint.dx, phaseDY - gyroHint.dy) <= 0.0038 else {
-                return nil
-            }
-        } else {
-            guard phase.peakToSidelobe >= 14, phase.peakRatio >= 1.35 else {
-                return nil
-            }
-        }
+        guard VisualMeasurementPolicy.acceptsPhase(dx: phase.dx, dy: phase.dy,
+            gyroX: Double(gyroHint.dx * CGFloat(current.sourceWidth) / current.sourceStep),
+            gyroY: Double(gyroHint.dy * CGFloat(current.sourceHeight) / current.sourceStep)) else { return nil }
         let psrScore = clamp(CGFloat((phase.peakToSidelobe - 8) / 24), min: 0, max: 1)
         let confidence = clamp(0.32 + psrScore * 0.42, min: 0.30, max: 0.74)
         return VisualMotionObservation(
@@ -724,7 +814,8 @@ private final class SubpixelFrameMotionTracker {
             deltaY: phaseDY,
             confidence: confidence,
             vectorCount: 0,
-            texture: max(textureScore(reference), 0.85)
+            texture: max(textureScore(reference), 0.85),
+            estimator: "phase", calibrationEligible: false
         )
     }
 
@@ -733,7 +824,7 @@ private final class SubpixelFrameMotionTracker {
         current: AnalysisFrame,
         hintGrid: (dx: Int, dy: Int)? = nil,
         displayZoomFactor: CGFloat = 1
-    ) -> (dx: CGFloat, dy: CGFloat, confidence: CGFloat, vectorCount: Int, texture: CGFloat)? {
+    ) -> (dx: CGFloat, dy: CGFloat, confidence: CGFloat, vectorCount: Int, texture: CGFloat, calibrationEligible: Bool)? {
         // 纹理分数取自相邻采样格的灰度差，与格距成正比。格距从 4.95 收到
         // 2.95 源像素后同一画面的分数降到约六成，门槛必须同步缩放，否则
         // 可用率会跟着塌掉。高倍数码放大（>3x 直至 10x）时 ISP 插值会进一步
@@ -767,10 +858,9 @@ private final class SubpixelFrameMotionTracker {
         let inliers = vectors.filter { vector in
             hypot(vector.dx - medianX, vector.dy - medianY) <= 2.15
         }
-        // 当画面同时包含角点与一维笔画边缘时，孔径效应会使部分边缘块偏移；
-        // 只要至少有 6~12 个块（或 45% 候选块）高度一致，即可由后续残差检查保障精度。
-        let minimumInliers = max(6, min(12, Int(ceil(Double(vectors.count) * 0.45))))
-        guard inliers.count >= minimumInliers else {
+        let regions = Set(inliers.map(\.region)).count
+        guard VisualMeasurementPolicy.acceptsConsensus(inliers: inliers.count,
+            candidates: vectors.count, occupiedRegions: regions) else {
             return nil
         }
 
@@ -792,7 +882,9 @@ private final class SubpixelFrameMotionTracker {
             max: 1
         )
         guard confidence >= 0.24 else { return nil }
-        return (dx, dy, confidence, inliers.count, texture)
+        return (dx, dy, confidence, inliers.count, texture,
+                VisualMeasurementPolicy.permitsCalibration(inliers: inliers.count,
+                    candidates: vectors.count, occupiedRegions: regions))
     }
 
     private func patchVectors(
@@ -908,7 +1000,8 @@ private final class SubpixelFrameMotionTracker {
         return PatchVector(
             dx: CGFloat(shiftCenterX + bestLocalDX) + subpixelX,
             dy: CGFloat(shiftCenterY + bestLocalDY) + subpixelY,
-            confidence: confidence
+            confidence: confidence,
+            region: (centerX >= gridSize / 2 ? 1 : 0) + (centerY >= gridSize / 2 ? 2 : 0)
         )
     }
 
@@ -1069,60 +1162,41 @@ private final class SubpixelFrameMotionTracker {
         maskUpdateCounter += 1
         guard shouldRefresh else { return activeROIMask ?? roiMask }
 
-        // 自动检测望远镜出瞳亮圈质心与暗角边界，屏蔽静止镜筒黑边及内侧 8% 渐晕环。
-        var samples: [Float] = []
-        samples.reserveCapacity(1024)
-        for index in stride(from: 0, to: luma.count, by: 64) where roiMask[index] {
-            samples.append(luma[index])
-        }
-        guard samples.count >= 16 else {
+        guard let region = VignetteDetector.detect(luma, size: gridSize) else {
             activeROIMask = roiMask
             latestVignetteOffset = .zero
+            pendingVignette = nil
+            vignetteConfirmations = 0
+            vignetteValidated = false
             return roiMask
         }
-        samples.sort()
-        let highLuma = samples[min(samples.count - 1, samples.count * 85 / 100)]
-        let lowLuma = samples[samples.count * 10 / 100]
-        guard highLuma > 32, lowLuma < highLuma * 0.32 else {
+        if let pendingVignette,
+           hypot(region.x - pendingVignette.x, region.y - pendingVignette.y) <= 4,
+           abs(region.radius - pendingVignette.radius) <= 4 {
+            vignetteConfirmations += 1
+        } else {
+            vignetteConfirmations = 1
+            vignetteValidated = false
             activeROIMask = roiMask
             latestVignetteOffset = .zero
-            return roiMask
         }
-
-        let threshold = max(Float(18), highLuma * 0.26)
-        var sumX: CGFloat = 0
-        var sumY: CGFloat = 0
-        var brightCount: CGFloat = 0
-        for y in stride(from: 4, to: gridSize - 4, by: 4) {
-            for x in stride(from: 4, to: gridSize - 4, by: 4) {
-                let index = y * gridSize + x
-                if roiMask[index], luma[index] >= threshold {
-                    sumX += CGFloat(x)
-                    sumY += CGFloat(y)
-                    brightCount += 1
-                }
-            }
-        }
-        let totalSampled = CGFloat((gridSize / 4) * (gridSize / 4))
-        guard brightCount >= totalSampled * 0.15, brightCount < totalSampled * 0.72 else {
-            activeROIMask = roiMask
-            latestVignetteOffset = .zero
-            return roiMask
-        }
-        let centerX = sumX / brightCount
-        let centerY = sumY / brightCount
+        pendingVignette = region
+        guard vignetteConfirmations >= 3 else { return activeROIMask ?? roiMask }
+        vignetteValidated = true
+        let centerX = CGFloat(region.x)
+        let centerY = CGFloat(region.y)
         let gridCenter = CGFloat(gridSize - 1) * 0.5
         latestVignetteOffset = CGPoint(
             x: (centerX - gridCenter) / max(gridCenter, 1),
             y: (centerY - gridCenter) / max(gridCenter, 1)
         )
-        let estimatedRadius = sqrt(brightCount * 16 / .pi) * 0.90
-        let safeRadiusSquared = max(estimatedRadius * estimatedRadius, 36 * 36)
+        let safeRadius = CGFloat(region.radius) * 0.82
+        let safeRadiusSquared = safeRadius * safeRadius
         var refined = Array(repeating: false, count: gridSize * gridSize)
         for y in 2..<(gridSize - 2) {
             for x in 2..<(gridSize - 2) {
                 let index = y * gridSize + x
-                guard roiMask[index], luma[index] >= threshold else { continue }
+                guard roiMask[index] else { continue }
                 let dx = CGFloat(x) - centerX
                 let dy = CGFloat(y) - centerY
                 if dx * dx + dy * dy <= safeRadiusSquared {
@@ -1274,7 +1348,7 @@ private final class VisualEstimatorShadow {
 
     func submit(reference: [Float], current: [Float], gridSize: Int,
                 previousTime: Double, time: Double, sourceStep: CGFloat,
-                width: Int, height: Int, visual: VisualMotionObservation?) {
+                width: Int, height: Int, visual: VisualMotionObservation?, productionEstimator: String) {
         guard StabilizationTraceRecorder.shared.hasActiveSession else { return }
         counter += 1
         guard counter.isMultiple(of: 6), available.wait(timeout: .now()) == .success else { return }
@@ -1293,7 +1367,7 @@ private final class VisualEstimatorShadow {
                 "phase_dy": (phase?.dy ?? 0) * Double(sourceStep) / Double(height),
                 "phase_psr": phase?.peakToSidelobe ?? 0, "phase_peak_ratio": phase?.peakRatio ?? 0,
                 "phase_ms": (CACurrentMediaTime() - start) * 1000,
-                "production_estimator": "ncc", "shadow_only": true
+                "production_estimator": productionEstimator, "shadow_only": true
             ]
             StabilizationTraceRecorder.shared.recordComparison(values, reference: reference, current: current) {
                 self.available.signal()
@@ -1315,6 +1389,8 @@ private struct GyroMotionCandidate {
     /// 帧内上下边缘角速度差异引起的卷帘快门水平倾斜与垂直果冻伸缩（不含望远镜倍率）。
     var rollingShearX: CGFloat = 0
     var rollingStretchY: CGFloat = 0
+    var lookaheadDuration: Double = 0
+    var rollingWindowComplete: Bool = false
 }
 
 private struct UnitQuaternion {
@@ -1441,7 +1517,7 @@ private final class QuaternionMotionEstimator {
                 frameHeight: frameHeight
             )
 
-            // 利用帧曝光后已到达缓冲区的未来 4~14 ms 真实 IMU 样本实现零相位前瞻
+            // A bounded lookahead blend; this is not a zero-phase filter.
             var lookaheadDeltaX: CGFloat = 0
             var lookaheadDeltaY: CGFloat = 0
             var hasLookahead = false
@@ -1466,10 +1542,15 @@ private final class QuaternionMotionEstimator {
             // 计算帧内上下边缘曝光时刻差引起的卷帘快门水平倾斜与垂直伸缩
             var rollingShearX: CGFloat = 0
             var rollingStretchY: CGFloat = 0
-            if let prevTop = interpolatedQuaternion(at: tPrev - halfReadout, samples: samples),
+            let completeReadout = RollingShutterPolicy.hasCompleteWindow(previous: tPrev, current: tCurr,
+                halfReadout: halfReadout, firstSample: samples.first!.timestamp, lastSample: latestSampleTime)
+            // Scan direction/readout have not been measured per format. Only an internal
+            // experiment may enable the verified portrait-axis estimate for now.
+            if RollingShutterPolicy.productionEnabled, normalizedAngle == 90, completeReadout,
+               let prevTop = interpolatedQuaternion(at: tPrev - halfReadout, samples: samples),
                let currTop = interpolatedQuaternion(at: tCurr - halfReadout, samples: samples),
                let prevBottom = interpolatedQuaternion(at: tPrev + halfReadout, samples: samples),
-               let currBottom = interpolatedQuaternion(at: min(tCurr + halfReadout, latestSampleTime), samples: samples) {
+               let currBottom = interpolatedQuaternion(at: tCurr + halfReadout, samples: samples) {
                 let topMotion = projectedMotion(
                     from: prevTop,
                     to: currTop,
@@ -1502,7 +1583,9 @@ private final class QuaternionMotionEstimator {
                     lookaheadDeltaY: lookaheadDeltaY,
                     hasLookahead: hasLookahead,
                     rollingShearX: rollingShearX,
-                    rollingStretchY: rollingStretchY
+                    rollingStretchY: rollingStretchY,
+                    lookaheadDuration: hasLookahead ? availableFuture : 0,
+                    rollingWindowComplete: completeReadout
                 )
             )
         }
@@ -1846,8 +1929,7 @@ private final class ComplementaryMotionFusion {
             gyroLowVelocityY = 0
         }
 
-        // 利用帧曝光后已到达的未来 IMU 样本（Lookahead）执行前向-后向零相位超前平滑，
-        // 消除因果低通在 2–7 Hz 生理手抖频段上的约 35° 相位滞后。
+        // Blend measured lookahead when available; frequency response is not zero-phase.
         let zeroPhaseVisualLowX: CGFloat
         let zeroPhaseVisualLowY: CGFloat
         let zeroPhaseGyroLowX: CGFloat
@@ -1945,7 +2027,8 @@ private final class ComplementaryMotionFusion {
         candidates: [GyroMotionCandidate],
         motionScale: CGFloat = 1
     ) {
-        guard visual.confidence >= 0.55, visual.vectorCount >= 6 else { return }
+        guard visual.estimator == "ncc", visual.calibrationEligible,
+              visual.confidence >= 0.55, visual.vectorCount >= 6 else { return }
         let maxMotion: CGFloat = 0.012 * max(motionScale, 1)
         let motionMagnitude = hypot(visual.deltaX, visual.deltaY)
         guard motionMagnitude.isFinite, motionMagnitude <= maxMotion else { return }

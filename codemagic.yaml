@@ -71,6 +71,10 @@ workflows:
           set -euo pipefail
           swiftc -O PurooScopeCam/Models/StabilizationDiagnostics.swift PurooScopeCam/Services/PhaseCorrelationEstimator.swift Tests/StabilizationDiagnosticsTests/main.swift -o build/stabilization-diagnostics-tests
           build/stabilization-diagnostics-tests
+      - name: Test production visual measurements and IMU projection
+        script: |
+          set -euo pipefail
+          bash Tests/MeasurementTests/run.sh
       - name: Build unsigned iPhoneOS app
         script: |
           set -euo pipefail

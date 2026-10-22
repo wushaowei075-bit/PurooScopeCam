@@ -405,7 +405,7 @@ struct ControlPanelView: View {
         }
         .buttonStyle(.plain)
         .disabled(camera.status.isFinishingRecording)
-        .accessibilityLabel("录像中无损抓拍")
+        .accessibilityLabel("录像中抓拍防抖照片")
     }
 
     private var burstButton: some View {

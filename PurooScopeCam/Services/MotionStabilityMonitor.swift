@@ -3,7 +3,12 @@ import CoreMotion
 import Foundation
 
 final class MotionStabilityMonitor: ObservableObject {
-    private(set) var sample: StabilitySample = .unavailable
+    private var currentSample: StabilitySample = .unavailable
+    var sample: StabilitySample {
+        observerLock.lock()
+        defer { observerLock.unlock() }
+        return currentSample
+    }
     @Published private(set) var displaySample: StabilitySample = .unavailable
 
     typealias SampleObserver = (StabilitySample) -> Void
@@ -27,7 +32,7 @@ final class MotionStabilityMonitor: ObservableObject {
         let id = UUID()
         observerLock.lock()
         sampleObservers[id] = observer
-        let currentSample = sample
+        let currentSample = self.currentSample
         observerLock.unlock()
 
         if currentSample != .unavailable {
@@ -47,7 +52,9 @@ final class MotionStabilityMonitor: ObservableObject {
 
         guard manager.isDeviceMotionAvailable else {
             DispatchQueue.main.async {
-                self.sample = .unavailable
+                self.observerLock.lock()
+                self.currentSample = .unavailable
+                self.observerLock.unlock()
                 self.displaySample = .unavailable
             }
             return
@@ -101,7 +108,7 @@ final class MotionStabilityMonitor: ObservableObject {
             StabilizationTraceRecorder.shared.recordMotion(next)
 
             self.observerLock.lock()
-            self.sample = next
+            self.currentSample = next
             self.sampleBuffer.append(next)
             let cutoff = next.timestamp - 1.25
             if let firstFreshIndex = self.sampleBuffer.firstIndex(where: { $0.timestamp >= cutoff }) {
@@ -141,7 +148,7 @@ final class MotionStabilityMonitor: ObservableObject {
         guard duration.isFinite, duration > 0 else { return nil }
 
         observerLock.lock()
-        let latest = sample
+        let latest = currentSample
         let buffer = sampleBuffer
         observerLock.unlock()
 

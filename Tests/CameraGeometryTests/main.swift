@@ -76,4 +76,16 @@ for size in [CGSize(width: 320, height: 548), CGSize(width: 375, height: 647),
     check(near(layout.controlsOverlap, max(0, layout.previewOriginY + layout.previewSize.height - size.height + layout.controlsHeight)), "Zoom bar clears shutter area")
     if !landscape { check(near(layout.previewSize.width, size.width), "Portrait remains edge-to-edge") }
 }
+for size in [CGSize(width: 2160, height: 3840), CGSize(width: 3840, height: 2160)] {
+    let rect = CGRect(origin: .zero, size: size)
+    let correction = PreviewRenderTransform(scale: 1, rotationRadians: 0, translationX: 0, translationY: 0, rollingShearX: 0.008)
+    let matrix = CameraGeometry.transform(source: rect, output: size, viewport: size, correction: correction, cropScale: 1)
+    let top = CGPoint(x: size.width / 2, y: 0).applying(matrix)
+    let bottom = CGPoint(x: size.width / 2, y: size.height).applying(matrix)
+    check(near(bottom.x - top.x, size.width * 0.008), "Shear unit is a fraction of width in both orientations")
+    let sensor = CGRect(x: 0, y: 0, width: size.width > size.height ? 4032 : 3024, height: size.width > size.height ? 3024 : 4032)
+    let cropped = CameraGeometry.centeredSourceRect(sensor, matching: size)
+    check(near(cropped.width / cropped.height, size.width / size.height), "Photo source matches video field aspect before applying transform")
+    check(near(cropped.midX, sensor.midX) && near(cropped.midY, sensor.midY), "Photo source crop remains centered")
+}
 print("PASS: \(checks) camera geometry, focus, output and layout checks")
