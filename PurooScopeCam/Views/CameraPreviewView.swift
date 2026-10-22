@@ -31,6 +31,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     private var latestCorrection = CGPoint.zero
     private var latestCropUsage: CGFloat = 0
     private var overviewImageAspectRatio: CGFloat = 1
+    private var overviewPresentation = CameraPresentation(videoRotationAngle: 90)
     private var lastOverviewUpdateTime: TimeInterval = 0
     private var lastDebugOverlayUpdateTime: TimeInterval = 0
     private var lastVideoRotationAngle: CGFloat = 90
@@ -81,7 +82,9 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
     override func layoutSubviews() {
         super.layoutSubviews()
         metalView.frame = bounds
-        focusPeakingImageView.frame = bounds
+        focusPeakingImageView.bounds = CGRect(origin: .zero, size: overviewPresentation.cameraSize(for: bounds.size))
+        focusPeakingImageView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        focusPeakingImageView.transform = CGAffineTransform(rotationAngle: CGFloat(overviewPresentation.controlDegrees) * .pi / 180)
         layoutOverview()
         layoutDebugOverlay()
         viewportLock.lock()
@@ -257,11 +260,14 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         preferenceLock.unlock()
 
         let sourceTimestamp = CMTimeGetSeconds(metadata.presentationTime)
+        let frameViewport = CameraPresentation(videoRotationAngle: metadata.videoRotationAngle)
+            .cameraSize(for: currentViewportSize)
         renderer.enqueue(
             pixelBuffer: pixelBuffer,
             motionTime: frameTime,
             sourceTimestamp: sourceTimestamp.isFinite ? sourceTimestamp : frameTime,
-            viewport: currentViewportSize
+            viewport: frameViewport,
+            videoRotationAngle: metadata.videoRotationAngle
         )
         if preference.usesElectronicPreviewStabilization, tuning.usesDigitalStabilization {
             let exposureHalfDuration = min(max(metadata.exposureDuration * 0.5, 0), 1.0 / 30.0)
@@ -277,7 +283,7 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
                 motionSamples: samples,
                 videoRotationAngle: metadata.videoRotationAngle,
                 tuning: tuning,
-                viewportSize: currentViewportSize,
+                viewportSize: frameViewport,
                 focalLengthPixelsX: metadata.focalLengthPixelsX,
                 focalLengthPixelsY: metadata.focalLengthPixelsY
             )
@@ -296,7 +302,8 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             "active_system_mode": metadata.activeSystemStabilization,
             "rotation": metadata.videoRotationAngle
         ])
-        updateOverviewThumbnailIfNeeded(pixelBuffer: pixelBuffer, motionTime: frameTime)
+        updateOverviewThumbnailIfNeeded(pixelBuffer: pixelBuffer, motionTime: frameTime,
+                                        videoRotationAngle: metadata.videoRotationAngle)
     }
 
     func cameraController(
@@ -423,14 +430,13 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
         let scale: CGFloat = isOverviewExpanded ? 1.48 : 1.0
         let width = min(max(shortSide * 0.18, 72), 92) * scale
         let contentAspect = max(overviewImageAspectRatio, 0.1)
-        let height = min(width / contentAspect, width * 1.35)
         let topInset: CGFloat = bounds.height > bounds.width ? 104 : 98
-        overviewContainer.frame = CGRect(
-            x: bounds.maxX - width - 12,
-            y: topInset,
-            width: width,
-            height: height
-        )
+        let portraitAspect = min(contentAspect, 1 / contentAspect)
+        let displaySize = CGSize(width: width, height: min(width / portraitAspect, width * 1.35))
+        overviewContainer.bounds = CGRect(origin: .zero, size: overviewPresentation.cameraSize(for: displaySize))
+        overviewContainer.center = CGPoint(x: bounds.maxX - displaySize.width / 2 - 12,
+                                           y: topInset + displaySize.height / 2)
+        overviewContainer.transform = CGAffineTransform(rotationAngle: CGFloat(overviewPresentation.controlDegrees) * .pi / 180)
         overviewImageView.frame = overviewContainer.bounds
         layoutCropWindow()
     }
@@ -505,7 +511,8 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
 
     private func updateOverviewThumbnailIfNeeded(
         pixelBuffer: CVPixelBuffer,
-        motionTime: TimeInterval
+        motionTime: TimeInterval,
+        videoRotationAngle: CGFloat
     ) {
         guard motionTime.isFinite, motionTime - lastOverviewUpdateTime >= 0.18 else { return }
         overviewBusyLock.lock()
@@ -546,9 +553,15 @@ final class PreviewContainerView: UIView, CameraFrameSink, StabilizedRecordingFr
             let aspectRatio = image.extent.width / max(image.extent.height, 1)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                self.overviewPresentation = CameraPresentation(videoRotationAngle: videoRotationAngle)
                 self.overviewImageAspectRatio = aspectRatio
                 self.overviewImageView.image = thumbnail
                 if buildPeaking {
+                    self.focusPeakingImageView.bounds = CGRect(origin: .zero,
+                        size: self.overviewPresentation.cameraSize(for: self.bounds.size))
+                    self.focusPeakingImageView.center = CGPoint(x: self.bounds.midX, y: self.bounds.midY)
+                    self.focusPeakingImageView.transform = CGAffineTransform(
+                        rotationAngle: CGFloat(self.overviewPresentation.controlDegrees) * .pi / 180)
                     self.focusPeakingImageView.image = peakingOverlay
                     self.focusPeakingImageView.isHidden = peakingOverlay == nil
                 } else {
@@ -659,6 +672,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         var sourceTimestamp: TimeInterval
         var isReady: Bool
         var viewport: CGSize
+        var videoRotationAngle: CGFloat
     }
 
     private struct TimedRenderTransform {
@@ -671,6 +685,7 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         var transform: PreviewRenderTransform
         var cropScale: CGFloat
         var logicalViewport: CGSize
+        var videoRotationAngle: CGFloat
         var timestamp: TimeInterval = 0
         var qualityScore: Double = 1
     }
@@ -724,7 +739,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
         pixelBuffer: CVPixelBuffer,
         motionTime: TimeInterval,
         sourceTimestamp: TimeInterval,
-        viewport: CGSize
+        viewport: CGSize,
+        videoRotationAngle: CGFloat
     ) {
         guard motionTime.isFinite, sourceTimestamp.isFinite else { return }
         stateLock.lock()
@@ -735,7 +751,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
                 motionTime: motionTime,
                 sourceTimestamp: sourceTimestamp,
                 isReady: false,
-                viewport: viewport
+                viewport: viewport,
+                videoRotationAngle: videoRotationAngle
             )
         )
         // 队列里的每一帧都占着采集输出的像素缓冲池。池子耗尽时相机会直接
@@ -863,11 +880,16 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
     }
 
     func sourceFocusPoint(from normalized: CGPoint) -> CGPoint? {
-        guard let context = photoContext() else { return nil }
+        stateLock.lock()
+        let frame = displayedPhotoFrame
+        stateLock.unlock()
+        guard let frame else { return nil }
+        let point = CameraPresentation(videoRotationAngle: frame.videoRotationAngle)
+            .cameraPoint(fromDisplay: normalized)
         return CameraGeometry.sourcePoint(
-            from: CGPoint(x: normalized.x * context.viewport.width, y: normalized.y * context.viewport.height),
-            source: context.sourceSize, viewport: context.viewport,
-            correction: context.transform, cropScale: context.cropScale
+            from: CGPoint(x: point.x * frame.logicalViewport.width, y: point.y * frame.logicalViewport.height),
+            source: CGSize(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer)),
+            viewport: frame.logicalViewport, correction: frame.transform, cropScale: frame.cropScale
         )
     }
 
@@ -1040,15 +1062,17 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
 
         let image = CIImage(cvPixelBuffer: queuedFrame.pixelBuffer)
         let renderBounds = CGRect(origin: .zero, size: drawableSize)
+        let presentation = CameraPresentation(videoRotationAngle: queuedFrame.videoRotationAngle)
+        let cameraOutputSize = presentation.cameraSize(for: drawableSize)
         let previewImage = image.transformed(
             by: imageToOutputTransform(
                 imageExtent: image.extent,
-                outputSize: drawableSize,
-                logicalViewport: view.bounds.size,
+                outputSize: cameraOutputSize,
+                logicalViewport: queuedFrame.viewport,
                 previewTransform: transform,
                 cropWindowScale: cropScale
             )
-        )
+        ).transformed(by: presentation.displayTransform(cameraSize: cameraOutputSize))
         let frameSharpness = quickCenterSharpness(pixelBuffer: queuedFrame.pixelBuffer)
         stateLock.lock()
         let previousTranslation = displayedPhotoFrame?.transform
@@ -1060,7 +1084,8 @@ final class StabilizedMetalPreviewRenderer: NSObject, MTKViewDelegate {
             pixelBuffer: queuedFrame.pixelBuffer,
             transform: transform,
             cropScale: cropScale,
-            logicalViewport: view.bounds.size,
+            logicalViewport: queuedFrame.viewport,
+            videoRotationAngle: queuedFrame.videoRotationAngle,
             timestamp: queuedFrame.motionTime,
             qualityScore: frameSharpness * 0.65 + stabilityWeight * 0.35
         )

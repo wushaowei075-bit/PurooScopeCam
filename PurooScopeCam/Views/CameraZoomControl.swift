@@ -23,8 +23,9 @@ struct CameraAdjustmentBar: View {
                         .font(.system(size: selected ? 14 : 15, weight: .regular))
                         .monospacedDigit()
                         .foregroundStyle(selected ? PurooBrandStyle.yellow : .white)
+                        .cameraControlRotation()
                         .frame(width: selected ? 40 : 32, height: selected ? 40 : 32)
-                        .background(.black.opacity(selected ? 0.72 : 0.46), in: Circle())
+                        .background(.black.opacity(selected ? 0.36 : 0.18), in: Circle())
                         .frame(width: 54, height: 48)
                 }
             }
@@ -69,6 +70,8 @@ struct CameraAdjustmentBar: View {
                 .font(.system(size: 17, weight: .regular))
                 .monospacedDigit()
                 .foregroundStyle(PurooBrandStyle.yellow)
+                .cameraControlRotation()
+                .frame(height: 30)
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     HStack(alignment: .center, spacing: 0) {
@@ -89,9 +92,9 @@ struct CameraAdjustmentBar: View {
             .frame(height: 22)
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
         .frame(width: 288, height: 70)
-        .background(.black.opacity(0.78), in: Capsule())
+        .background(.black.opacity(0.36), in: Capsule())
     }
 }
 

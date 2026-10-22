@@ -19,6 +19,30 @@ enum PurooBrandStyle {
     static let yellow = Color(red: 1.00, green: 0.90, blue: 0.24)
 }
 
+private struct CameraControlRotationKey: EnvironmentKey {
+    static let defaultValue: Double = 0
+}
+
+extension EnvironmentValues {
+    var cameraControlDegrees: Double {
+        get { self[CameraControlRotationKey.self] }
+        set { self[CameraControlRotationKey.self] = newValue }
+    }
+}
+
+private struct CameraControlRotation: ViewModifier {
+    @Environment(\.cameraControlDegrees) private var degrees
+
+    func body(content: Content) -> some View {
+        content.rotationEffect(.degrees(degrees))
+            .animation(.easeInOut(duration: 0.22), value: degrees)
+    }
+}
+
+extension View {
+    func cameraControlRotation() -> some View { modifier(CameraControlRotation()) }
+}
+
 
 struct ControlPanelView: View {
     private enum CaptureMode: String, CaseIterable {
@@ -28,6 +52,7 @@ struct ControlPanelView: View {
 
     @EnvironmentObject private var camera: CameraController
     @EnvironmentObject private var motionMonitor: MotionStabilityMonitor
+    @Environment(\.cameraControlDegrees) private var controlDegrees
     @State private var isPhotoLibraryPresented = false
     @State private var captureMode: CaptureMode = .photo
     @Namespace private var captureModeAnimation
@@ -55,7 +80,7 @@ struct ControlPanelView: View {
 
     private var portraitLayout: some View {
         VStack(spacing: 4) {
-            recordingStatus.frame(height: 12)
+            recordingStatus.cameraControlRotation().frame(height: 24)
             ZStack {
                 captureButton(size: 72)
 
@@ -106,19 +131,7 @@ struct ControlPanelView: View {
         .background(Color.black)
     }
 
-    private var shutterRingColor: Color {
-        guard camera.isStabilizationEnabled else { return .white.opacity(captureMode == .photo ? 1 : 0.38) }
-        switch motionMonitor.displaySample.band {
-        case .stable:
-            return Color(red: 0.12, green: 0.92, blue: 0.44)
-        case .warning:
-            return PurooBrandStyle.yellow
-        case .heavy:
-            return Color.orange
-        case .unavailable:
-            return .white.opacity(captureMode == .photo ? 1 : 0.38)
-        }
-    }
+    private var shutterRingColor: Color { .white.opacity(captureMode == .photo ? 1 : 0.55) }
 
     private func captureButton(size: CGFloat) -> some View {
         let isPhoto = captureMode == .photo
@@ -176,6 +189,7 @@ struct ControlPanelView: View {
                             .foregroundStyle(
                                 captureMode == mode ? PurooBrandStyle.yellow : .white
                             )
+                            .cameraControlRotation()
                     }
                     .frame(width: 66, height: 34)
                     .contentShape(Capsule())
@@ -203,10 +217,6 @@ struct ControlPanelView: View {
                         .scaledToFill()
                         .frame(width: 44, height: 44)
                         .clipShape(Circle())
-                        .overlay {
-                            Circle()
-                                .stroke(PurooBrandStyle.yellow.opacity(0.85), lineWidth: 1.5)
-                        }
                 } else {
                     Image(systemName: "photo.on.rectangle")
                         .font(.system(size: 20, weight: .light))
@@ -215,6 +225,7 @@ struct ControlPanelView: View {
                         .background(.white.opacity(0.10), in: Circle())
                 }
             }
+            .cameraControlRotation()
             .frame(width: 46, height: 46)
         }
         .buttonStyle(.plain)
@@ -237,6 +248,7 @@ struct ControlPanelView: View {
                 Image(systemName: "camera.fill")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.black.opacity(0.85))
+                    .cameraControlRotation()
             }
             .frame(width: size, height: size)
             .contentShape(Circle())
@@ -274,16 +286,12 @@ struct ControlPanelView: View {
                         .foregroundStyle(.white)
                 }
             }
+            .cameraControlRotation()
             .frame(width: 46, height: 46)
             .background(
                 camera.status.isRecording ? Color.white : Color.white.opacity(0.10),
                 in: Circle()
             )
-            .overlay {
-                if camera.status.isRecording {
-                    Circle().stroke(PurooBrandStyle.yellow, lineWidth: 1.5)
-                }
-            }
         }
         .buttonStyle(.plain)
         .disabled(camera.status.isFinishingRecording || camera.status.isCapturingPhoto || camera.status.isCapturingBurst || !camera.status.isSessionRunning)
@@ -293,7 +301,7 @@ struct ControlPanelView: View {
     @ViewBuilder
     private var recordingStatus: some View {
         if let burstProgress = camera.burstProgressText {
-            Text("智能连拍优选 \(burstProgress)")
+            Text(controlDegrees == 0 ? "智能连拍优选 \(burstProgress)" : burstProgress)
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundStyle(PurooBrandStyle.yellow)
                 .lineLimit(1)
@@ -304,7 +312,8 @@ struct ControlPanelView: View {
                     .font(.system(size: 10, weight: .regular, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(.red)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
             }
         } else {
             Color.clear
@@ -322,7 +331,7 @@ struct ControlPanelView: View {
 
     private func recordingTitle(at date: Date, startedAt: Date) -> String {
         let elapsed = max(Int(date.timeIntervalSince(startedAt)), 0)
-        return String(format: "录制中 %02d:%02d", elapsed / 60, elapsed % 60)
+        return String(format: controlDegrees == 0 ? "录制中 %02d:%02d" : "录制中\n%02d:%02d", elapsed / 60, elapsed % 60)
     }
 
     private var modeTransitionAnimation: Animation {

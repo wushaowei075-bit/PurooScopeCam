@@ -71,6 +71,50 @@ enum CameraGeometry {
     }
 }
 
+// Camera controls stay in portrait coordinates. Frames and saved media still
+// follow the physical camera orientation; only their on-screen presentation turns.
+struct CameraPresentation {
+    let videoRotationAngle: CGFloat
+
+    private var quarterTurns: Int {
+        ((Int(videoRotationAngle.rounded()) / 90) % 4 + 4) % 4
+    }
+
+    var controlDegrees: Double {
+        switch quarterTurns {
+        case 0: return 90
+        case 2: return -90
+        case 3: return 180
+        default: return 0
+        }
+    }
+
+    func cameraSize(for displaySize: CGSize) -> CGSize {
+        quarterTurns.isMultiple(of: 2)
+            ? CGSize(width: displaySize.height, height: displaySize.width)
+            : displaySize
+    }
+
+    // Core Image has an upward Y axis, unlike the touch/UI coordinate system.
+    func displayTransform(cameraSize size: CGSize) -> CGAffineTransform {
+        switch quarterTurns {
+        case 0: return CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: size.width)
+        case 2: return CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: size.height, ty: 0)
+        case 3: return CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: size.width, ty: size.height)
+        default: return .identity
+        }
+    }
+
+    func cameraPoint(fromDisplay point: CGPoint) -> CGPoint {
+        switch quarterTurns {
+        case 0: return CGPoint(x: point.y, y: 1 - point.x)
+        case 2: return CGPoint(x: 1 - point.y, y: point.x)
+        case 3: return CGPoint(x: 1 - point.x, y: 1 - point.y)
+        default: return point
+        }
+    }
+}
+
 struct CameraLayout {
     let previewSize: CGSize
     let previewOriginY: CGFloat
@@ -78,7 +122,7 @@ struct CameraLayout {
     let controlsOverlap: CGFloat
 
     init(size: CGSize, landscape: Bool) {
-        controlsHeight = landscape ? 80 : 164
+        controlsHeight = landscape ? 80 : 176
         let availableHeight = max(size.height, 1)
         if landscape {
             let height = max(min(availableHeight - controlsHeight, size.width * 9 / 16), 1)

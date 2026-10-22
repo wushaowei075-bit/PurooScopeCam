@@ -23,7 +23,6 @@ struct CameraScreen: View {
     @Environment(\.openURL) private var openURL
     @State private var interfaceOrientation: UIInterfaceOrientation = .portrait
     @State private var isQualityDialogPresented = false
-    @State private var isMagnificationDialogPresented = false
     @State private var focusIndicator: FocusIndicatorState?
     @State private var focusDismissToken = UUID()
     @State private var pinchBaseZoom: CGFloat?
@@ -38,8 +37,7 @@ struct CameraScreen: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let isLandscape = proxy.size.width > proxy.size.height
-            let layout = CameraLayout(size: proxy.size, landscape: isLandscape)
+            let layout = CameraLayout(size: proxy.size, landscape: false)
 
             ZStack(alignment: .top) {
                 Color.black
@@ -47,7 +45,7 @@ struct CameraScreen: View {
 
                 cameraViewport(
                     size: layout.previewSize,
-                    topControlInset: (isLandscape ? 8 : 12) - layout.previewOriginY,
+                    topControlInset: 12 - layout.previewOriginY,
                     bottomControlInset: layout.controlsOverlap
                 )
                 .frame(width: layout.previewSize.width, height: layout.previewSize.height)
@@ -71,6 +69,7 @@ struct CameraScreen: View {
             }
             .clipped()
         }
+        .environment(\.cameraControlDegrees, controlDegrees)
         .ignoresSafeArea(.container, edges: .horizontal)
         .confirmationDialog("记录稳定诊断", isPresented: $diagnosticPrompt, titleVisibility: .visible) {
             Button("开始记录（最多 2 分钟）") {
@@ -91,7 +90,7 @@ struct CameraScreen: View {
         .task {
             camera.requestAccessAndConfigure()
             motionMonitor.start()
-            synchronizeOrientationWithScene()
+            updateOrientation(from: UIDevice.current.orientation)
         }
         .onAppear {
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
@@ -118,8 +117,6 @@ struct CameraScreen: View {
             }
         }
         .onChange(of: orientationLocked) { _, locked in
-            PurooScopeAppDelegate.orientationMask = locked ? interfaceOrientation.orientationMask : .allButUpsideDown
-            activeWindowScene?.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
             if !locked { updateOrientation(from: UIDevice.current.orientation) }
             UIApplication.shared.isIdleTimerDisabled = camera.status.isRecording
         }
@@ -135,32 +132,19 @@ struct CameraScreen: View {
             }
             Button("取消", role: .cancel) {}
         }
-        .confirmationDialog(
-            "望远镜光学倍率",
-            isPresented: $isMagnificationDialogPresented,
-            titleVisibility: .visible
-        ) {
-            ForEach(TelescopeMagnificationOption.presets) { option in
-                Button(
-                    abs(option.value - camera.telescopeMagnification) < 0.01
-                        ? "✓ \(option.title)"
-                        : option.title
-                ) {
-                    camera.setTelescopeMagnification(option.value)
-                }
-            }
-            Button("取消", role: .cancel) {}
-        }
     }
 
     private var brandHeader: some View {
         HStack(spacing: 12) {
             HStack(spacing: 7) {
-                Text("PUROO 普徕")
-                    .font(.system(size: 19, weight: .light))
-                    .lineLimit(1)
+                Text(controlDegrees == 0 ? "PUROO 普徕" : "PUROO\n普徕")
+                    .font(.system(size: 14, weight: .light))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.78)
-                    .foregroundStyle(PurooBrandStyle.gradient)
+                    .foregroundStyle(.white.opacity(0.92))
+                    .cameraControlRotation()
+                    .frame(width: 92, height: 48)
 
                 if camera.status.isRecording {
                     Circle()
@@ -169,14 +153,8 @@ struct CameraScreen: View {
                         .accessibilityLabel("正在录像")
                 }
             }
-            .padding(.horizontal, 12)
-            .frame(height: 36)
-            .background(.black.opacity(0.58), in: Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(PurooBrandStyle.gradient, lineWidth: 1)
-                    .opacity(0.72)
-            }
+            .padding(.horizontal, 4)
+            .frame(height: 48)
             .contextMenu {
                 Button("记录稳定诊断（2 分钟）", systemImage: "waveform.path.ecg") {
                     diagnosticPrompt = true
@@ -222,8 +200,10 @@ struct CameraScreen: View {
                         .frame(width: 6, height: 6)
 
                     Text(camera.isStabilizationEnabled ? camera.stabilizationPreference.title : "稳定")
-                        .font(.system(size: 11.5, weight: .regular))
+                        .font(.system(size: 10.5, weight: .regular))
                         .foregroundStyle(.white.opacity(0.92))
+                        .cameraControlRotation()
+                        .frame(width: 40, height: 44)
                 }
                 .padding(.leading, 4)
             }
@@ -251,12 +231,8 @@ struct CameraScreen: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 8)
-        .frame(height: 36)
-        .background(.black.opacity(0.58), in: Capsule())
-        .overlay {
-            Capsule()
-                .stroke(.white.opacity(0.16), lineWidth: 0.8)
-        }
+        .frame(height: 48)
+        .background(.black.opacity(0.24), in: Capsule())
         .contentShape(Capsule())
         .animation(.spring(response: 0.28, dampingFraction: 0.82), value: camera.isStabilizationEnabled)
         .disabled(camera.status.isCapturingPhoto || camera.status.isCapturingBurst || camera.status.isFinishingRecording)
@@ -295,15 +271,6 @@ struct CameraScreen: View {
                     self.vignetteOffset = vigOffset
                 }
             )
-
-            if camera.reticleMode != .off {
-                ScopeReticleOverlayView(
-                    mode: camera.reticleMode,
-                    rollRadians: motionMonitor.displaySample.roll,
-                    pitchRadians: motionMonitor.displaySample.pitch
-                )
-                .allowsHitTesting(false)
-            }
 
             if let lockedPoint = compositionMarkerPoint {
                 CompositionMarkerView()
@@ -438,7 +405,6 @@ struct CameraScreen: View {
     }
 
     private var previewTopControls: some View {
-        let totalEquivalentZoom = Int((camera.telescopeMagnification * Double(camera.zoomFactor)).rounded())
         return VStack(spacing: 10) {
             brandHeader
 
@@ -450,57 +416,15 @@ struct CameraScreen: View {
                         .font(.system(size: 11, weight: .regular, design: .monospaced))
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
-                        .frame(minWidth: 58, minHeight: 34)
+                        .cameraControlRotation()
+                        .frame(width: 58, height: 44)
                         .padding(.horizontal, 7)
                         .foregroundStyle(.white)
-                        .background(.black.opacity(0.58), in: Capsule())
-                        .overlay {
-                            Capsule()
-                                .stroke(PurooBrandStyle.gradient, lineWidth: 1.2)
-                        }
+                        .background(.black.opacity(0.24), in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .disabled(orientationLocked || camera.captureQualityOptions.count <= 1)
                 .accessibilityLabel("分辨率与帧率")
-
-                Button {
-                    isMagnificationDialogPresented = true
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "binoculars")
-                            .font(.system(size: 11.5))
-                        Text("\(Int(camera.telescopeMagnification.rounded()))×·总\(totalEquivalentZoom)×")
-                            .font(.system(size: 11.5, weight: .regular, design: .monospaced))
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 34)
-                    .foregroundStyle(PurooBrandStyle.yellow)
-                    .background(.black.opacity(0.58), in: Capsule())
-                    .overlay {
-                        Capsule()
-                            .stroke(PurooBrandStyle.yellow.opacity(0.72), lineWidth: 1)
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(orientationLocked)
-                .accessibilityLabel("望远镜倍率")
-
-                Button {
-                    camera.reticleMode = camera.reticleMode.next
-                } label: {
-                    Image(systemName: camera.reticleMode == .gridAndLevel ? "squareshape.split.3x3" : "scope")
-                        .font(.system(size: 13.5, weight: .medium))
-                        .frame(width: 34, height: 34)
-                        .foregroundStyle(camera.reticleMode == .off ? .white.opacity(0.85) : PurooBrandStyle.yellow)
-                        .background(.black.opacity(0.58), in: Circle())
-                        .overlay {
-                            Circle().stroke(.white.opacity(0.18), lineWidth: 0.8)
-                        }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("分划与水平仪")
-
 
                 Spacer(minLength: 4)
             }
@@ -514,7 +438,7 @@ struct CameraScreen: View {
             .padding(.horizontal, 13)
             .frame(height: 30)
             .foregroundStyle(.white)
-            .background(.black.opacity(0.62), in: Capsule())
+            .background(.black.opacity(0.28), in: Capsule())
     }
 
     private var qualityBadgeTitle: String {
@@ -528,7 +452,7 @@ struct CameraScreen: View {
         VStack(spacing: 14) {
             Image(systemName: "camera.fill")
                 .font(.system(size: 34, weight: .regular))
-                .foregroundStyle(PurooBrandStyle.gradient)
+                .foregroundStyle(.white)
             Text("需要相机权限")
                 .font(.system(size: 17, weight: .regular))
             Text("请在系统设置中开启相机权限，然后返回应用。")
@@ -642,36 +566,21 @@ struct CameraScreen: View {
         )
     }
 
-    private func synchronizeOrientationWithScene() {
-        guard let scene = activeWindowScene else { return }
-        apply(interfaceOrientation: scene.effectiveGeometry.interfaceOrientation, requestGeometry: false)
-    }
-
     private func updateOrientation(from deviceOrientation: UIDeviceOrientation) {
         guard !orientationLocked else { return }
         guard let nextOrientation = deviceOrientation.interfaceOrientation else { return }
-        apply(interfaceOrientation: nextOrientation, requestGeometry: true)
-    }
-
-    private func apply(
-        interfaceOrientation nextOrientation: UIInterfaceOrientation,
-        requestGeometry: Bool
-    ) {
-        guard nextOrientation != .unknown else { return }
         interfaceOrientation = nextOrientation
         camera.setVideoOrientation(nextOrientation)
-
-        guard requestGeometry, let scene = activeWindowScene else { return }
-        let preferences = UIWindowScene.GeometryPreferences.iOS(
-            interfaceOrientations: nextOrientation.orientationMask
-        )
-        scene.requestGeometryUpdate(preferences) { _ in }
+        focusIndicator = nil
+        compositionMarkerPoint = nil
     }
 
-    private var activeWindowScene: UIWindowScene? {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first { $0.activationState == .foregroundActive }
+    private var controlDegrees: Double {
+        switch interfaceOrientation {
+        case .landscapeRight: return 90
+        case .landscapeLeft: return -90
+        default: return 0
+        }
     }
 
     private var orientationLocked: Bool {

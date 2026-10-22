@@ -88,4 +88,44 @@ for size in [CGSize(width: 2160, height: 3840), CGSize(width: 3840, height: 2160
     check(near(cropped.width / cropped.height, size.width / size.height), "Photo source matches video field aspect before applying transform")
     check(near(cropped.midX, sensor.midX) && near(cropped.midY, sensor.midY), "Photo source crop remains centered")
 }
+// Presentation rotation must not introduce a second crop or change saved media.
+for width in [CGFloat(320), 393, 430] {
+    let display = CGSize(width: width, height: width * 16 / 9)
+    for angle in [CGFloat(90), 0, 180, 270] {
+        let presentation = CameraPresentation(videoRotationAngle: angle)
+        let viewport = presentation.cameraSize(for: display)
+        let rotation = presentation.displayTransform(cameraSize: viewport)
+        let transformed = CGRect(origin: .zero, size: viewport).applying(rotation)
+        check(near(transformed.minX, 0) && near(transformed.minY, 0), "Rotated preview starts at origin")
+        check(near(transformed.width, display.width) && near(transformed.height, display.height), "All orientations fill the same preview")
+        let source = CGSize(width: viewport.width * 4, height: viewport.height * 4)
+        for crop in [CGFloat(1), 1.5, 2.4] {
+            let correction = PreviewRenderTransform(scale: crop, rotationRadians: 0.03,
+                                                    translationX: 9, translationY: -11)
+            let stabilize = CameraGeometry.transform(source: CGRect(origin: .zero, size: source), output: viewport,
+                viewport: viewport, correction: correction, cropScale: crop)
+            for x in [CGFloat(0.4), 0.5, 0.6] {
+                for y in [CGFloat(0.4), 0.5, 0.6] {
+                    let original = CGPoint(x: source.width * x, y: source.height * (1 - y))
+                    let shown = original.applying(stabilize).applying(rotation)
+                    let touch = CGPoint(x: shown.x / display.width, y: 1 - shown.y / display.height)
+                    let cameraTouch = presentation.cameraPoint(fromDisplay: touch)
+                    let restored = CameraGeometry.sourcePoint(
+                        from: CGPoint(x: cameraTouch.x * viewport.width, y: cameraTouch.y * viewport.height),
+                        source: source, viewport: viewport, correction: correction, cropScale: crop)
+                    check(near(restored.x, x) && near(restored.y, y), "Focus inverts display rotation and stabilization")
+                    let output = CameraGeometry.outputSize(for: source)
+                    let saved = original.applying(CameraGeometry.transform(
+                        source: CGRect(origin: .zero, size: source), output: output,
+                        viewport: viewport, correction: correction, cropScale: crop))
+                    check(near(saved.x / output.width, cameraTouch.x)
+                        && near(1 - saved.y / output.height, cameraTouch.y), "Saved media matches visible field in every orientation")
+                }
+            }
+        }
+    }
+}
+check(CameraPresentation(videoRotationAngle: 90).controlDegrees == 0, "Portrait labels upright")
+check(CameraPresentation(videoRotationAngle: 0).controlDegrees == 90, "Landscape right labels clockwise")
+check(CameraPresentation(videoRotationAngle: 180).controlDegrees == -90, "Landscape left labels counterclockwise")
 print("PASS: \(checks) camera geometry, focus, output and layout checks")

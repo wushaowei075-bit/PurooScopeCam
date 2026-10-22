@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 final class PurooScopeAppDelegate: NSObject, UIApplicationDelegate {
-    static var orientationMask: UIInterfaceOrientationMask = .allButUpsideDown
+    static var orientationMask: UIInterfaceOrientationMask = .portrait
     func application(
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?
