@@ -181,7 +181,7 @@ struct TelescopeMagnificationOption: Identifiable, Hashable {
 
 struct StabilizationTuning: Equatable {
     static let defaultOpticalMagnification: Double = 10
-    static let maximumDisplayZoom: CGFloat = 10
+    static let maximumDisplayZoom: CGFloat = 30
 
     var isEnabled: Bool
     var displayZoomFactor: CGFloat
@@ -216,8 +216,9 @@ struct StabilizationTuning: Equatable {
     var previewCropScale: CGFloat {
         guard usesDigitalStabilization else { return 1 }
         guard displayZoomFactor > 3.0 else { return 1.50 }
+        // Preserve the existing 3...10 crop curve even when extending the zoom range.
         let highZoomProgress = Swift.min(
-            Swift.max((displayZoomFactor - 3.0) / (Self.maximumDisplayZoom - 3.0), 0),
+            Swift.max((displayZoomFactor - 3.0) / 7.0, 0),
             1
         )
         return 1.50 + highZoomProgress * 0.90

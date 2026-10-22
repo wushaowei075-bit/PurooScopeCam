@@ -349,7 +349,7 @@ struct CameraScreen: View {
                                 pinchBaseZoom = base
                             }
                             let minZoom: CGFloat = camera.isStabilizationEnabled ? 1.5 : 1.0
-                            let target = min(max(base * scale, minZoom), StabilizationTuning.maximumDisplayZoom)
+                            let target = min(max(base * scale, minZoom), camera.maximumRequestedDisplayZoom)
                             camera.setDisplayedZoomFactor(target)
                         }
                         .onEnded { _ in

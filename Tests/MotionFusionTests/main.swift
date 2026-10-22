@@ -464,6 +464,15 @@ do {
 // 10x maximum digital zoom stabilization: adaptive crop scale (2.40x), extended motion admittance,
 // and strong jitter suppression without false pan activation or boundary saturation.
 do {
+    for zoom in stride(from: CGFloat(1.5), through: 10, by: 0.1) {
+        let expectedCrop = 1.5 + min(max((zoom - 3) / 7, 0), 1) * 0.9
+        let tuning = StabilizationTuning(isEnabled: true, displayZoomFactor: zoom)
+        check(abs(tuning.previewCropScale - expectedCrop) < 0.000001,
+              "Extending range must preserve the entire pre-build35 crop policy")
+    }
+    let maximumTuning = StabilizationTuning(isEnabled: true, displayZoomFactor: 30)
+    check(maximumTuning.displayZoomFactor == 30, "20x user zoom includes 1.5x baseline")
+    check(abs(maximumTuning.previewCropScale - 2.4) < 0.000001, "Crop stays capped beyond old maximum")
     let tenXTuning = StabilizationTuning(isEnabled: true, displayZoomFactor: 10.0, opticalMagnification: 15)
     check(abs(tenXTuning.displayZoomFactor - 10.0) < 0.001, "Allow up to 10x display zoom")
     check(abs(tenXTuning.previewCropScale - 2.40) < 0.001, "Expand preview crop scale to 2.40x at 10x display zoom")

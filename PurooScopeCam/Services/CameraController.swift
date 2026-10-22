@@ -116,6 +116,12 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var telescopeMagnification: Double = StabilizationTuning.defaultOpticalMagnification
     @Published var zoomFactor: CGFloat = 1
     @Published private(set) var zoomControlFactor: CGFloat = 1.5
+    @Published private(set) var maximumZoomControlFactor: CGFloat = StabilizationTuning.maximumDisplayZoom
+
+    var maximumRequestedDisplayZoom: CGFloat {
+        min(StabilizationTuning.maximumDisplayZoom,
+            (isStabilizationEnabled ? 1.5 : 1) * CameraZoomScale.maximumRelativeZoom)
+    }
     @Published var exposureBias: Float = 0
     @Published var captureQualityPreference: CaptureQualityOption = .default4K60 {
         didSet {
@@ -345,7 +351,7 @@ final class CameraController: NSObject, ObservableObject {
         dispatchPrecondition(condition: .onQueue(.main))
         guard value.isFinite else { return }
         let minimum: CGFloat = isStabilizationEnabled ? 1.5 : 1
-        let clamped = min(max(value, minimum), StabilizationTuning.maximumDisplayZoom)
+        let clamped = min(max(value, minimum), min(maximumRequestedDisplayZoom, maximumZoomControlFactor))
         zoomControlFactor = clamped
         guard zoomRequests.submit(clamped) else { return }
         sessionQueue.async { [weak self] in
@@ -370,18 +376,27 @@ final class CameraController: NSObject, ObservableObject {
             defer { device.unlockForConfiguration() }
 
             let maxZoom = StabilizationTuning.maximumDisplayZoom
+            let stabilizationEnabled = isStabilizationEnabled
+            let baseline: CGFloat = stabilizationEnabled ? 1.5 : 1
+            let deviceMax = max(min(device.activeFormat.videoMaxZoomFactor, maxZoom), 1)
+            let supportedDisplayZoom = CameraZoomScale.supportedDisplayZoom(
+                requested: baseline * CameraZoomScale.maximumRelativeZoom,
+                baseline: baseline, deviceMaximum: deviceMax,
+                cropScale: { StabilizationTuning(isEnabled: stabilizationEnabled, displayZoomFactor: $0).previewCropScale }
+            )
+            let boundedDisplayZoom = min(max(desiredDisplayZoom, baseline), supportedDisplayZoom)
             let tuning = StabilizationTuning(
-                isEnabled: isStabilizationEnabled,
-                displayZoomFactor: desiredDisplayZoom
+                isEnabled: stabilizationEnabled,
+                displayZoomFactor: boundedDisplayZoom
             )
             let cropScale = tuning.usesDigitalStabilization ? tuning.previewCropScale : 1
-            let deviceMax = min(device.activeFormat.videoMaxZoomFactor, maxZoom)
-            let compensatedDeviceZoom = desiredDisplayZoom / max(cropScale, 1)
+            let compensatedDeviceZoom = boundedDisplayZoom / max(cropScale, 1)
             let deviceZoom = min(max(compensatedDeviceZoom, 1), deviceMax)
             device.videoZoomFactor = deviceZoom
 
             let actualDisplayZoom = min(max(deviceZoom * max(cropScale, 1), 1), maxZoom)
             publish { controller in
+                controller.maximumZoomControlFactor = supportedDisplayZoom
                 controller.zoomFactor = actualDisplayZoom
                 if controller.zoomRequests.canPublishControlValue(for: appliedRevision) {
                     controller.zoomControlFactor = actualDisplayZoom

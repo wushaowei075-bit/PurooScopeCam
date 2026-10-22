@@ -8,14 +8,14 @@ struct CameraAdjustmentBar: View {
     private var scale: CameraZoomScale {
         CameraZoomScale(
             baseline: camera.isStabilizationEnabled ? 1.5 : 1,
-            maximumDisplayZoom: StabilizationTuning.maximumDisplayZoom
+            maximumDisplayZoom: camera.maximumZoomControlFactor
         )
     }
 
     private var zoom: CGFloat { scale.relativeZoom(for: camera.zoomControlFactor) }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottom) {
             HStack(spacing: 0) {
                 ForEach(CameraZoomScale.presets, id: \.self) { preset in
                     let selected = selectedPreset == preset
@@ -41,7 +41,7 @@ struct CameraAdjustmentBar: View {
                 }
             )
         }
-        .frame(width: 216, height: 48)
+        .frame(width: 288, height: 70)
         .overlay(alignment: .bottom) {
             if isExpanded {
                 continuousScale
@@ -115,7 +115,9 @@ private struct CameraZoomTouchSurface: UIViewRepresentable {
 
 private final class ZoomTouchView: UIView {
     private var zoom: CGFloat = 1
-    private var scale = CameraZoomScale(baseline: 1.5, maximumDisplayZoom: 10)
+    private var scale = CameraZoomScale(baseline: 1.5, maximumDisplayZoom: 30)
+    private var visibility = CameraZoomVisibility()
+    private var dismissal: DispatchWorkItem?
     private var onZoom: (CGFloat) -> Void = { _ in }
     private var onExpansion: (Bool) -> Void = { _ in }
     private var drag = CameraZoomDrag()
@@ -132,7 +134,7 @@ private final class ZoomTouchView: UIView {
             let button = UIButton(type: .custom)
             button.tag = index
             button.accessibilityLabel = String(format: "变焦 %.0f 倍", preset)
-            button.accessibilityHint = "点按切换；按住向右滑动连续变焦"
+            button.accessibilityHint = "点按切换；按住展开连续变焦"
             button.addTarget(self, action: #selector(selectPreset(_:)), for: .touchUpInside)
             addSubview(button)
             buttons.append(button)
@@ -142,16 +144,30 @@ private final class ZoomTouchView: UIView {
         // Once the hold begins, UIButton receives cancellation, never a trailing tap.
         hold.cancelsTouchesInView = true
         addGestureRecognizer(hold)
+        NotificationCenter.default.addObserver(self, selector: #selector(interruptInteraction),
+                                               name: UIApplication.willResignActiveNotification, object: nil)
+    }
+
+    deinit {
+        dismissal?.cancel()
+        NotificationCenter.default.removeObserver(self)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let width = bounds.width / CGFloat(buttons.count)
+        let width: CGFloat = 54
+        let left = (bounds.width - width * CGFloat(buttons.count)) / 2
         for (index, button) in buttons.enumerated() {
-            button.frame = CGRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
+            button.frame = CGRect(x: left + CGFloat(index) * width, y: bounds.height - 48, width: width, height: 48)
         }
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let target = visibility.isExpanded ? bounds
+            : CGRect(x: (bounds.width - 216) / 2, y: bounds.height - 48, width: 216, height: 48)
+        return target.contains(point)
     }
 
     func configure(zoom: CGFloat, scale: CameraZoomScale, enabled: Bool,
@@ -170,16 +186,25 @@ private final class ZoomTouchView: UIView {
         self.scale = scale
         hold.isEnabled = enabled
         isUserInteractionEnabled = enabled
+        updateAccessibility()
+    }
+
+    private func updateAccessibility() {
+        isAccessibilityElement = visibility.isExpanded
+        accessibilityLabel = "连续变焦"
+        accessibilityValue = String(format: "%.1f 倍", zoom)
+        accessibilityTraits = .adjustable
         for (index, button) in buttons.enumerated() {
             let preset = CameraZoomScale.presets[index]
-            button.isEnabled = enabled && preset <= scale.maximum
+            button.isEnabled = isUserInteractionEnabled && preset <= scale.maximum
+            button.accessibilityElementsHidden = visibility.isExpanded
             button.accessibilityTraits = abs(zoom - preset) < 0.025 ? [.button, .selected] : .button
             button.accessibilityValue = String(format: "当前 %.1f 倍", zoom)
         }
     }
 
     @objc private func selectPreset(_ button: UIButton) {
-        guard drag.startZoom == nil else { return }
+        guard drag.startZoom == nil, !visibility.isExpanded else { return }
         haptic.selectionChanged()
         onZoom(CameraZoomScale.presets[button.tag])
     }
@@ -187,32 +212,76 @@ private final class ZoomTouchView: UIView {
     @objc private func handleHold(_ gesture: UILongPressGestureRecognizer) {
         switch gesture.state {
         case .began:
+            dismissal?.cancel()
+            visibility.begin()
             originX = gesture.location(in: self).x
             drag.begin(at: zoom)
             lastHapticPreset = nil
             haptic.prepare()
+            haptic.selectionChanged()
+            updateAccessibility()
+            onExpansion(true)
         case .changed:
-            let wasExpanded = drag.isExpanded
             guard let next = drag.update(translation: gesture.location(in: self).x - originX, scale: scale) else { return }
-            if !wasExpanded {
-                onExpansion(true)
-                haptic.selectionChanged()
-            }
             let preset = CameraZoomScale.presets.first { abs(next - $0) < 0.035 }
             if let preset, preset != lastHapticPreset { haptic.selectionChanged() }
             lastHapticPreset = preset
             onZoom(next)
-        case .ended, .cancelled, .failed:
+        case .ended:
+            releaseInteraction()
+        case .cancelled, .failed:
+            guard drag.startZoom != nil else { return }
             finishInteraction()
         default:
             break
         }
     }
 
-    func finishInteraction() {
-        let wasExpanded = drag.isExpanded
+    private func releaseInteraction() {
         drag.end()
         lastHapticPreset = nil
+        visibility.release(at: ProcessInfo.processInfo.systemUptime)
+        // While the scale lingers, a new touch resumes it immediately, without selecting a hidden preset.
+        hold.minimumPressDuration = 0
+        scheduleDismissal()
+    }
+
+    private func scheduleDismissal() {
+        dismissal?.cancel()
+        let task = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.visibility.hideIfExpired(at: ProcessInfo.processInfo.systemUptime) else { return }
+            self.hold.minimumPressDuration = 0.22
+            self.updateAccessibility()
+            self.onExpansion(false)
+        }
+        dismissal = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + CameraZoomVisibility.lingerDuration, execute: task)
+    }
+
+    override func accessibilityIncrement() { adjustAccessibleZoom(multiplier: 1.1) }
+    override func accessibilityDecrement() { adjustAccessibleZoom(multiplier: 1 / 1.1) }
+
+    private func adjustAccessibleZoom(multiplier: CGFloat) {
+        onZoom(scale.clamp(zoom * multiplier))
+        visibility.begin()
+        releaseInteraction()
+    }
+
+    @objc private func interruptInteraction() {
+        finishInteraction()
+        hold.isEnabled = false
+        hold.isEnabled = isUserInteractionEnabled
+    }
+
+    func finishInteraction() {
+        let wasExpanded = visibility.isExpanded
+        dismissal?.cancel()
+        drag.end()
+        visibility.cancel()
+        lastHapticPreset = nil
+        hold.minimumPressDuration = 0.22
+        updateAccessibility()
         if wasExpanded { onExpansion(false) }
     }
 
