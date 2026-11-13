@@ -146,7 +146,7 @@ workflows:
         APP_STORE_VERSION: "1.0"
         APPLE_TEAM_ID: TU73WVSUL5
         IOS_BUNDLE_ID: com.puroo.scopecam
-        MINIMUM_BUILD_NUMBER: "39"
+        MINIMUM_BUILD_NUMBER: "40"
     scripts:
       - name: Determine the next available App Store build number
         script: |
