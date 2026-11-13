@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        AA2910010000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AA2910010000000000000002; };
         1A0000010000000000000014 /* CameraZoom.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000014; };
         1A0000010000000000000015 /* CameraZoomControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000015; };
 		1A0000010000000000000012 /* StabilizationDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0001010000000000000012; };
@@ -29,6 +30,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        AA2910010000000000000002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
         1A0001010000000000000014 /* CameraZoom.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraZoom.swift; sourceTree = "<group>"; };
         1A0001010000000000000015 /* CameraZoomControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraZoomControl.swift; sourceTree = "<group>"; };
 		1A0001010000000000000012 /* StabilizationDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StabilizationDiagnostics.swift; sourceTree = "<group>"; };
@@ -76,6 +78,7 @@
 			children = (
 				1A0001010000000000000001 /* PurooScopeCamApp.swift */,
 				1A000101000000000000000D /* Info.plist */,
+                AA2910010000000000000002 /* PrivacyInfo.xcprivacy */,
 				1A000101000000000000000F /* Assets.xcassets */,
 				1A0003010000000000000003 /* Models */,
 				1A0003010000000000000004 /* Services */,
@@ -189,6 +192,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A000001000000000000000D /* Assets.xcassets in Resources */,
+                AA2910010000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -342,8 +346,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 38;
-				DEVELOPMENT_TEAM = "";
+				CURRENT_PROJECT_VERSION = 39;
+				DEVELOPMENT_TEAM = TU73WVSUL5;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PurooScopeCam/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -351,7 +355,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.puroo.scopecam;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -366,8 +370,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 38;
-				DEVELOPMENT_TEAM = "";
+				CURRENT_PROJECT_VERSION = 39;
+				DEVELOPMENT_TEAM = TU73WVSUL5;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PurooScopeCam/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -375,7 +379,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.puroo.scopecam;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

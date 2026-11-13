@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import CoreGraphics
 import Foundation
 import QuartzCore
@@ -93,7 +94,7 @@ struct StabilizationDebugSnapshot {
     }
 }
 
-final class StabilizationTraceRecorder {
+final class StabilizationTraceRecorder: ObservableObject {
     static let shared = StabilizationTraceRecorder()
 
     private let queue = DispatchQueue(label: "com.puroo.scope.stabilizationTrace", qos: .utility)
@@ -105,15 +106,28 @@ final class StabilizationTraceRecorder {
     private var lastReplayTime: Double = -.greatestFiniteMagnitude
     private var lastFileURL: URL?
     private var sessionID = UUID()
+    @Published private(set) var isRecordingDiagnostics = false
     private static let launchDiagnosticsEnabled: Bool = {
+        #if DEBUG
         if let env = ProcessInfo.processInfo.environment["PUROO_TRACE_ENABLED"] {
             return env == "1" || env.lowercased() == "true"
         }
         if UserDefaults.standard.object(forKey: "puroo.trace.enabled") != nil {
             return UserDefaults.standard.bool(forKey: "puroo.trace.enabled")
         }
+        #endif
         return false
     }()
+
+    private static var tracesDirectory: URL? {
+        #if DEBUG
+        let location: FileManager.SearchPathDirectory = .documentDirectory
+        #else
+        let location: FileManager.SearchPathDirectory = .cachesDirectory
+        #endif
+        return FileManager.default.urls(for: location, in: .userDomainMask).first?
+            .appendingPathComponent("PurooStabilizationTraces", isDirectory: true)
+    }
 
     static var sessionMetadata: [String: Any] {
         ["pipeline": "virtual-camera-v11-zoom-continuity",
@@ -131,8 +145,7 @@ final class StabilizationTraceRecorder {
         stopSession()
         queue.async {
             if self.lastFileURL == nil,
-               let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                let directory = documents.appendingPathComponent("PurooStabilizationTraces", isDirectory: true)
+               let directory = Self.tracesDirectory {
                 let files = (try? FileManager.default.contentsOfDirectory(at: directory,
                     includingPropertiesForKeys: nil)) ?? []
                 self.lastFileURL = files.filter { $0.pathExtension == "jsonl" }
@@ -155,18 +168,7 @@ final class StabilizationTraceRecorder {
     func startSession(metadata: [String: Any], userInitiated: Bool = false) {
         guard userInitiated || Self.launchDiagnosticsEnabled else { return }
         queue.async { [weak self] in
-            guard let self, !self.isActive else { return }
-            guard let documents = FileManager.default.urls(
-                for: .documentDirectory,
-                in: .userDomainMask
-            ).first else {
-                return
-            }
-
-            let directory = documents.appendingPathComponent(
-                "PurooStabilizationTraces",
-                isDirectory: true
-            )
+            guard let self, !self.isActive, let directory = Self.tracesDirectory else { return }
             do {
                 try FileManager.default.createDirectory(
                     at: directory,
@@ -192,11 +194,14 @@ final class StabilizationTraceRecorder {
                 self.stateLock.lock()
                 self.isActive = true
                 self.stateLock.unlock()
+                DispatchQueue.main.async { self.isRecordingDiagnostics = true }
                 self.replayPairCount = 0
                 self.lastReplayTime = -.greatestFiniteMagnitude
 
                 var header = metadata
                 header["type"] = "session"
+                // Shown in the report review before the user chooses a recipient.
+                header["device_uptime_s"] = ProcessInfo.processInfo.systemUptime
                 header["created_at"] = ISO8601DateFormatter().string(from: Date())
                 header["format_version"] = 11
                 header["maximum_duration_s"] = 120
@@ -232,6 +237,7 @@ final class StabilizationTraceRecorder {
         stateLock.lock()
         isActive = false
         stateLock.unlock()
+        DispatchQueue.main.async { self.isRecordingDiagnostics = false }
     }
 
     func recordMotion(_ sample: StabilitySample) {

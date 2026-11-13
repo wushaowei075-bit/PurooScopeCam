@@ -16,6 +16,51 @@ private struct DiagnosticShareView: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
+private struct DiagnosticReviewView: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var sharing = false
+    @State private var uptime: Double?
+    @State private var loaded = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text("分享前检查诊断内容").font(.title2).bold()
+                    Text("此文件包含运动和拍摄参数、设备计时信息，以及可能反映拍摄内容的少量低分辨率灰度画面。仅在你选择发送此报告后，才交给所选接收方。请仅为排查本次问题发送。")
+                    if let uptime {
+                        Text("报告中的设备运行时长：\(uptime, specifier: "%.1f") 秒（从本次设备启动至开始记录）。后续事件也包含同一设备时钟的计时信息。")
+                            .font(.headline)
+                        Button("发送此诊断报告") { sharing = true }.buttonStyle(.borderedProminent)
+                    } else if loaded {
+                        Text("这份旧诊断缺少可核对的计时摘要。请重新记录一次诊断后再分享。")
+                    } else {
+                        ProgressView("读取报告摘要")
+                    }
+                    Button("取消") { dismiss() }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+            }
+            .navigationTitle("诊断报告")
+            .navigationBarTitleDisplayMode(.inline)
+            .task {
+                uptime = await Task.detached(priority: .userInitiated) {
+                    guard let handle = try? FileHandle(forReadingFrom: url) else { return nil as Double? }
+                    defer { try? handle.close() }
+                    guard let data = try? handle.read(upToCount: 65536),
+                          let line = data.split(separator: 10).first,
+                          let header = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                          let value = header["device_uptime_s"] as? Double,
+                          value.isFinite, value >= 0 else { return nil as Double? }
+                    return value
+                }.value
+                loaded = true
+            }
+            .sheet(isPresented: $sharing) { DiagnosticShareView(url: url) }
+        }
+    }
+}
+
 struct CameraScreen: View {
     @EnvironmentObject private var camera: CameraController
     @EnvironmentObject private var motionMonitor: MotionStabilityMonitor
@@ -31,9 +76,11 @@ struct CameraScreen: View {
     @State private var isGyroCalibrated = false
     @State private var vignetteOffset: CGPoint = .zero
     @State private var shutterFlashOpacity: Double = 0
+    @State private var privacyPresented = false
     @State private var diagnosticPrompt = false
     @State private var diagnosticMessage: String?
     @State private var diagnosticExport: DiagnosticExport?
+    @ObservedObject private var diagnosticRecorder = StabilizationTraceRecorder.shared
 
     var body: some View {
         GeometryReader { proxy in
@@ -79,8 +126,9 @@ struct CameraScreen: View {
         } message: {
             Text("日志含运动数据和少量低分辨率场景样本，仅保存在本机，不会自动上传。")
         }
+        .sheet(isPresented: $privacyPresented) { PurooPrivacyNotice() }
         .sheet(item: $diagnosticExport) { item in
-            DiagnosticShareView(url: item.url)
+            DiagnosticReviewView(url: item.url)
         }
         .alert("稳定诊断", isPresented: Binding(get: { diagnosticMessage != nil }, set: { if !$0 { diagnosticMessage = nil } })) {
             Button("好", role: .cancel) { diagnosticMessage = nil }
@@ -137,6 +185,7 @@ struct CameraScreen: View {
     private var brandHeader: some View {
         HStack(spacing: 12) {
             HStack(spacing: 7) {
+                Button { privacyPresented = true } label: {
                 Text(controlDegrees == 0 ? "PUROO 普徕" : "PUROO\n普徕")
                     .font(.system(size: 14, weight: .light))
                     .multilineTextAlignment(.center)
@@ -145,12 +194,22 @@ struct CameraScreen: View {
                     .foregroundStyle(.white.opacity(0.92))
                     .cameraControlRotation()
                     .frame(width: 92, height: 48)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("PUROO普徕，查看隐私与权限说明")
 
                 if camera.status.isRecording {
                     Circle()
                         .fill(.red)
                         .frame(width: 7, height: 7)
                         .accessibilityLabel("正在录像")
+                }
+
+                if diagnosticRecorder.isRecordingDiagnostics {
+                    Label("诊断记录中", systemImage: "record.circle.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.yellow)
+                        .cameraControlRotation()
                 }
             }
             .padding(.horizontal, 4)
